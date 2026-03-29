@@ -1,0 +1,218 @@
+{% extends "base.html" %}
+{% block title %}{{ "Ta bild på kvitto" if g.lang == "sv" else "Capture Receipt" }}{% endblock %}
+{% block page_title %}{{ "Ta bild på kvitto" if g.lang == "sv" else "Capture Receipt" }}{% endblock %}
+
+{% block head %}
+<style>
+  .capture-area {
+    background: var(--surface);
+    border: 2px dashed var(--border);
+    border-radius: 16px;
+    padding: 40px 20px;
+    text-align: center;
+    transition: all 0.2s;
+    cursor: pointer;
+    position: relative;
+  }
+  .capture-area:hover, .capture-area.drag-over {
+    border-color: var(--accent);
+    background: rgba(255,71,87,0.04);
+  }
+  .capture-icon { font-size: 64px; margin-bottom: 16px; opacity: 0.6; }
+  .capture-title { font-size: 18px; font-weight: 800; margin-bottom: 8px; }
+  .capture-sub { color: var(--muted); font-size: 13px; }
+  .file-input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
+
+  /* Mobile camera button */
+  .camera-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    width: 100%;
+    padding: 18px;
+    background: var(--accent);
+    border: none;
+    border-radius: 12px;
+    color: white;
+    font-family: var(--sans);
+    font-size: 16px;
+    font-weight: 800;
+    cursor: pointer;
+    margin-bottom: 12px;
+    box-shadow: 0 4px 20px rgba(255,71,87,0.35);
+    transition: all 0.15s;
+  }
+  .camera-btn:hover { transform: translateY(-1px); box-shadow: 0 6px 28px rgba(255,71,87,0.45); }
+  .gallery-btn {
+    width: 100%;
+    padding: 14px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 15px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .gallery-btn:hover { border-color: var(--muted); }
+  .preview-container { display:none; text-align:center; }
+  .preview-img { max-width: 100%; max-height: 400px; border-radius: 12px; border: 1px solid var(--border); }
+  .processing-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(15,15,19,0.85);
+    z-index: 1000;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .spinner {
+    width: 48px; height: 48px;
+    border: 3px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .processing-text { font-weight: 700; font-size: 16px; }
+  .processing-sub { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+</style>
+{% endblock %}
+
+{% block content %}
+<div style="max-width:480px;margin:0 auto;">
+  <div class="processing-overlay" id="processingOverlay">
+    <div class="spinner"></div>
+    <div class="processing-text">{{ "Analyserar kvitto..." if g.lang == "sv" else "Analyzing receipt..." }}</div>
+    <div class="processing-sub">{{ "Claude Vision extraherar data" if g.lang == "sv" else "Claude Vision extracting data" }}</div>
+  </div>
+
+  <form method="POST" enctype="multipart/form-data" id="captureForm" action="{{ url_for('expenses_capture') }}">
+    <!-- Camera capture (mobile-first) -->
+    <div id="cameraSection">
+      <label class="camera-btn" for="cameraInput">
+        📷 {{ "Ta bild på kvitto" if g.lang == "sv" else "Take photo of receipt" }}
+      </label>
+      <input type="file" id="cameraInput" name="receipt" accept="image/*" capture="environment" style="display:none;" onchange="previewFile(this)">
+
+      <label class="gallery-btn" for="galleryInput">
+        🖼 {{ "Välj från galleriet" if g.lang == "sv" else "Choose from gallery" }}
+      </label>
+      <input type="file" id="galleryInput" name="receipt" accept="image/*,application/pdf" style="display:none;" onchange="previewFile(this)">
+    </div>
+
+    <!-- Or drag/drop on desktop -->
+    <div class="capture-area" id="dropZone" style="margin-top:16px;" onclick="document.getElementById('galleryInput').click()">
+      <div class="capture-icon">◎</div>
+      <div class="capture-title">{{ "Dra och släpp" if g.lang == "sv" else "Drag & drop" }}</div>
+      <div class="capture-sub">{{ "eller klicka för att välja fil" if g.lang == "sv" else "or click to select file" }}</div>
+    </div>
+
+    <!-- Preview -->
+    <div class="preview-container" id="previewContainer" style="margin-top:20px;">
+      <img id="previewImg" class="preview-img" src="" alt="Preview">
+      <div style="margin-top:16px;">
+        <button type="submit" class="btn btn-primary" style="width:100%;padding:14px;font-size:15px;" onclick="showProcessing()">
+          {{ "Analysera kvitto" if g.lang == "sv" else "Analyze receipt" }} →
+        </button>
+        <button type="button" class="btn btn-ghost" style="width:100%;margin-top:8px;" onclick="resetCapture()">
+          {{ "Välj annan fil" if g.lang == "sv" else "Choose different file" }}
+        </button>
+      </div>
+    </div>
+  </form>
+
+  <div style="margin-top:24px;padding:16px;background:var(--surface);border-radius:8px;border:1px solid var(--border);">
+    <div style="font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);margin-bottom:8px;">
+      {{ "Hur det fungerar" if g.lang == "sv" else "How it works" }}
+    </div>
+    <div style="font-size:12px;color:var(--muted);line-height:1.7;">
+      1. {{ "Ta bild eller ladda upp kvitto" if g.lang == "sv" else "Take photo or upload receipt" }}<br>
+      2. {{ "Claude Vision extraherar belopp, moms, datum" if g.lang == "sv" else "Claude Vision extracts amount, VAT, date" }}<br>
+      3. {{ "Granska och godkänn automatisk tolkning" if g.lang == "sv" else "Review and approve the extracted data" }}<br>
+      4. {{ "Sparas lokalt och synkas till Fortnox" if g.lang == "sv" else "Saved locally and synced to Fortnox" }}
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Sync file inputs — only last selected matters
+document.getElementById('cameraInput').addEventListener('change', function() {
+  if (this.files[0]) document.getElementById('galleryInput').value = '';
+});
+document.getElementById('galleryInput').addEventListener('change', function() {
+  if (this.files[0]) document.getElementById('cameraInput').value = '';
+});
+
+function previewFile(input) {
+  const file = input.files[0];
+  if (!file) return;
+
+  // Sync to form
+  const form = document.getElementById('captureForm');
+  const dt = new DataTransfer();
+  dt.items.add(file);
+
+  // Set name="receipt" on the triggered input only
+  document.getElementById('cameraInput').name = '';
+  document.getElementById('galleryInput').name = '';
+  input.name = 'receipt';
+
+  if (file.type.startsWith('image/')) {
+    const reader = new FileReader();
+    reader.onload = e => {
+      document.getElementById('previewImg').src = e.target.result;
+      document.getElementById('previewContainer').style.display = 'block';
+      document.getElementById('cameraSection').style.display = 'none';
+      document.getElementById('dropZone').style.display = 'none';
+    };
+    reader.readAsDataURL(file);
+  } else {
+    // PDF — just show name
+    document.getElementById('previewImg').src = '';
+    document.getElementById('previewImg').alt = file.name;
+    document.getElementById('previewContainer').style.display = 'block';
+    document.getElementById('cameraSection').style.display = 'none';
+    document.getElementById('dropZone').style.display = 'none';
+  }
+}
+
+function showProcessing() {
+  document.getElementById('processingOverlay').style.display = 'flex';
+}
+
+function resetCapture() {
+  document.getElementById('previewContainer').style.display = 'none';
+  document.getElementById('cameraSection').style.display = 'block';
+  document.getElementById('dropZone').style.display = 'block';
+  document.getElementById('cameraInput').value = '';
+  document.getElementById('galleryInput').value = '';
+  document.getElementById('cameraInput').name = 'receipt';
+  document.getElementById('galleryInput').name = 'receipt';
+}
+
+// Drag and drop
+const dropZone = document.getElementById('dropZone');
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  const file = e.dataTransfer.files[0];
+  if (file) {
+    const input = document.getElementById('galleryInput');
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    input.files = dt.files;
+    previewFile(input);
+  }
+});
+</script>
+{% endblock %}

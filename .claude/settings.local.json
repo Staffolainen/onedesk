@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:dlnd.co)",
+      "Bash(sqlite3 instance/consultadmin.db \"SELECT id, invoice_number, status, pdf_filename, subtotal, total FROM invoice ORDER BY id;\")",
+      "Bash(sqlite3 instance/consultadmin.db \"SELECT COUNT\\(*\\) as entries, SUM\\(hours\\) as hours FROM time_entry WHERE invoice_id = 1;\")",
+      "Bash(sqlite3 instance/consultadmin.db \"SELECT COUNT\\(*\\) FROM expense WHERE invoice_id = 1;\")",
+      "Bash(sqlite3 instance/consultadmin.db \"UPDATE invoice SET status=''draft'', pdf_filename=NULL WHERE id=1;\")",
+      "Bash(sqlite3 instance/consultadmin.db \"SELECT p.id, p.name, p.client_id, c.name FROM project p JOIN client c ON c.id=p.client_id;\")",
+      "Bash(sqlite3 instance/consultadmin.db \"SELECT id, invoice_number, status, subtotal, total, client_id, period_start, period_end FROM invoice;\")",
+      "Bash(sqlite3 instance/consultadmin.db \"SELECT te.id, te.entry_date, te.hours, te.invoiced, te.invoice_id, te.hour_type_id, te.time_type FROM time_entry te WHERE te.entry_date BETWEEN ''2026-02-01'' AND ''2026-02-28'' LIMIT 5;\")",
+      "Bash(sqlite3 instance/consultadmin.db \"SELECT id, po_number, hourly_rate, valid_from, valid_to, active FROM purchase_order WHERE project_id=1;\")",
+      "Bash(sqlite3 instance/consultadmin.db \"SELECT id, name, hourly_rate, billable, active FROM po_hour_type WHERE po_id IN \\(SELECT id FROM purchase_order WHERE project_id=1\\);\")",
+      "Bash(sqlite3 instance/consultadmin.db \"DELETE FROM invoice WHERE id=1;\")",
+      "Bash(echo \"pypdf==4.2.0:*)",
+      "Bash(\"/Users/staffanedlund/Library/CloudStorage/OneDrive-StaffanEdlundkonsultAB/- Internal/IT/ConsultantAdmin/consultadmin/requirements.txt\")",
+      "Bash(chmod +x \"/Users/staffanedlund/Library/CloudStorage/OneDrive-StaffanEdlundkonsultAB/- Internal/IT/ConsultantAdmin/consultadmin/entrypoint.sh\")",
+      "Bash(python -c \"import pdf_generator; print\\(''OK''\\)\")",
+      "Bash(python3 -c \"import pdf_generator; print\\(''OK''\\)\")",
+      "Bash(python3 -c \"from models import Project, TimeEntry; print\\(''OK''\\)\")",
+      "Bash(python3 -c \"import pdf_generator; print\\(''pdf_generator OK''\\)\")",
+      "Bash(python3 -c \"from app import app; print\\(''app OK''\\)\")"
+    ]
+  }
+}

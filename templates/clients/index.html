@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}{{ g.t.clients }}{% endblock %}
+{% block page_title %}{{ g.t.clients }}{% endblock %}
+
+{% block topbar_actions %}
+  <a href="{{ url_for('clients_new') }}" class="btn btn-primary btn-sm">+ {{ "Ny kund" if g.lang == "sv" else "New client" }}</a>
+{% endblock %}
+
+{% block content %}
+{% if clients %}
+  {% for c in clients %}
+  <div class="card" style="margin-bottom:12px;">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:16px;">
+      <div style="flex:1;min-width:200px;">
+        <div style="font-size:17px;font-weight:800;margin-bottom:4px;">{{ c.name }}</div>
+        <div style="font-family:var(--mono);font-size:11px;color:var(--muted);">
+          {% if c.org_nr %}Org.nr: {{ c.org_nr }} · {% endif %}
+          {% if c.contact_email %}✉ {{ c.contact_email }}{% endif %}
+        </div>
+      </div>
+      <div style="display:flex;gap:20px;align-items:center;flex-wrap:wrap;">
+        <div style="text-align:right;">
+          <div style="font-family:var(--mono);font-size:11px;color:var(--muted);">{{ "Timpris" if g.lang == "sv" else "Rate" }}</div>
+          <div style="font-weight:800;font-size:16px;">{{ c.hourly_rate|fmt_amount }} SEK/h</div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-family:var(--mono);font-size:11px;color:var(--muted);">{{ "Betald. villkor" if g.lang == "sv" else "Payment" }}</div>
+          <div style="font-weight:600;">{{ c.payment_days }} {{ "dagar" if g.lang == "sv" else "days" }}</div>
+        </div>
+        <div style="display:flex;gap:8px;">
+          <a href="{{ url_for('clients_edit', client_id=c.id) }}" class="btn btn-ghost btn-sm">{{ g.t.edit }}</a>
+          <a href="{{ url_for('projects_new', client_id=c.id) }}" class="btn btn-secondary btn-sm">+ {{ g.t.project }}</a>
+        </div>
+      </div>
+    </div>
+
+    <!-- Projects -->
+    {% if c.projects %}
+    <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border);">
+      <div style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:2px;color:var(--muted);margin-bottom:8px;">
+        {{ "Projekt" if g.lang == "sv" else "Projects" }}
+      </div>
+      {% for p in c.projects if p.active %}
+      <div style="margin-bottom:8px;padding:10px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+          <div>
+            <span style="font-weight:700;font-size:13px;">{{ p.name }}</span>
+            {% if p.start_date %}<span style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-left:8px;">{{ p.start_date }}{% if p.end_date %} – {{ p.end_date }}{% endif %}</span>{% endif %}
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <span style="font-family:var(--mono);font-size:12px;font-weight:700;">{{ p.current_hourly_rate|fmt_amount }} SEK/h</span>
+            <a href="{{ url_for('po_new', project_id=p.id) }}" class="btn btn-ghost btn-sm" style="font-size:11px;">+ PO</a>
+          </div>
+        </div>
+        {% set active_pos = p.purchase_orders | selectattr('active') | list %}
+        {% if active_pos %}
+        <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);display:flex;flex-wrap:wrap;gap:6px;">
+          {% for po in active_pos %}
+          <div style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:3px 8px;font-size:11px;display:flex;align-items:center;gap:8px;">
+            <span style="font-weight:700;">{{ po.po_number or 'PO' }}</span>
+            <span style="font-family:var(--mono);">{{ po.hourly_rate|fmt_amount }} SEK/h</span>
+            {% if po.valid_from %}<span style="color:var(--muted);font-family:var(--mono);font-size:10px;">{{ po.valid_from }}{% if po.valid_to %} – {{ po.valid_to }}{% endif %}</span>{% endif %}
+            <a href="{{ url_for('po_edit', po_id=po.id) }}" style="color:var(--muted);font-size:10px;text-decoration:none;">{{ g.t.edit }}</a>
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+{% else %}
+  <div class="card" style="text-align:center;padding:60px;">
+    <div style="font-size:48px;margin-bottom:16px;opacity:0.3;">◉</div>
+    <p style="color:var(--muted);">{{ "Inga kunder ännu" if g.lang == "sv" else "No clients yet" }}</p>
+    <a href="{{ url_for('clients_new') }}" class="btn btn-primary" style="margin-top:16px;">
+      {{ "Lägg till din första kund" if g.lang == "sv" else "Add your first client" }}
+    </a>
+  </div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% block title %}{{ "Granska utlägg" if g.lang == "sv" else "Review Expense" }}{% endblock %}
+{% block page_title %}{{ "Granska utlägg" if g.lang == "sv" else "Review Expense" }}{% endblock %}
+
+{% block content %}
+<div style="max-width:600px;margin:0 auto;">
+
+  {% if ocr.error %}
+  <div class="flash warning" style="margin-bottom:20px;">
+    {{ "OCR misslyckades – fyll i manuellt" if g.lang == "sv" else "OCR failed – please fill in manually" }}: {{ ocr.error }}
+  </div>
+  {% elif ocr.merchant %}
+  <div class="flash success" style="margin-bottom:20px;">
+    ✓ {{ "Claude Vision extraherade data från kvittot" if g.lang == "sv" else "Claude Vision extracted data from receipt" }}
+  </div>
+  {% endif %}
+
+  <div class="grid-2" style="margin-bottom:20px;align-items:start;">
+    <!-- Receipt preview -->
+    {% if pending.receipt_filename %}
+    <div class="card" style="padding:12px;">
+      <div class="card-title">{{ "Kvitto" if g.lang == "sv" else "Receipt" }}</div>
+      {% set filename = pending.receipt_filename %}
+      {% if filename.endswith('.pdf') %}
+        <div style="text-align:center;padding:40px;color:var(--muted);">
+          <div style="font-size:48px;margin-bottom:8px;">📄</div>
+          <div>{{ filename }}</div>
+        </div>
+      {% else %}
+        <img src="{{ url_for('static', filename='uploads/' + filename) }}"
+             style="width:100%;border-radius:8px;border:1px solid var(--border);"
+             alt="Receipt">
+      {% endif %}
+    </div>
+    {% endif %}
+
+    <!-- OCR extracted data -->
+    <div>
+      <div class="card" style="border-color:var(--accent);">
+        <div class="card-title">{{ "Extraherad data" if g.lang == "sv" else "Extracted Data" }}</div>
+        {% if ocr and ocr.merchant %}
+        <div style="font-size:13px;color:var(--muted);line-height:1.8;font-family:var(--mono);">
+          <div>{{ "Butik" if g.lang == "sv" else "Merchant" }}: <strong style="color:var(--text);">{{ ocr.merchant or "—" }}</strong></div>
+          <div>{{ "Datum" if g.lang == "sv" else "Date" }}: <strong style="color:var(--text);">{{ ocr.date or "—" }}</strong></div>
+          <div>{{ "Total inkl moms" if g.lang == "sv" else "Total incl VAT" }}: <strong style="color:var(--accent);">{{ "%.2f"|format(ocr.amount_incl_vat) if ocr.amount_incl_vat else "—" }} {{ ocr.currency or "SEK" }}</strong></div>
+          <div>{{ "Moms" if g.lang == "sv" else "VAT" }}: <strong style="color:var(--text);">{{ "%.0f"|format(ocr.vat_rate) if ocr.vat_rate else "—" }}%</strong></div>
+        </div>
+        {% else %}
+        <p style="color:var(--muted);font-size:12px;">{{ "Ingen data extraherad" if g.lang == "sv" else "No data extracted" }}</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <!-- Approval form -->
+  <div class="card">
+    <div class="card-title">{{ "Bekräfta detaljer" if g.lang == "sv" else "Confirm Details" }}</div>
+
+    <form method="POST" action="{{ url_for('expenses_review') }}">
+      <div class="grid-2">
+        <div class="form-group">
+          <label class="form-label">{{ "Butik / Leverantör" if g.lang == "sv" else "Merchant / Supplier" }}</label>
+          <input type="text" name="merchant" class="form-control" value="{{ ocr.merchant or '' }}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">{{ "Datum" if g.lang == "sv" else "Date" }}</label>
+          <input type="date" name="expense_date" class="form-control"
+                 value="{{ ocr.date or '' }}" required>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">{{ "Beskrivning" if g.lang == "sv" else "Description" }}</label>
+        <input type="text" name="description" class="form-control"
+               value="{{ ocr.description or '' }}"
+               placeholder="{{ 'Vad köptes?' if g.lang == 'sv' else 'What was purchased?' }}">
+      </div>
+
+      <div class="grid-2">
+        <div class="form-group">
+          <label class="form-label">{{ "Belopp inkl. moms (SEK)" if g.lang == "sv" else "Amount incl. VAT (SEK)" }}</label>
+          <input type="number" name="amount_incl_vat" class="form-control"
+                 value="{{ ocr.amount_incl_vat or '' }}"
+                 step="0.01" min="0" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">{{ "Momssats" if g.lang == "sv" else "VAT rate" }}</label>
+          <select name="vat_rate" class="form-control">
+            <option value="25" {% if not ocr.vat_rate or ocr.vat_rate == 25 %}selected{% endif %}>25%</option>
+            <option value="12" {% if ocr.vat_rate == 12 %}selected{% endif %}>12%</option>
+            <option value="6" {% if ocr.vat_rate == 6 %}selected{% endif %}>6%</option>
+            <option value="0" {% if ocr.vat_rate == 0 %}selected{% endif %}>0%</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="form-group">
+          <label class="form-label">{{ "Projekt (valfritt)" if g.lang == "sv" else "Project (optional)" }}</label>
+          <select name="project_id" class="form-control">
+            <option value="">— {{ "Inget projekt" if g.lang == "sv" else "No project" }} —</option>
+            {% for p in projects %}
+            <option value="{{ p.id }}">{{ p.client.name }} / {{ p.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">{{ "Betalat av" if g.lang == "sv" else "Paid by" }}</label>
+          <select name="paid_by" class="form-control">
+            <option value="personal">{{ "Privat (utlägg)" if g.lang == "sv" else "Personal (reimburse)" }}</option>
+            <option value="company">{{ "Företagskort" if g.lang == "sv" else "Company card" }}</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">{{ "Debiterbart till kund" if g.lang == "sv" else "Billable to client" }}</label>
+        <div style="display:flex;gap:12px;">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px;">
+            <input type="radio" name="billable" value="1" checked style="accent-color:var(--accent);">
+            {{ "Ja, fakturera kunden" if g.lang == "sv" else "Yes, bill to client" }}
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px;">
+            <input type="radio" name="billable" value="0" style="accent-color:var(--accent);">
+            {{ "Nej, internt" if g.lang == "sv" else "No, internal cost" }}
+          </label>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:10px;margin-top:8px;">
+        <button type="submit" name="action" value="approve" class="btn btn-success" style="flex:1;padding:14px;font-size:15px;">
+          ✓ {{ "Godkänn & spara" if g.lang == "sv" else "Approve & save" }}
+        </button>
+        <button type="submit" name="action" value="discard" class="btn btn-danger" onclick="return confirm('{{ 'Kassera utlägget?' if g.lang == 'sv' else 'Discard this expense?' }}')">
+          {{ "Kassera" if g.lang == "sv" else "Discard" }}
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

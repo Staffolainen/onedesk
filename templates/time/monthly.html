@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}{{ "Månadsrapport" if g.lang == "sv" else "Monthly Report" }}{% endblock %}
+{% block page_title %}{{ "Månadsrapport" if g.lang == "sv" else "Monthly Report" }}{% endblock %}
+
+{% block topbar_actions %}
+  <a href="{{ url_for('time_index') }}" class="btn btn-ghost btn-sm">← {{ "Veckovy" if g.lang == "sv" else "Week view" }}</a>
+{% endblock %}
+
+{% block content %}
+{% set month_names_sv = ["Januari","Februari","Mars","April","Maj","Juni","Juli","Augusti","September","Oktober","November","December"] %}
+{% set month_names_en = ["January","February","March","April","May","June","July","August","September","October","November","December"] %}
+{% set month_names = month_names_sv if g.lang == "sv" else month_names_en %}
+
+<div style="display:flex;align-items:center;gap:16px;margin-bottom:28px;">
+  <a href="{{ url_for('time_monthly', year=prev_month.year, month=prev_month.month) }}" class="btn btn-ghost btn-sm">←</a>
+  <h2 style="font-size:22px;font-weight:800;">{{ month_names[month-1] }} {{ year }}</h2>
+  <a href="{{ url_for('time_monthly', year=next_month.year, month=next_month.month) }}" class="btn btn-ghost btn-sm">→</a>
+</div>
+
+{% if by_project %}
+  {% for pid, group in by_project.items() %}
+  <div class="card" style="margin-bottom:16px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <div>
+        <div style="font-size:11px;font-family:var(--mono);color:var(--accent);text-transform:uppercase;letter-spacing:1px;margin-bottom:2px;">
+          {{ group.project.client.name }}
+        </div>
+        <div style="font-size:17px;font-weight:700;">{{ group.project.name }}</div>
+      </div>
+      <div style="text-align:right;">
+        <div style="font-family:var(--mono);font-size:22px;font-weight:700;">{{ "%.2f"|format(group.total) }} h</div>
+        <div style="font-family:var(--mono);font-size:11px;color:var(--muted);">
+          × {{ "%.0f"|format(group.project.client.hourly_rate) }} =
+          <strong style="color:var(--text);">{{ (group.total * group.project.client.hourly_rate)|round|int|fmt_amount }} SEK</strong>
+        </div>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>{{ g.t.date }}</th>
+            <th>{{ g.t.description }}</th>
+            <th class="right">h</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for e in group.entries %}
+          <tr>
+            <td class="mono" style="white-space:nowrap;">{{ e.entry_date.strftime('%a %d') }}</td>
+            <td style="color:{% if e.description %}var(--text){% else %}var(--muted){% endif %};">{{ e.description or "—" }}</td>
+            <td class="right mono" style="font-weight:700;">{{ "%.2f"|format(e.hours) }}</td>
+            <td class="right">
+              {% if not e.invoiced %}
+              <form method="POST" action="{{ url_for('time_delete', entry_id=e.id) }}" style="display:inline;">
+                <button type="submit" class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:11px;" onclick="return confirm('{{ 'Ta bort?' if g.lang == 'sv' else 'Delete?' }}')">✕</button>
+              </form>
+              {% else %}
+              <span class="badge badge-invoiced">{{ g.t.invoiced if g.t.invoiced else "inv" }}</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endfor %}
+
+  <!-- Total summary -->
+  {% set grand_total_h = namespace(v=0) %}
+  {% set grand_total_sek = namespace(v=0) %}
+  {% for pid, group in by_project.items() %}
+    {% set grand_total_h.v = grand_total_h.v + group.total %}
+    {% set grand_total_sek.v = grand_total_sek.v + (group.total * group.project.client.hourly_rate) %}
+  {% endfor %}
+
+  <div class="card" style="border-color:var(--accent);background:rgba(255,71,87,0.04);">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <div style="font-weight:800;font-size:16px;">{{ "Totalt" if g.lang == "sv" else "Total" }}</div>
+      <div style="text-align:right;">
+        <div style="font-family:var(--mono);font-size:24px;font-weight:800;color:var(--accent);">{{ grand_total_sek.v|round|int|fmt_amount }} SEK</div>
+        <div style="font-family:var(--mono);font-size:12px;color:var(--muted);">{{ "%.2f"|format(grand_total_h.v) }} h exkl. moms</div>
+      </div>
+    </div>
+    <div style="margin-top:16px;">
+      <a href="{{ url_for('invoices_new') }}" class="btn btn-primary">
+        {{ "Skapa faktura för denna period" if g.lang == "sv" else "Create invoice for this period" }}
+      </a>
+    </div>
+  </div>
+{% else %}
+  <div class="card" style="text-align:center;padding:60px;">
+    <div style="font-size:40px;margin-bottom:16px;opacity:0.3;">◷</div>
+    <p style="color:var(--muted);">{{ "Inga timmar loggade denna månad" if g.lang == "sv" else "No hours logged this month" }}</p>
+    <a href="{{ url_for('time_index') }}" class="btn btn-primary" style="margin-top:16px;">
+      {{ "Logga tid" if g.lang == "sv" else "Log time" }}
+    </a>
+  </div>
+{% endif %}
+{% endblock %}

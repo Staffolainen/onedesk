@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}{% if client %}{{ "Redigera kund" if g.lang == "sv" else "Edit Client" }}{% else %}{{ "Ny kund" if g.lang == "sv" else "New Client" }}{% endif %}{% endblock %}
+{% block page_title %}{% if client %}{{ "Redigera" if g.lang == "sv" else "Edit" }}: {{ client.name }}{% else %}{{ "Ny kund" if g.lang == "sv" else "New Client" }}{% endif %}{% endblock %}
+
+{% block topbar_actions %}
+  <a href="{{ url_for('clients_list') }}" class="btn btn-ghost btn-sm">← {{ g.t.back }}</a>
+{% endblock %}
+
+{% block content %}
+<div style="max-width:600px;margin:0 auto;">
+  <div class="card">
+    <form method="POST" action="{{ url_for('clients_edit', client_id=client.id) if client else url_for('clients_new') }}">
+
+      <div class="form-group">
+        <label class="form-label">{{ "Företagsnamn" if g.lang == "sv" else "Company name" }} *</label>
+        <input type="text" name="name" class="form-control" value="{{ client.name if client else '' }}" required autofocus>
+      </div>
+
+      <div class="grid-2">
+        <div class="form-group">
+          <label class="form-label">{{ "Organisationsnummer" if g.lang == "sv" else "Org. number" }}</label>
+          <input type="text" name="org_nr" class="form-control" value="{{ client.org_nr if client else '' }}" placeholder="556xxx-xxxx">
+        </div>
+        <div class="form-group">
+          <label class="form-label">VAT-nummer</label>
+          <input type="text" name="vat_nr" class="form-control" value="{{ client.vat_nr if client else '' }}" placeholder="SE556xxxxxxxxx01">
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="form-group">
+          <label class="form-label">{{ "Kontaktperson" if g.lang == "sv" else "Contact name" }}</label>
+          <input type="text" name="contact_name" class="form-control" value="{{ client.contact_name if client else '' }}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">{{ "E-post" if g.lang == "sv" else "Email" }}</label>
+          <input type="email" name="contact_email" class="form-control" value="{{ client.contact_email if client else '' }}">
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">{{ "Adress" if g.lang == "sv" else "Address" }}</label>
+        <textarea name="address" class="form-control" rows="2" placeholder="{{ 'Gatuadress\nPostnummer Stad' if g.lang == 'sv' else 'Street address\nZIP City' }}">{{ client.address if client else '' }}</textarea>
+      </div>
+
+      <div class="grid-2">
+        <div class="form-group">
+          <label class="form-label">{{ "Timpris (SEK)" if g.lang == "sv" else "Hourly rate (SEK)" }} *</label>
+          <input type="number" name="hourly_rate" class="form-control"
+                 value="{{ client.hourly_rate if client else g.config.DEFAULT_HOURLY_RATE }}"
+                 step="1" min="0" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">{{ "Betalningsvillkor (dagar)" if g.lang == "sv" else "Payment terms (days)" }}</label>
+          <input type="number" name="payment_days" class="form-control"
+                 value="{{ client.payment_days if client else 30 }}"
+                 min="0" max="90">
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">{{ "Fakturans språk" if g.lang == "sv" else "Invoice language" }}</label>
+        <select name="invoice_language" class="form-control">
+          <option value="sv" {% if not client or client.invoice_language == 'sv' %}selected{% endif %}>Svenska</option>
+          <option value="en" {% if client and client.invoice_language == 'en' %}selected{% endif %}>English</option>
+        </select>
+      </div>
+
+      <div style="display:flex;gap:10px;margin-top:8px;">
+        <button type="submit" class="btn btn-primary" style="flex:1;padding:13px;">
+          {{ "Spara kund" if g.lang == "sv" else "Save client" }}
+        </button>
+        <a href="{{ url_for('clients_list') }}" class="btn btn-ghost" style="padding:13px 20px;">
+          {{ g.t.cancel }}
+        </a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

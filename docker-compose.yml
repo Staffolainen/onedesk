@@ -1,0 +1,15 @@
+services:
+  onedesk:
+    build: .
+    ports:
+      - "5000:5000"
+    env_file:
+      - .env
+    volumes:
+      - db_data:/app/instance
+      - uploads:/app/static/uploads
+    restart: unless-stopped
+
+volumes:
+  db_data:
+  uploads:

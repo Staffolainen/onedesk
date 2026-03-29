@@ -1,0 +1,23 @@
+# Secrets
+.env
+
+# Database
+instance/
+*.db
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# Uploads (user data, not code)
+static/uploads/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}{{ g.t.expenses }}{% endblock %}
+{% block page_title %}{{ g.t.expenses }}{% endblock %}
+
+{% block topbar_actions %}
+  <a href="{{ url_for('expenses_capture') }}" class="btn btn-primary btn-sm">
+    📷 + {{ "Nytt utlägg" if g.lang == "sv" else "New expense" }}
+  </a>
+{% endblock %}
+
+{% block content %}
+<!-- Filter tabs -->
+<div style="display:flex;gap:8px;margin-bottom:20px;">
+  {% for s, label in [('', 'Alla/All'), ('pending', 'Väntande/Pending'), ('approved', 'Godkänd/Approved'), ('invoiced', 'Fakturerad/Invoiced')] %}
+  <a href="{{ url_for('expenses_index', status=s) }}"
+     class="btn btn-sm {% if status_filter == s %}btn-primary{% else %}btn-ghost{% endif %}">
+    {{ label.split('/')[0 if g.lang == 'sv' else 1] }}
+  </a>
+  {% endfor %}
+</div>
+
+{% if expenses %}
+<div class="card" style="padding:0;">
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>{{ g.t.date }}</th>
+          <th>{{ "Butik" if g.lang == "sv" else "Merchant" }}</th>
+          <th>{{ g.t.description }}</th>
+          <th>{{ g.t.project }}</th>
+          <th class="right">{{ "Inkl. moms" if g.lang == "sv" else "Incl. VAT" }}</th>
+          <th class="right">{{ "Moms" if g.lang == "sv" else "VAT" }}</th>
+          <th>{{ g.t.status }}</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for exp in expenses %}
+        <tr>
+          <td class="mono" style="white-space:nowrap;">{{ exp.expense_date }}</td>
+          <td style="font-weight:600;">{{ exp.merchant or "—" }}</td>
+          <td style="color:var(--muted);font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+            {{ exp.description or "—" }}
+          </td>
+          <td style="font-size:12px;">
+            {% if exp.project %}
+              <span style="color:var(--accent);">{{ exp.project.client.name }}</span><br>
+              {{ exp.project.name }}
+            {% else %}—{% endif %}
+          </td>
+          <td class="right mono" style="font-weight:700;">{{ exp.amount_incl_vat|fmt_amount }}</td>
+          <td class="right mono" style="color:var(--muted);font-size:12px;">{{ exp.vat_amount|fmt_amount }}</td>
+          <td>
+            <span class="badge badge-{{ exp.status }}">
+              {% if exp.status == "pending" %}{{ "Väntande" if g.lang == "sv" else "Pending" }}
+              {% elif exp.status == "approved" %}{{ "Godkänd" if g.lang == "sv" else "Approved" }}
+              {% elif exp.status == "invoiced" %}{{ "Fakturerad" if g.lang == "sv" else "Invoiced" }}
+              {% else %}{{ exp.status }}{% endif %}
+            </span>
+            {% if exp.billable %}
+            <span class="badge badge-billable" style="margin-left:4px;">{{ g.t.billable }}</span>
+            {% else %}
+            <span class="badge badge-internal" style="margin-left:4px;">{{ g.t.internal }}</span>
+            {% endif %}
+          </td>
+          <td class="right">
+            {% if exp.receipt_filename %}
+            <a href="{{ url_for('static', filename='uploads/' + exp.receipt_filename) }}"
+               target="_blank" class="btn btn-ghost btn-sm" style="font-size:11px;">📎</a>
+            {% endif %}
+            {% if exp.status != "invoiced" %}
+            <form method="POST" action="{{ url_for('expenses_delete', exp_id=exp.id) }}" style="display:inline;">
+              <button type="submit" class="btn btn-ghost btn-sm" style="font-size:11px;color:var(--muted);"
+                onclick="return confirm('{{ 'Ta bort?' if g.lang == 'sv' else 'Delete?' }}')">✕</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% else %}
+<div class="card" style="text-align:center;padding:60px;">
+  <div style="font-size:48px;margin-bottom:16px;opacity:0.3;">◎</div>
+  <p style="color:var(--muted);">{{ "Inga utlägg" if g.lang == "sv" else "No expenses" }}</p>
+  <a href="{{ url_for('expenses_capture') }}" class="btn btn-primary" style="margin-top:16px;">
+    📷 {{ "Fotografera kvitto" if g.lang == "sv" else "Capture receipt" }}
+  </a>
+</div>
+{% endif %}
+{% endblock %}

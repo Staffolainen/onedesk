@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% block title %}{{ g.t.dashboard }}{% endblock %}
+{% block page_title %}{{ g.t.dashboard }}{% endblock %}
+
+{% block topbar_actions %}
+  <a href="{{ url_for('time_index') }}" class="btn btn-secondary btn-sm">+ {{ "Tid" if g.lang == "sv" else "Time" }}</a>
+  <a href="{{ url_for('expenses_capture') }}" class="btn btn-primary btn-sm">+ {{ g.t.expenses }}</a>
+{% endblock %}
+
+{% block content %}
+<div class="grid-4" style="margin-bottom:28px;">
+  <div class="stat-card">
+    <div class="stat-label">{{ "Timmar denna månad" if g.lang == "sv" else "Hours this month" }}</div>
+    <div class="stat-value" style="color:var(--accent);">
+      {{ "%.1f"|format(hours_by_client.values()|sum) if hours_by_client else "0.0" }}
+    </div>
+    <div class="stat-sub">h</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">{{ "Aktiva kunder" if g.lang == "sv" else "Active clients" }}</div>
+    <div class="stat-value">{{ hours_by_client|length }}</div>
+    <div class="stat-sub">{{ "denna månad" if g.lang == "sv" else "this month" }}</div>
+  </div>
+  <div class="stat-card" {% if pending_expenses > 0 %}style="border-color:var(--warning);"{% endif %}>
+    <div class="stat-label">{{ "Väntande utlägg" if g.lang == "sv" else "Pending expenses" }}</div>
+    <div class="stat-value" style="{% if pending_expenses > 0 %}color:var(--warning){% endif %}">
+      {{ pending_expenses }}
+    </div>
+    <div class="stat-sub"><a href="{{ url_for('expenses_index', status='pending') }}" style="color:inherit;">{{ "granska" if g.lang == "sv" else "review" }} →</a></div>
+  </div>
+  <div class="stat-card" {% if open_invoices %}style="border-color:var(--accent);"{% endif %}>
+    <div class="stat-label">{{ "Öppna fakturor" if g.lang == "sv" else "Open invoices" }}</div>
+    <div class="stat-value" style="{% if open_invoices %}color:var(--accent){% endif %}">
+      {{ open_invoices|length }}
+    </div>
+    <div class="stat-sub"><a href="{{ url_for('invoices_list') }}" style="color:inherit;">{{ "visa" if g.lang == "sv" else "view" }} →</a></div>
+  </div>
+</div>
+
+<div class="grid-2">
+  <!-- Hours by client this month -->
+  <div class="card">
+    <div class="card-title">{{ "Timmar per kund – denna månad" if g.lang == "sv" else "Hours by client – this month" }}</div>
+    {% if hours_by_client %}
+      {% set max_hours = hours_by_client.values()|max %}
+      {% for cname, h in hours_by_client.items() %}
+      <div style="margin-bottom:14px;">
+        <div style="display:flex;justify-content:space-between;margin-bottom:5px;">
+          <span style="font-size:13px;font-weight:600;">{{ cname }}</span>
+          <span style="font-family:var(--mono);font-size:12px;color:var(--muted);">{{ "%.1f"|format(h) }} h</span>
+        </div>
+        <div style="height:6px;background:var(--surface2);border-radius:3px;">
+          <div style="height:100%;width:{{ (h/max_hours*100)|round }}%;background:var(--accent);border-radius:3px;transition:width 0.5s;"></div>
+        </div>
+      </div>
+      {% endfor %}
+    {% else %}
+      <p style="color:var(--muted);font-size:13px;">{{ "Inga timmar loggade ännu" if g.lang == "sv" else "No hours logged yet" }}</p>
+    {% endif %}
+    <div style="margin-top:16px;">
+      <a href="{{ url_for('time_index') }}" class="btn btn-secondary btn-sm">
+        {{ "Logga tid" if g.lang == "sv" else "Log time" }}
+      </a>
+      <a href="{{ url_for('time_monthly') }}" class="btn btn-ghost btn-sm" style="margin-left:8px;">
+        {{ "Månadsvy" if g.lang == "sv" else "Monthly view" }}
+      </a>
+    </div>
+  </div>
+
+  <!-- Open invoices -->
+  <div class="card">
+    <div class="card-title">{{ "Öppna fakturor" if g.lang == "sv" else "Open invoices" }}</div>
+    {% if open_invoices %}
+      {% for inv in open_invoices %}
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border);">
+        <div>
+          <div style="font-weight:700;font-size:13px;">{{ inv.client.name }}</div>
+          <div style="font-family:var(--mono);font-size:10px;color:var(--muted);">
+            {{ inv.invoice_number }} · {{ inv.period_start }}
+          </div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-weight:800;font-size:14px;">{{ inv.total|fmt_amount }} SEK</div>
+          <span class="badge badge-{{ inv.status }}">{{ inv.status }}</span>
+        </div>
+      </div>
+      {% endfor %}
+    {% else %}
+      <p style="color:var(--muted);font-size:13px;">{{ "Inga öppna fakturor" if g.lang == "sv" else "No open invoices" }}</p>
+    {% endif %}
+    <div style="margin-top:16px;">
+      <a href="{{ url_for('invoices_new') }}" class="btn btn-primary btn-sm">
+        {{ "Skapa faktura" if g.lang == "sv" else "Create invoice" }}
+      </a>
+    </div>
+  </div>
+</div>
+
+<!-- Recent time entries -->
+<div class="card">
+  <div class="card-title">{{ "Senaste tidsposter" if g.lang == "sv" else "Recent time entries" }}</div>
+  {% if recent_entries %}
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>{{ g.t.date }}</th>
+          <th>{{ g.t.client }} / {{ g.t.project }}</th>
+          <th>{{ g.t.description }}</th>
+          <th class="right">{{ g.t.hours }}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for e in recent_entries %}
+        <tr>
+          <td class="mono">{{ e.entry_date }}</td>
+          <td>
+            <span style="color:var(--accent);font-size:12px;">{{ e.project.client.name }}</span><br>
+            <span style="font-size:13px;">{{ e.project.name }}</span>
+          </td>
+          <td style="color:var(--muted);font-size:12px;">{{ e.description or "—" }}</td>
+          <td class="right mono" style="font-weight:700;">{{ "%.2f"|format(e.hours) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    <p style="color:var(--muted);font-size:13px;">{{ "Inga poster ännu" if g.lang == "sv" else "No entries yet" }}</p>
+  {% endif %}
+</div>
+{% endblock %}

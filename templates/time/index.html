@@ -1,0 +1,381 @@
+{% extends "base.html" %}
+{% block title %}{{ g.t.time }}{% endblock %}
+{% block page_title %}{{ g.t.time }}{% endblock %}
+
+{% block topbar_actions %}
+  <a href="{{ url_for('time_monthly') }}" class="btn btn-ghost btn-sm">
+    {{ "Månadsvy" if g.lang == "sv" else "Monthly" }}
+  </a>
+{% endblock %}
+
+{% block head %}
+<style>
+  .week-nav {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+  }
+  .week-label {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+    flex: 1;
+    text-align: center;
+  }
+  .week-total {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  /* Matrix table */
+  .time-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  .time-table th {
+    font-family: var(--mono);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: var(--muted);
+    padding: 10px 12px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+    background: var(--surface);
+  }
+  .time-table th.day-col {
+    text-align: center;
+    min-width: 72px;
+  }
+  .time-table th.today-col {
+    color: var(--accent);
+  }
+  .time-table th.weekend-col {
+    opacity: 0.5;
+  }
+  .time-table td.day-col.weekend-col {
+    background: rgba(0,0,0,0.08);
+  }
+  .time-table td {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+  .time-table td.day-col {
+    text-align: center;
+    padding: 6px 4px;
+  }
+  .time-table tr:last-child td {
+    border-bottom: none;
+  }
+  .time-table tr.data-row:hover td {
+    background: var(--surface2);
+  }
+  .time-table tr.new-row td {
+    background: rgba(74,130,168,0.04);
+    border-top: 1px solid var(--border);
+  }
+  .time-table .project-cell .client {
+    font-size: 10px;
+    color: var(--accent);
+    font-family: var(--mono);
+    letter-spacing: 0.5px;
+    margin-bottom: 2px;
+  }
+  .time-table .project-cell .proj {
+    font-weight: 600;
+    font-size: 13px;
+  }
+  .time-type-badge {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 2px 7px;
+    white-space: nowrap;
+  }
+  .row-total {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 700;
+    text-align: right;
+    padding-right: 12px;
+    white-space: nowrap;
+    color: var(--text);
+  }
+
+  /* Cell inputs */
+  .cell-input {
+    width: 60px;
+    padding: 6px 4px;
+    text-align: center;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 14px;
+    font-weight: 600;
+    transition: all 0.12s;
+    -moz-appearance: textfield;
+  }
+  .cell-input::-webkit-outer-spin-button,
+  .cell-input::-webkit-inner-spin-button { -webkit-appearance: none; }
+  .cell-input::placeholder { color: var(--border); font-weight: 400; }
+  .cell-input:hover:not([readonly]) {
+    border-color: var(--border);
+    background: var(--surface2);
+  }
+  .cell-input:focus {
+    outline: none;
+    border-color: var(--accent);
+    background: var(--surface2);
+    box-shadow: 0 0 0 3px rgba(74,130,168,0.12);
+  }
+  .cell-input[readonly] {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  .cell-input.today-input:focus {
+    box-shadow: 0 0 0 3px rgba(74,130,168,0.18);
+  }
+
+  /* New-row selects */
+  .new-row .form-control {
+    padding: 6px 10px;
+    font-size: 12px;
+    background: var(--surface2);
+  }
+
+  .save-btn {
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+  tr:hover .save-btn,
+  tr:focus-within .save-btn {
+    opacity: 1;
+  }
+  tr.new-row .save-btn {
+    opacity: 1;
+  }
+
+  /* Comment sub-row */
+  .comment-row td {
+    padding: 0 12px 5px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .comment-row + tr td { border-top: none; }
+  .comment-input {
+    width: 100%;
+    padding: 4px 8px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: var(--muted);
+    font-family: inherit;
+    font-size: 11px;
+    transition: all 0.12s;
+  }
+  .comment-input:hover:not([placeholder=""]){
+    border-color: var(--border);
+    color: var(--text);
+  }
+  .comment-input:focus {
+    outline: none;
+    border-color: var(--accent);
+    background: var(--surface2);
+    color: var(--text);
+    box-shadow: 0 0 0 3px rgba(74,130,168,0.1);
+  }
+  .comment-input::placeholder { color: var(--border); }
+</style>
+{% endblock %}
+
+{% block content %}
+
+{% set day_names_sv = ["Mån", "Tis", "Ons", "Tor", "Fre", "Lör", "Sön"] %}
+{% set day_names_en = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] %}
+{% set day_names = day_names_sv if g.lang == "sv" else day_names_en %}
+
+<!-- Week navigation -->
+<div class="week-nav">
+  <a href="{{ url_for('time_index', week=prev_week) }}" class="btn btn-ghost btn-sm">←</a>
+  <div class="week-label">
+    {{ week_start.strftime('%d %b') }} – {{ week_end.strftime('%d %b %Y') }}
+  </div>
+  <a href="{{ url_for('time_index', week=next_week) }}" class="btn btn-ghost btn-sm">→</a>
+  {% if week_start != current_week_start %}
+    <a href="{{ url_for('time_index') }}" class="btn btn-secondary btn-sm">
+      {{ "Denna vecka" if g.lang == "sv" else "This week" }}
+    </a>
+  {% endif %}
+  <div class="week-total">{{ "%.1f"|format(total_hours) }} h</div>
+</div>
+
+<!-- Per-row forms (HTML5 form attribute: forms live outside the table) -->
+{% for row in matrix_rows %}
+<form id="rf-{{ loop.index0 }}" method="POST" action="{{ url_for('time_save_row') }}">
+  <input type="hidden" name="week" value="{{ week_start.isoformat() }}">
+  <input type="hidden" name="project_id" value="{{ row.project.id }}">
+  {% if row.hour_type_id %}
+  <input type="hidden" name="hour_type_id" value="{{ row.hour_type_id }}">
+  {% else %}
+  <input type="hidden" name="time_type" value="{{ row.time_type }}">
+  {% endif %}
+</form>
+{% endfor %}
+<form id="rf-new" method="POST" action="{{ url_for('time_save_row') }}">
+  <input type="hidden" name="week" value="{{ week_start.isoformat() }}">
+</form>
+
+<div class="card" style="padding:0;overflow:hidden;">
+  <table class="time-table">
+    <thead>
+      <tr>
+        <th style="min-width:180px;">{{ "Kund / Projekt" if g.lang == "sv" else "Client / Project" }}</th>
+        <th style="min-width:90px;">{{ "Tidtyp" if g.lang == "sv" else "Type" }}</th>
+        {% for d in work_dates %}
+        <th class="day-col {% if d == today %}today-col{% elif loop.index0 >= 5 %}weekend-col{% endif %}">
+          {{ day_names[loop.index0] }}<br>
+          <span style="font-size:8px;font-weight:400;opacity:0.7;">{{ d.strftime('%d/%m') }}</span>
+        </th>
+        {% endfor %}
+        <th style="text-align:right;min-width:52px;">Tot</th>
+        <th style="width:36px;"></th>
+      </tr>
+    </thead>
+    <tbody>
+
+      {% for row in matrix_rows %}
+      {% set ri = loop.index0 %}
+      <tr class="data-row">
+        <td class="project-cell">
+          <div class="client">{{ row.project.client.name }}</div>
+          <div class="proj">{{ row.project.name }}</div>
+        </td>
+        <td>
+          <span class="time-type-badge">{{ row.display_type }}</span>
+        </td>
+        {% set row_total = namespace(h=0) %}
+        {% for d in work_dates %}
+          {% set entry = row.days.get(d) %}
+          {% if entry %}{% set row_total.h = row_total.h + entry.hours %}{% endif %}
+          <td class="day-col{% if loop.index0 >= 5 %} weekend-col{% endif %}">
+            <input form="rf-{{ ri }}"
+                   type="number"
+                   name="hours_{{ d.isoformat() }}"
+                   value="{{ entry.hours|int if entry and entry.hours == entry.hours|int else '%.2g'|format(entry.hours) if entry else '' }}"
+                   step="0.25" min="0" max="24"
+                   placeholder="–"
+                   {% if entry and entry.invoiced %}readonly title="{{ 'Fakturerad' if g.lang == 'sv' else 'Invoiced' }}"{% endif %}
+                   class="cell-input{% if d == today %} today-input{% endif %}">
+          </td>
+        {% endfor %}
+        <td class="row-total">
+          {% if row_total.h > 0 %}{{ "%.1f"|format(row_total.h) }}{% else %}<span style="color:var(--border);">–</span>{% endif %}
+        </td>
+        <td style="padding:4px 8px;">
+          <button form="rf-{{ ri }}" type="submit" class="btn btn-ghost btn-sm save-btn" title="{{ 'Spara' if g.lang == 'sv' else 'Save' }}">↵</button>
+        </td>
+      </tr>
+      <tr class="comment-row">
+        <td colspan="{{ work_dates|length + 4 }}">
+          <input form="rf-{{ ri }}" type="text" name="description"
+                 value="{{ row.comment }}"
+                 placeholder="{{ 'Kommentar…' if g.lang == 'sv' else 'Comment…' }}"
+                 class="comment-input">
+        </td>
+      </tr>
+      {% endfor %}
+
+      <!-- Add new row -->
+      <tr class="new-row">
+        <td>
+          <select form="rf-new" name="project_id" id="new-project-sel" class="form-control" required>
+            <option value="">{{ "Välj projekt…" if g.lang == "sv" else "Select project…" }}</option>
+            {% for p in projects %}
+            <option value="{{ p.id }}">{{ p.client.name }} / {{ p.name }}</option>
+            {% endfor %}
+          </select>
+        </td>
+        <td>
+          <select form="rf-new" name="type_key" id="new-type-sel" class="form-control">
+            <option value="">–</option>
+          </select>
+        </td>
+        {% for d in work_dates %}
+        <td class="day-col{% if loop.index0 >= 5 %} weekend-col{% endif %}">
+          <input form="rf-new" type="number" name="hours_{{ d.isoformat() }}"
+                 step="0.25" min="0" max="24" placeholder="–"
+                 class="cell-input{% if d == today %} today-input{% endif %}">
+        </td>
+        {% endfor %}
+        <td></td>
+        <td style="padding:4px 8px;">
+          <button form="rf-new" type="submit" class="btn btn-primary btn-sm save-btn">+</button>
+        </td>
+      </tr>
+
+    </tbody>
+  </table>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+const hourTypesByProject = {{ hour_types_map_json | safe }};
+const INTERNAL_TYPES = [
+  { key: "it_Sjuk",     name: "Sjuk" },
+  { key: "it_Semester", name: "Semester" },
+  { key: "it_VAB",      name: "VAB" },
+];
+
+function buildTypeDropdown(projectId) {
+  const sel = document.getElementById("new-type-sel");
+  sel.innerHTML = "";
+  const poTypes = hourTypesByProject[projectId] || [];
+
+  if (poTypes.length > 0) {
+    const grp = document.createElement("optgroup");
+    grp.label = "{{ 'PO-typer' if g.lang == 'sv' else 'PO types' }}";
+    poTypes.forEach(t => {
+      const opt = document.createElement("option");
+      opt.value = t.key;
+      opt.textContent = t.name;
+      grp.appendChild(opt);
+    });
+    sel.appendChild(grp);
+  } else if (projectId) {
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.disabled = true;
+    opt.textContent = "{{ '– inget aktivt PO –' if g.lang == 'sv' else '– no active PO –' }}";
+    sel.appendChild(opt);
+  }
+
+  const igrp = document.createElement("optgroup");
+  igrp.label = "{{ 'Internt (ej mot PO)' if g.lang == 'sv' else 'Internal (not billed to PO)' }}";
+  INTERNAL_TYPES.forEach(t => {
+    const opt = document.createElement("option");
+    opt.value = t.key;
+    opt.textContent = t.name;
+    igrp.appendChild(opt);
+  });
+  sel.appendChild(igrp);
+}
+
+const projSel = document.getElementById("new-project-sel");
+projSel.addEventListener("change", () => buildTypeDropdown(projSel.value));
+buildTypeDropdown(projSel.value);
+</script>
+{% endblock %}

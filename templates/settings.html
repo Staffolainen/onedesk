@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}{{ g.t.settings }}{% endblock %}
+{% block page_title %}{{ g.t.settings }}{% endblock %}
+
+{% block content %}
+<div style="max-width:640px;margin:0 auto;">
+
+  <!-- Fortnox connection -->
+  <div class="card" style="margin-bottom:16px;{% if fortnox_connected %}border-color:var(--success){% else %}border-color:var(--warning){% endif %}">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+      <div>
+        <div style="font-size:16px;font-weight:800;margin-bottom:4px;">Fortnox</div>
+        <div style="font-size:12px;color:var(--muted);">
+          {% if fortnox_connected %}
+            <span style="color:var(--success);">✓ {{ "Ansluten" if g.lang == "sv" else "Connected" }}</span>
+            — {{ "API-integration aktiv" if g.lang == "sv" else "API integration active" }}
+          {% else %}
+            <span style="color:var(--warning);">⚠ {{ "Ej ansluten" if g.lang == "sv" else "Not connected" }}</span>
+            — {{ "Klicka för att ansluta via OAuth" if g.lang == "sv" else "Click to connect via OAuth" }}
+          {% endif %}
+        </div>
+      </div>
+      <a href="{{ url_for('fortnox_connect') }}" class="btn {% if fortnox_connected %}btn-ghost{% else %}btn-primary{% endif %} btn-sm">
+        {{ "Återanslut" if fortnox_connected else "Anslut Fortnox" if g.lang == "sv" else "Connect Fortnox" }}
+      </a>
+    </div>
+  </div>
+
+  <!-- Company info (read from .env) -->
+  <div class="card" style="margin-bottom:16px;">
+    <div class="card-title">{{ "Företagsinformation" if g.lang == "sv" else "Company information" }}</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:16px;">
+      {{ "Redigeras i .env-filen och kräver omstart av servern." if g.lang == "sv" else "Edit in the .env file, requires server restart." }}
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:13px;">
+      {% for label, val in [
+        ('Företag / Company', g.config.COMPANY_NAME),
+        ('Org.nr', g.config.COMPANY_ORG_NR),
+        ('VAT-nr', g.config.COMPANY_VAT_NR),
+        ('E-post / Email', g.config.COMPANY_EMAIL),
+        ('Telefon / Phone', g.config.COMPANY_PHONE),
+        ('Bankgiro', g.config.COMPANY_BANKGIRO),
+      ] %}
+      <div>
+        <div style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);">{{ label }}</div>
+        <div style="font-weight:600;">{{ val or '—' }}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <!-- Setup guide -->
+  <div class="card">
+    <div class="card-title">{{ "Kom igång" if g.lang == "sv" else "Getting started" }}</div>
+    <div style="font-size:13px;line-height:1.9;color:var(--muted);">
+      <div style="margin-bottom:12px;">
+        <strong style="color:var(--text);">1. {{ "Fortnox API" }}</strong><br>
+        {{ "Gå till Fortnox → Inställningar → API-anslutningar → Skapa ny integration." if g.lang == "sv" else "In Fortnox → Settings → API connections → Create new integration." }}<br>
+        {{ "Kopiera Client ID och Client Secret till .env-filen." if g.lang == "sv" else "Copy Client ID and Client Secret to your .env file." }}<br>
+        {{ "Klicka sedan 'Anslut Fortnox' ovan." if g.lang == "sv" else "Then click 'Connect Fortnox' above." }}
+      </div>
+      <div style="margin-bottom:12px;">
+        <strong style="color:var(--text);">2. {{ "Anthropic API (kvitto-OCR)" if g.lang == "sv" else "Anthropic API (receipt OCR)" }}</strong><br>
+        {{ "Hämta API-nyckel från console.anthropic.com och lägg i ANTHROPIC_API_KEY i .env." if g.lang == "sv" else "Get API key from console.anthropic.com and set ANTHROPIC_API_KEY in .env." }}
+      </div>
+      <div style="margin-bottom:12px;">
+        <strong style="color:var(--text);">3. {{ "E-post (SMTP)" if g.lang == "sv" else "Email (SMTP)" }}</strong><br>
+        {{ "Konfigurera SMTP_HOST, SMTP_USER, SMTP_PASSWORD i .env för att skicka fakturor." if g.lang == "sv" else "Configure SMTP_HOST, SMTP_USER, SMTP_PASSWORD in .env to send invoices." }}
+      </div>
+      <div>
+        <strong style="color:var(--text);">4. {{ "Logotyp" if g.lang == "sv" else "Logo" }}</strong><br>
+        {{ "Lägg din logotyp som static/img/logo.png (rekommenderat: PNG med transparent bakgrund, max 400×120px)." if g.lang == "sv" else "Place your logo as static/img/logo.png (recommended: PNG with transparent background, max 400×120px)." }}
+      </div>
+    </div>
+  </div>
+
+  <!-- Change password -->
+  <div class="card">
+    <div class="card-title">{{ "Byt lösenord" if g.lang == "sv" else "Change password" }}</div>
+    <form method="POST" action="{{ url_for('change_password') }}">
+      <div class="grid-2">
+        <div class="form-group">
+          <label class="form-label">{{ "Nytt lösenord" if g.lang == "sv" else "New password" }}</label>
+          <input type="password" name="new_password" class="form-control" minlength="8" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">{{ "Bekräfta" if g.lang == "sv" else "Confirm" }}</label>
+          <input type="password" name="confirm_password" class="form-control" minlength="8" required>
+        </div>
+      </div>
+      <button type="submit" class="btn btn-secondary">
+        {{ "Byt lösenord" if g.lang == "sv" else "Change password" }}
+      </button>
+    </form>
+  </div>
+
+</div>
+{% endblock %}

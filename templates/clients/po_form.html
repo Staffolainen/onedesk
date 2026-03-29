@@ -1,0 +1,280 @@
+{% extends "base.html" %}
+{% block title %}{{ "Inköpsorder" if g.lang == "sv" else "Purchase Order" }}{% endblock %}
+{% block page_title %}
+  {% if po %}
+    {{ "Redigera PO" if g.lang == "sv" else "Edit PO" }}
+  {% else %}
+    {{ "Ny inköpsorder" if g.lang == "sv" else "New Purchase Order" }}
+  {% endif %}
+  – {{ project.name }}
+{% endblock %}
+
+{% block topbar_actions %}
+  <a href="{{ url_for('clients_list') }}" class="btn btn-ghost btn-sm">← {{ g.t.back }}</a>
+{% endblock %}
+
+{% block content %}
+<div style="max-width:520px;margin:0 auto;">
+
+  <!-- PO details card -->
+  <div class="card">
+    <div style="font-size:11px;color:var(--muted);margin-bottom:16px;font-family:var(--mono);letter-spacing:1px;">
+      {{ project.client.name }} › {{ project.name }}
+    </div>
+    <form method="POST">
+      <div class="form-group">
+        <label class="form-label">{{ "PO-nummer / referens" if g.lang == "sv" else "PO number / reference" }}</label>
+        <input type="text" name="po_number" class="form-control"
+               value="{{ po.po_number or '' if po else '' }}"
+               placeholder="{{ 'T.ex. PO-2025-001' if g.lang == 'sv' else 'e.g. PO-2025-001' }}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">{{ "Beskrivning" if g.lang == "sv" else "Description" }}</label>
+        <textarea name="description" class="form-control" rows="2">{{ po.description or '' if po else '' }}</textarea>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div class="form-group">
+          <label class="form-label">{{ "Timpris (SEK)" if g.lang == "sv" else "Hourly rate (SEK)" }} *</label>
+          <input type="number" name="hourly_rate" class="form-control" required step="1" min="0"
+                 value="{{ po.hourly_rate if po else project.client.hourly_rate }}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">{{ "PO-belopp (SEK, ex. moms)" if g.lang == "sv" else "PO amount (SEK, excl. VAT)" }}</label>
+          <input type="number" name="po_amount" class="form-control" step="1" min="0"
+                 value="{{ po.po_amount|int if po and po.po_amount else '' }}"
+                 placeholder="{{ 'Tomt = öppet PO' if g.lang == 'sv' else 'Empty = open PO' }}">
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div class="form-group">
+          <label class="form-label">{{ "Giltig från" if g.lang == "sv" else "Valid from" }}</label>
+          <input type="date" name="valid_from" class="form-control"
+                 value="{{ po.valid_from.isoformat() if po and po.valid_from else '' }}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">{{ "Giltig till" if g.lang == "sv" else "Valid to" }}</label>
+          <input type="date" name="valid_to" class="form-control"
+                 value="{{ po.valid_to.isoformat() if po and po.valid_to else '' }}">
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;margin-top:8px;">
+        <button type="submit" class="btn btn-primary" style="flex:1;padding:13px;">
+          {% if po %}
+            {{ "Spara PO" if g.lang == "sv" else "Save PO" }}
+          {% else %}
+            {{ "Skapa PO" if g.lang == "sv" else "Create PO" }}
+          {% endif %}
+        </button>
+        <a href="{{ url_for('clients_list') }}" class="btn btn-ghost" style="padding:13px 20px;">{{ g.t.cancel }}</a>
+      </div>
+    </form>
+
+    {% if po %}
+    <form method="POST" action="{{ url_for('po_delete', po_id=po.id) }}" style="margin-top:12px;"
+          onsubmit="return confirm('{{ 'Ta bort detta PO?' if g.lang == 'sv' else 'Delete this PO?' }}')">
+      <button type="submit" class="btn btn-ghost btn-sm" style="color:var(--danger,#c44f5a);width:100%;">
+        {{ "Ta bort PO" if g.lang == "sv" else "Delete PO" }}
+      </button>
+    </form>
+    {% endif %}
+  </div>
+
+  <!-- Consumption card -->
+  {% if po %}
+  <div class="card">
+    <div class="card-title">{{ "Förbrukning" if g.lang == "sv" else "Consumption" }}</div>
+
+    {% if po.po_amount %}
+    {% set remaining = po.po_amount - total_amount %}
+    {% set pct = (total_amount / po.po_amount * 100) if po.po_amount else 0 %}
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:20px;">
+      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:14px;">
+        <div style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);margin-bottom:6px;">
+          {{ "PO-belopp" if g.lang == "sv" else "PO amount" }}
+        </div>
+        <div style="font-size:16px;font-weight:700;font-family:var(--mono);">{{ po.po_amount|fmt_amount }}</div>
+      </div>
+      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:14px;">
+        <div style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);margin-bottom:6px;">
+          {{ "Förbrukat" if g.lang == "sv" else "Consumed" }}
+        </div>
+        <div style="font-size:16px;font-weight:700;font-family:var(--mono);color:var(--accent);">{{ total_amount|fmt_amount }}</div>
+        <div style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:2px;">{{ "%.1f"|format(pct) }}%</div>
+      </div>
+      <div style="background:var(--surface2);border:1px solid {% if remaining < 0 %}var(--danger){% else %}var(--border){% endif %};border-radius:8px;padding:14px;">
+        <div style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);margin-bottom:6px;">
+          {{ "Återstår" if g.lang == "sv" else "Remaining" }}
+        </div>
+        <div style="font-size:16px;font-weight:700;font-family:var(--mono);color:{% if remaining < 0 %}var(--danger){% else %}var(--text){% endif %};">
+          {{ remaining|fmt_amount }}
+        </div>
+      </div>
+    </div>
+    <div style="background:var(--surface2);border-radius:6px;height:8px;overflow:hidden;margin-bottom:20px;">
+      <div style="height:100%;width:{{ [pct, 100]|min }}%;background:{% if pct > 90 %}var(--danger){% elif pct > 75 %}#e08c3a{% else %}var(--accent){% endif %};transition:width 0.3s;"></div>
+    </div>
+    {% endif %}
+
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead>
+        <tr>
+          <th style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:1.5px;
+                     color:var(--muted);padding:6px 0;text-align:left;border-bottom:1px solid var(--border);">
+            {{ "Tidtyp" if g.lang == "sv" else "Type" }}
+          </th>
+          <th style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:1.5px;
+                     color:var(--muted);padding:6px 0;text-align:right;border-bottom:1px solid var(--border);">
+            {{ "Timmar" if g.lang == "sv" else "Hours" }}
+          </th>
+          <th style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:1.5px;
+                     color:var(--muted);padding:6px 0;text-align:right;border-bottom:1px solid var(--border);">
+            {{ "Timpris" if g.lang == "sv" else "Rate" }}
+          </th>
+          <th style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:1.5px;
+                     color:var(--muted);padding:6px 0;text-align:right;border-bottom:1px solid var(--border);">
+            {{ "Belopp" if g.lang == "sv" else "Amount" }}
+          </th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in consumption %}
+        <tr>
+          <td style="padding:8px 0;border-bottom:1px solid var(--border);">
+            <span style="font-weight:600;">{{ row.hour_type.name }}</span>
+            {% if not row.hour_type.billable %}
+            <span style="font-family:var(--mono);font-size:9px;color:var(--muted);margin-left:6px;">
+              {{ "ej debiterbart" if g.lang == "sv" else "non-billable" }}
+            </span>
+            {% endif %}
+          </td>
+          <td style="padding:8px 0;border-bottom:1px solid var(--border);text-align:right;
+                     font-family:var(--mono);">
+            {{ "%.2f"|format(row.hours) if row.hours else "–" }}
+          </td>
+          <td style="padding:8px 0;border-bottom:1px solid var(--border);text-align:right;
+                     font-family:var(--mono);color:var(--muted);">
+            {{ row.rate|fmt_amount }}
+          </td>
+          <td style="padding:8px 0;border-bottom:1px solid var(--border);text-align:right;
+                     font-family:var(--mono);">
+            {% if row.hours %}{{ row.amount|fmt_amount }}{% else %}–{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+        {% if consumption %}
+        <tr>
+          <td style="padding:10px 0;font-weight:700;">{{ "Totalt" if g.lang == "sv" else "Total" }}</td>
+          <td style="padding:10px 0;text-align:right;font-family:var(--mono);font-weight:700;">
+            {{ "%.2f"|format(total_hours) }}
+          </td>
+          <td></td>
+          <td style="padding:10px 0;text-align:right;font-family:var(--mono);font-weight:700;
+                     color:var(--accent);">
+            {{ total_amount|fmt_amount }}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4" style="padding:12px 0;color:var(--muted);font-family:var(--mono);font-size:12px;">
+          {{ "Inga timmar registrerade" if g.lang == "sv" else "No hours logged yet" }}
+        </td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  <!-- Hour types card — only shown when editing an existing PO -->
+  {% if po %}
+  <div class="card">
+    <div class="card-title">{{ "Tidtyper" if g.lang == "sv" else "Hour Types" }}</div>
+
+    <!-- Existing hour types — update forms declared outside the row div to avoid nesting -->
+    {% set active_types = po.hour_types | selectattr('active') | list %}
+    {% if active_types %}
+    {% for ht in active_types %}
+    <form id="htf-{{ ht.id }}" method="POST" action="{{ url_for('hour_type_update', ht_id=ht.id) }}"></form>
+    <form id="htd-{{ ht.id }}" method="POST" action="{{ url_for('hour_type_delete', ht_id=ht.id) }}"
+          onsubmit="return confirm('{{ 'Ta bort ' + ht.name + '?' if g.lang == 'sv' else 'Delete ' + ht.name + '?' }}')"></form>
+    {% endfor %}
+    <div style="margin-bottom:16px;">
+      {% for ht in active_types %}
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+                  padding:10px 12px;margin-bottom:6px;
+                  background:var(--surface2);border:1px solid var(--border);border-radius:7px;">
+        <input form="htf-{{ ht.id }}" type="text" name="name" value="{{ ht.name }}" required
+               class="form-control" style="flex:1;min-width:120px;padding:5px 9px;font-size:13px;font-weight:600;">
+        <div style="display:flex;align-items:center;gap:6px;">
+          <input form="htf-{{ ht.id }}" type="number" name="hourly_rate" step="1" min="0"
+                 value="{{ ht.hourly_rate|int if ht.hourly_rate is not none else '' }}"
+                 placeholder="{{ po.hourly_rate|int }}"
+                 class="form-control"
+                 style="width:100px;padding:5px 9px;font-size:13px;font-family:var(--mono);"
+                 title="{{ 'Tomt = använd PO-timpris' if g.lang == 'sv' else 'Empty = use PO rate' }}">
+          <span style="font-family:var(--mono);font-size:10px;color:var(--muted);white-space:nowrap;">
+            {{ "kr/h" if g.lang == "sv" else "/h" }}
+          </span>
+        </div>
+        <label style="display:flex;align-items:center;gap:5px;font-family:var(--mono);
+                      font-size:10px;letter-spacing:1px;color:var(--muted);white-space:nowrap;cursor:pointer;">
+          <input form="htf-{{ ht.id }}" type="checkbox" name="billable" value="1" {% if ht.billable %}checked{% endif %}
+                 style="accent-color:var(--accent);">
+          {{ "Debiterbart" if g.lang == "sv" else "Billable" }}
+        </label>
+        <button form="htf-{{ ht.id }}" type="submit" class="btn btn-secondary btn-sm">
+          {{ "Spara" if g.lang == "sv" else "Save" }}
+        </button>
+        <button form="htd-{{ ht.id }}" type="submit" class="btn btn-ghost btn-sm"
+                style="color:var(--danger,#c44f5a);padding:3px 8px;"
+                title="{{ 'Ta bort' if g.lang == 'sv' else 'Delete' }}">✕</button>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p style="font-size:12px;color:var(--muted);margin-bottom:16px;font-family:var(--mono);">
+      {{ "Inga tidtyper" if g.lang == "sv" else "No hour types yet" }}
+    </p>
+    {% endif %}
+
+    <!-- Add new hour type -->
+    <form method="POST" action="{{ url_for('hour_type_add', po_id=po.id) }}"
+          style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+      <input type="text" name="name" class="form-control" required
+             placeholder="{{ 'T.ex. Övertid 1' if g.lang == 'sv' else 'e.g. Overtime 1' }}"
+             style="flex:1;min-width:120px;">
+      <div style="display:flex;align-items:center;gap:6px;">
+        <input type="number" name="hourly_rate" step="1" min="0"
+               placeholder="{{ po.hourly_rate|int }}"
+               class="form-control"
+               style="width:100px;padding:6px 9px;font-size:12px;font-family:var(--mono);"
+               title="{{ 'Tomt = använd PO-timpris' if g.lang == 'sv' else 'Empty = use PO rate' }}">
+        <span style="font-family:var(--mono);font-size:10px;color:var(--muted);white-space:nowrap;">
+          {{ "kr/h" if g.lang == "sv" else "/h" }}
+        </span>
+      </div>
+      <label style="display:flex;align-items:center;gap:6px;font-family:var(--mono);
+                    font-size:10px;letter-spacing:1px;color:var(--muted);white-space:nowrap;cursor:pointer;">
+        <input type="checkbox" name="billable" value="1" checked
+               style="accent-color:var(--accent);">
+        {{ "Debiterbart" if g.lang == "sv" else "Billable" }}
+      </label>
+      <button type="submit" class="btn btn-secondary btn-sm">
+        + {{ "Lägg till" if g.lang == "sv" else "Add" }}
+      </button>
+    </form>
+
+    <div style="margin-top:14px;padding:10px 12px;background:var(--surface2);border-radius:6px;
+                border-left:3px solid var(--border);">
+      <p style="font-family:var(--mono);font-size:10px;color:var(--muted);line-height:1.6;">
+        {{ "Normal och Restid skapas automatiskt för nya PO." if g.lang == "sv" else "Normal and Travel time are created automatically for new POs." }}<br>
+        {{ "Sjukfrånvaro rapporteras alltid som intern tid, aldrig mot PO." if g.lang == "sv" else "Sick leave is always reported as internal time, never against a PO." }}
+      </p>
+    </div>
+  </div>
+  {% else %}
+  <div style="text-align:center;padding:16px;font-family:var(--mono);font-size:11px;color:var(--muted);">
+    {{ "Spara PO:t för att lägga till tidtyper" if g.lang == "sv" else "Save the PO to manage hour types" }}
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}
