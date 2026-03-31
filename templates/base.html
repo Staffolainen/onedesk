@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="{{ g.lang }}">
+<html lang="{{ g.lang }}" data-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
-    :root {
+    :root, [data-theme="dark"] {
       --bg:      #0d0d0d;
       --surface: #161616;
       --surface2:#1e1e1e;
@@ -24,6 +24,20 @@
       --nav-h:   52px;
       --radius:  8px;
     }
+    [data-theme="light"] {
+      --bg:      #f4f4f5;
+      --surface: #ffffff;
+      --surface2:#ebebec;
+      --border:  #d4d4d8;
+      --accent:  #4E7796;
+      --accent-h:#3d6680;
+      --text:    #18181b;
+      --muted:   #71717a;
+      --success: #16a34a;
+      --warning: #d97706;
+      --danger:  #dc2626;
+    }
+    [data-theme="light"] .topnav-logo img { filter: invert(1); }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { height: 100%; }
     body { font-family: var(--sans); font-size: 13px; font-weight: 400; background: var(--bg); color: var(--text); min-height: 100vh; -webkit-font-smoothing: antialiased; }
@@ -53,7 +67,6 @@
     }
     .nav-link:hover { color: var(--text); background: var(--surface2); }
     .nav-link.active { color: var(--text); background: var(--surface2); }
-    .nav-link .icon { font-size: 13px; opacity: 0.7; }
     .nav-divider { width: 1px; height: 18px; background: var(--border); margin: 0 8px; }
     .topnav-end { display: flex; align-items: center; gap: 10px; margin-left: auto; flex-shrink: 0; }
     .lang-toggle { display: flex; gap: 2px; }
@@ -67,6 +80,8 @@
     .lang-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
     .logout-btn { font-size: 12px; color: var(--muted); text-decoration: none; transition: color 0.12s; }
     .logout-btn:hover { color: var(--text); }
+    .theme-btn { background: transparent; border: 1px solid var(--border); color: var(--muted); font-size: 13px; cursor: pointer; padding: 3px 8px; border-radius: 6px; transition: all 0.12s; line-height: 1.6; }
+    .theme-btn:hover { color: var(--text); border-color: var(--muted); }
     .mobile-menu-btn { display: none; background: transparent; border: none; color: var(--muted); font-size: 18px; cursor: pointer; padding: 4px 8px; margin-left: 8px; }
     .mobile-dropdown {
       display: none; position: fixed; top: var(--nav-h); left: 0; right: 0;
@@ -188,6 +203,12 @@
     }
   </style>
   {% block head %}{% endblock %}
+  <script>
+    (function() {
+      var t = localStorage.getItem('theme') || 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+    })();
+  </script>
 </head>
 <body>
 
@@ -199,25 +220,13 @@
   </div>
 
   <div class="topnav-links">
-    <a href="{{ url_for('time_index') }}" class="nav-link {% if 'time' in request.endpoint %}active{% endif %}">
-      <span class="icon">◷</span> {{ g.t.time }}
-    </a>
-    <a href="{{ url_for('expenses_index') }}" class="nav-link {% if 'expense' in request.endpoint %}active{% endif %}">
-      <span class="icon">◎</span> {{ g.t.expenses }}
-    </a>
-    <a href="{{ url_for('mileage_index') }}" class="nav-link {% if 'mileage' in request.endpoint %}active{% endif %}">
-      <span class="icon">◎</span> {{ g.t.mileage }}
-    </a>
-    <a href="{{ url_for('invoices_list') }}" class="nav-link {% if 'invoice' in request.endpoint %}active{% endif %}">
-      <span class="icon">◧</span> {{ g.t.invoices }}
-    </a>
+    <a href="{{ url_for('time_index') }}" class="nav-link {% if 'time' in request.endpoint %}active{% endif %}">{{ g.t.time }}</a>
+    <a href="{{ url_for('expenses_index') }}" class="nav-link {% if 'expense' in request.endpoint %}active{% endif %}">{{ g.t.expenses }}</a>
+    <a href="{{ url_for('mileage_index') }}" class="nav-link {% if 'mileage' in request.endpoint %}active{% endif %}">{{ g.t.mileage }}</a>
+    <a href="{{ url_for('invoices_list') }}" class="nav-link {% if 'invoice' in request.endpoint %}active{% endif %}">{{ g.t.invoices }}</a>
     <div class="nav-divider"></div>
-    <a href="{{ url_for('clients_list') }}" class="nav-link {% if 'client' in request.endpoint or 'project' in request.endpoint %}active{% endif %}">
-      <span class="icon">◉</span> {{ g.t.clients }}
-    </a>
-    <a href="{{ url_for('settings') }}" class="nav-link {% if request.endpoint == 'settings' %}active{% endif %}">
-      <span class="icon">◌</span> {{ g.t.settings }}
-    </a>
+    <a href="{{ url_for('clients_list') }}" class="nav-link {% if 'client' in request.endpoint or 'project' in request.endpoint %}active{% endif %}">{{ g.t.clients }}</a>
+    <a href="{{ url_for('settings') }}" class="nav-link {% if request.endpoint == 'settings' %}active{% endif %}">{{ g.t.settings }}</a>
   </div>
 
   <div class="topnav-end">
@@ -225,6 +234,7 @@
       <a href="{{ url_for('set_lang', lang='sv') }}" class="lang-btn {% if g.lang == 'sv' %}active{% endif %}">SV</a>
       <a href="{{ url_for('set_lang', lang='en') }}" class="lang-btn {% if g.lang == 'en' %}active{% endif %}">EN</a>
     </div>
+    <button class="theme-btn" id="themeBtn" onclick="toggleTheme()" title="Toggle theme">◐</button>
     <a href="{{ url_for('auth_logout') }}" class="logout-btn">{{ g.t.logout }}</a>
     <button class="mobile-menu-btn" onclick="toggleMobileMenu()" id="menuBtn">☰</button>
   </div>
@@ -232,27 +242,16 @@
 
 <!-- Mobile dropdown -->
 <div class="mobile-dropdown" id="mobileMenu">
-  <a href="{{ url_for('time_index') }}" class="nav-link {% if 'time' in request.endpoint %}active{% endif %}">
-    <span class="icon">◷</span> {{ g.t.time }}
-  </a>
-  <a href="{{ url_for('expenses_index') }}" class="nav-link {% if 'expense' in request.endpoint %}active{% endif %}">
-    <span class="icon">◎</span> {{ g.t.expenses }}
-  </a>
-  <a href="{{ url_for('mileage_index') }}" class="nav-link {% if 'mileage' in request.endpoint %}active{% endif %}">
-    <span class="icon">◎</span> {{ g.t.mileage }}
-  </a>
-  <a href="{{ url_for('invoices_list') }}" class="nav-link {% if 'invoice' in request.endpoint %}active{% endif %}">
-    <span class="icon">◧</span> {{ g.t.invoices }}
-  </a>
-  <a href="{{ url_for('clients_list') }}" class="nav-link {% if 'client' in request.endpoint or 'project' in request.endpoint %}active{% endif %}">
-    <span class="icon">◉</span> {{ g.t.clients }}
-  </a>
-  <a href="{{ url_for('settings') }}" class="nav-link {% if request.endpoint == 'settings' %}active{% endif %}">
-    <span class="icon">◌</span> {{ g.t.settings }}
-  </a>
-  <div style="display:flex;gap:8px;padding:8px 14px;margin-top:4px;border-top:1px solid var(--border);">
+  <a href="{{ url_for('time_index') }}" class="nav-link {% if 'time' in request.endpoint %}active{% endif %}">{{ g.t.time }}</a>
+  <a href="{{ url_for('expenses_index') }}" class="nav-link {% if 'expense' in request.endpoint %}active{% endif %}">{{ g.t.expenses }}</a>
+  <a href="{{ url_for('mileage_index') }}" class="nav-link {% if 'mileage' in request.endpoint %}active{% endif %}">{{ g.t.mileage }}</a>
+  <a href="{{ url_for('invoices_list') }}" class="nav-link {% if 'invoice' in request.endpoint %}active{% endif %}">{{ g.t.invoices }}</a>
+  <a href="{{ url_for('clients_list') }}" class="nav-link {% if 'client' in request.endpoint or 'project' in request.endpoint %}active{% endif %}">{{ g.t.clients }}</a>
+  <a href="{{ url_for('settings') }}" class="nav-link {% if request.endpoint == 'settings' %}active{% endif %}">{{ g.t.settings }}</a>
+  <div style="display:flex;gap:8px;padding:8px 14px;margin-top:4px;border-top:1px solid var(--border);align-items:center;">
     <a href="{{ url_for('set_lang', lang='sv') }}" class="lang-btn {% if g.lang == 'sv' %}active{% endif %}">SV</a>
     <a href="{{ url_for('set_lang', lang='en') }}" class="lang-btn {% if g.lang == 'en' %}active{% endif %}">EN</a>
+    <button class="theme-btn" onclick="toggleTheme()" title="Toggle theme" id="themeBtnMobile">☀</button>
     <a href="{{ url_for('auth_logout') }}" class="logout-btn" style="margin-left:auto;line-height:1.8;">{{ g.t.logout }}</a>
   </div>
 </div>
@@ -279,6 +278,23 @@
 </div>
 
 <script>
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  localStorage.setItem('theme', theme);
+  var icon = '◐';
+  var b1 = document.getElementById('themeBtn');
+  var b2 = document.getElementById('themeBtnMobile');
+  if (b1) b1.textContent = icon;
+  if (b2) b2.textContent = icon;
+}
+function toggleTheme() {
+  var current = document.documentElement.getAttribute('data-theme');
+  applyTheme(current === 'light' ? 'dark' : 'light');
+}
+document.addEventListener('DOMContentLoaded', function() {
+  applyTheme(localStorage.getItem('theme') || 'dark');
+});
+
 function toggleMobileMenu() {
   const m = document.getElementById('mobileMenu');
   const b = document.getElementById('menuBtn');
