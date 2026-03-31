@@ -241,7 +241,7 @@
   <table class="time-table">
     <thead>
       <tr>
-        <th style="min-width:180px;">{{ "Kund / Projekt" if g.lang == "sv" else "Client / Project" }}</th>
+        <th style="min-width:180px;">{{ "Kund / Uppdrag" if g.lang == "sv" else "Client / Assignment" }}</th>
         <th style="min-width:90px;">{{ "Tidtyp" if g.lang == "sv" else "Type" }}</th>
         {% for d in work_dates %}
         <th class="day-col {% if d == today %}today-col{% elif loop.index0 >= 5 %}weekend-col{% endif %}">
@@ -301,7 +301,7 @@
       <tr class="new-row">
         <td>
           <select form="rf-new" name="project_id" id="new-project-sel" class="form-control" required>
-            <option value="">{{ "Välj projekt…" if g.lang == "sv" else "Select project…" }}</option>
+            <option value="">{{ "Välj uppdrag…" if g.lang == "sv" else "Select assignment…" }}</option>
             {% for p in projects %}
             <option value="{{ p.id }}">{{ p.client.name }} / {{ p.name }}</option>
             {% endfor %}

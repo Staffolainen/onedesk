@@ -19,7 +19,9 @@
       "Bash(python3 -c \"import pdf_generator; print\\(''OK''\\)\")",
       "Bash(python3 -c \"from models import Project, TimeEntry; print\\(''OK''\\)\")",
       "Bash(python3 -c \"import pdf_generator; print\\(''pdf_generator OK''\\)\")",
-      "Bash(python3 -c \"from app import app; print\\(''app OK''\\)\")"
+      "Bash(python3 -c \"from app import app; print\\(''app OK''\\)\")",
+      "Bash(python3 -c \"from app import app; print\\(''OK''\\)\")",
+      "Bash(python3 -c \"from app import app; import pdf_generator; print\\(''OK''\\)\")"
     ]
   }
 }

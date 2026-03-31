@@ -38,10 +38,8 @@
       position: fixed; top: 0; left: 0; right: 0;
       z-index: 100;
     }
-    .topnav-logo { display: flex; flex-direction: column; justify-content: center; margin-right: 36px; flex-shrink: 0; gap: 2px; }
-    .topnav-logo .app-name { font-size: 14px; font-weight: 600; letter-spacing: -0.3px; color: var(--text); line-height: 1; }
-    .topnav-logo .app-name span { color: var(--accent); }
-    .topnav-logo .company { font-size: 10px; color: var(--muted); }
+    .topnav-logo { display: flex; align-items: center; margin-right: 32px; flex-shrink: 0; }
+    .topnav-logo img { height: 28px; width: auto; display: block; }
     .topnav-links { display: flex; align-items: center; gap: 1px; flex: 1; }
     .nav-link {
       display: flex; align-items: center; gap: 6px;
@@ -195,19 +193,20 @@
 
 <nav class="topnav" id="topnav">
   <div class="topnav-logo">
-    <div class="app-name"><span>one</span>desk</div>
-    <div class="company">{{ g.config.COMPANY_NAME }}</div>
+    <a href="{{ url_for('dashboard') }}">
+      <img src="{{ url_for('static', filename='img/logo_white.png') }}" alt="{{ g.config.COMPANY_NAME }}">
+    </a>
   </div>
 
   <div class="topnav-links">
-    <a href="{{ url_for('dashboard') }}" class="nav-link {% if request.endpoint == 'dashboard' %}active{% endif %}">
-      <span class="icon">◈</span> {{ g.t.dashboard }}
-    </a>
     <a href="{{ url_for('time_index') }}" class="nav-link {% if 'time' in request.endpoint %}active{% endif %}">
       <span class="icon">◷</span> {{ g.t.time }}
     </a>
     <a href="{{ url_for('expenses_index') }}" class="nav-link {% if 'expense' in request.endpoint %}active{% endif %}">
       <span class="icon">◎</span> {{ g.t.expenses }}
+    </a>
+    <a href="{{ url_for('mileage_index') }}" class="nav-link {% if 'mileage' in request.endpoint %}active{% endif %}">
+      <span class="icon">◎</span> {{ g.t.mileage }}
     </a>
     <a href="{{ url_for('invoices_list') }}" class="nav-link {% if 'invoice' in request.endpoint %}active{% endif %}">
       <span class="icon">◧</span> {{ g.t.invoices }}
@@ -233,14 +232,14 @@
 
 <!-- Mobile dropdown -->
 <div class="mobile-dropdown" id="mobileMenu">
-  <a href="{{ url_for('dashboard') }}" class="nav-link {% if request.endpoint == 'dashboard' %}active{% endif %}">
-    <span class="icon">◈</span> {{ g.t.dashboard }}
-  </a>
   <a href="{{ url_for('time_index') }}" class="nav-link {% if 'time' in request.endpoint %}active{% endif %}">
     <span class="icon">◷</span> {{ g.t.time }}
   </a>
   <a href="{{ url_for('expenses_index') }}" class="nav-link {% if 'expense' in request.endpoint %}active{% endif %}">
     <span class="icon">◎</span> {{ g.t.expenses }}
+  </a>
+  <a href="{{ url_for('mileage_index') }}" class="nav-link {% if 'mileage' in request.endpoint %}active{% endif %}">
+    <span class="icon">◎</span> {{ g.t.mileage }}
   </a>
   <a href="{{ url_for('invoices_list') }}" class="nav-link {% if 'invoice' in request.endpoint %}active{% endif %}">
     <span class="icon">◧</span> {{ g.t.invoices }}

@@ -1,3 +1,4 @@
+import io
 import os
 import json
 import smtplib
@@ -16,7 +17,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 
 from config import Config
-from models import db, User, Client, Project, PurchaseOrder, POHourType, TimeEntry, Expense, Invoice, Settings, fiscal_year, fy_start, fy_end
+from models import db, User, Client, Project, PurchaseOrder, POHourType, TimeEntry, Expense, Invoice, MileageEntry, Settings, fiscal_year, fy_start, fy_end
 from fortnox import FortnoxClient
 from receipt_ocr import extract_receipt_data
 from pdf_generator import generate_invoice_pdf, render_invoice_html
@@ -38,11 +39,11 @@ def load_user(user_id):
 
 TRANSLATIONS = {
     "sv": {
-        "dashboard": "Start", "time": "Tidrapportering", "expenses": "Reseräkning",
+        "dashboard": "Start", "time": "Tidrapportering", "expenses": "Utlägg", "mileage": "Reseersättning",
         "invoices": "Fakturor", "clients": "Kunder", "logout": "Logga ut",
         "save": "Spara", "cancel": "Avbryt", "delete": "Ta bort", "edit": "Redigera",
         "approve": "Godkänn", "send": "Skicka", "hours": "Timmar", "date": "Datum",
-        "description": "Beskrivning", "client": "Kund", "project": "Projekt",
+        "description": "Beskrivning", "client": "Kund", "project": "Uppdrag",
         "amount": "Belopp", "vat": "Moms", "total": "Totalt", "status": "Status",
         "invoice": "Faktura", "draft": "Utkast", "approved": "Godkänd",
         "sent": "Skickad", "paid": "Betald", "pending": "Väntande",
@@ -50,7 +51,7 @@ TRANSLATIONS = {
         "back": "Tillbaka", "settings": "Inställningar", "currency": "SEK",
     },
     "en": {
-        "dashboard": "Start", "time": "Time Tracking", "expenses": "Travel Expenses",
+        "dashboard": "Start", "time": "Time Tracking", "expenses": "Expenses", "mileage": "Mileage",
         "invoices": "Invoices", "clients": "Clients", "logout": "Log out",
         "save": "Save", "cancel": "Cancel", "delete": "Delete", "edit": "Edit",
         "approve": "Approve", "send": "Send", "hours": "Hours", "date": "Date",
@@ -160,6 +161,7 @@ def clients_new():
             address=request.form.get("address"),
             vat_nr=request.form.get("vat_nr"),
             hourly_rate=float(request.form.get("hourly_rate") or app.config["DEFAULT_HOURLY_RATE"]),
+            km_rate=float(request.form.get("km_rate") or 25.0),
             payment_days=int(request.form.get("payment_days") or 30),
             invoice_language=request.form.get("invoice_language", "sv"),
         )
@@ -181,6 +183,7 @@ def clients_edit(client_id):
         c.address = request.form.get("address")
         c.vat_nr = request.form.get("vat_nr")
         c.hourly_rate = float(request.form.get("hourly_rate") or 1500)
+        c.km_rate = float(request.form.get("km_rate") or 25.0)
         c.payment_days = int(request.form.get("payment_days") or 30)
         c.invoice_language = request.form.get("invoice_language", "sv")
         db.session.commit()
@@ -195,15 +198,35 @@ def projects_new(client_id):
     if request.method == "POST":
         p = Project(
             client_id=client_id,
+            project_number=request.form.get("project_number", "").strip() or Project.generate_number(),
             name=request.form["name"],
             description=request.form.get("description"),
             start_date=datetime.strptime(request.form["start_date"], "%Y-%m-%d").date() if request.form.get("start_date") else None,
+            end_date=datetime.strptime(request.form["end_date"], "%Y-%m-%d").date() if request.form.get("end_date") else None,
         )
         db.session.add(p)
         db.session.commit()
-        flash("Projekt skapat / Project created", "success")
+        flash("Uppdrag skapat / Assignment created", "success")
         return redirect(url_for("clients_list"))
-    return render_template("clients/project_form.html", client=c)
+    next_number = Project.generate_number()
+    return render_template("clients/project_form.html", client=c, project=None, next_number=next_number)
+
+@app.route("/projects/<int:project_id>/edit", methods=["GET", "POST"])
+@login_required
+def projects_edit(project_id):
+    p = Project.query.get_or_404(project_id)
+    if request.method == "POST":
+        p.project_number = request.form.get("project_number", "").strip() or p.project_number
+        p.name        = request.form["name"]
+        p.description = request.form.get("description")
+        p.start_date  = datetime.strptime(request.form["start_date"], "%Y-%m-%d").date() if request.form.get("start_date") else None
+        p.end_date    = datetime.strptime(request.form["end_date"],   "%Y-%m-%d").date() if request.form.get("end_date")   else None
+        p.active      = request.form.get("active") == "1"
+        db.session.commit()
+        flash("Uppdrag uppdaterat / Assignment updated", "success")
+        return redirect(url_for("clients_list"))
+    next_number = None if p.project_number else Project.generate_number()
+    return render_template("clients/project_form.html", client=p.client, project=p, next_number=next_number)
 
 def _po_overlaps(project_id, valid_from, valid_to, exclude_po_id=None):
     """Return the first existing PO on the project whose validity window
@@ -231,14 +254,16 @@ def po_new(project_id):
         valid_to   = datetime.strptime(request.form["valid_to"],   "%Y-%m-%d").date() if request.form.get("valid_to")   else None
         overlap = _po_overlaps(project_id, valid_from, valid_to)
         if overlap:
-            flash(f"Datumkonflik med PO {overlap.po_number or overlap.id} – perioder får ej överlappa / "
-                  f"Date conflict with PO {overlap.po_number or overlap.id} – periods must not overlap", "error")
+            flash(f"Datumkonflik med beställning {overlap.po_number or overlap.id} – perioder får ej överlappa / "
+                  f"Date conflict with order {overlap.po_number or overlap.id} – periods must not overlap", "error")
             return render_template("clients/po_form.html", project=p, po=None)
+        km_rate_str = request.form.get("km_rate", "").strip()
         po = PurchaseOrder(
             project_id=project_id,
             po_number=request.form.get("po_number") or None,
             description=request.form.get("description") or None,
             hourly_rate=float(request.form["hourly_rate"]),
+            km_rate=float(km_rate_str) if km_rate_str else None,
             valid_from=valid_from,
             valid_to=valid_to,
         )
@@ -247,7 +272,7 @@ def po_new(project_id):
         db.session.add(POHourType(po_id=po.id, name="Normal", billable=True, sort_order=0, hourly_rate=po.hourly_rate))
         db.session.add(POHourType(po_id=po.id, name="Restid", billable=True, sort_order=1, hourly_rate=po.hourly_rate))
         db.session.commit()
-        flash("PO skapat / PO created", "success")
+        flash("Beställning skapad / Order created", "success")
         return redirect(url_for("clients_list"))
     return render_template("clients/po_form.html", project=p, po=None)
 
@@ -261,18 +286,20 @@ def po_edit(po_id):
         valid_to   = datetime.strptime(request.form["valid_to"],   "%Y-%m-%d").date() if request.form.get("valid_to")   else None
         overlap = _po_overlaps(po.project_id, valid_from, valid_to, exclude_po_id=po.id)
         if overlap:
-            flash(f"Datumkonflik med PO {overlap.po_number or overlap.id} – perioder får ej överlappa / "
-                  f"Date conflict with PO {overlap.po_number or overlap.id} – periods must not overlap", "error")
+            flash(f"Datumkonflik med beställning {overlap.po_number or overlap.id} – perioder får ej överlappa / "
+                  f"Date conflict with order {overlap.po_number or overlap.id} – periods must not overlap", "error")
             return redirect(url_for("po_edit", po_id=po.id))
         po.po_number = request.form.get("po_number") or None
         po.description = request.form.get("description") or None
         po.hourly_rate = float(request.form["hourly_rate"])
         po_amount_str = request.form.get("po_amount", "").strip()
         po.po_amount = float(po_amount_str) if po_amount_str else None
+        km_rate_str = request.form.get("km_rate", "").strip()
+        po.km_rate = float(km_rate_str) if km_rate_str else None
         po.valid_from = valid_from
         po.valid_to   = valid_to
         db.session.commit()
-        flash("PO uppdaterat / PO updated", "success")
+        flash("Beställning uppdaterad / Order updated", "success")
         return redirect(url_for("clients_list"))
     # Consumption stats per hour type
     consumption = []
@@ -298,7 +325,7 @@ def po_delete(po_id):
     po = PurchaseOrder.query.get_or_404(po_id)
     db.session.delete(po)
     db.session.commit()
-    flash("PO borttaget / PO deleted", "success")
+    flash("Beställning borttagen / Order deleted", "success")
     return redirect(url_for("clients_list"))
 
 @app.route("/purchase-orders/<int:po_id>/hour-types/add", methods=["POST"])
@@ -427,7 +454,7 @@ def time_save_row():
     week = request.form.get("week")
 
     if not project_id_str:
-        flash("Välj ett projekt / Select a project", "error")
+        flash("Välj ett uppdrag / Select an assignment", "error")
         return redirect(url_for("time_index", week=week))
 
     project_id = int(project_id_str)
@@ -686,6 +713,55 @@ def expenses_delete(exp_id):
     flash("Borttaget / Deleted", "success")
     return redirect(url_for("expenses_index"))
 
+# ── Mileage ───────────────────────────────────────────────────────────────────
+
+@app.route("/mileage", methods=["GET", "POST"])
+@login_required
+def mileage_index():
+    projects = Project.query.filter_by(active=True).join(Client).order_by(Client.name).all()
+    if request.method == "POST":
+        project_id = int(request.form["project_id"]) if request.form.get("project_id") else None
+        entry_date = datetime.strptime(request.form["entry_date"], "%Y-%m-%d").date()
+        km = float(request.form["km"])
+        # Resolve km rate: PO for that date → client default
+        km_rate = None
+        if project_id:
+            project = Project.query.get(project_id)
+            km_rate = project.get_km_rate(entry_date)
+        # Allow manual override
+        km_rate_override = request.form.get("km_rate", "").strip()
+        if km_rate_override:
+            km_rate = float(km_rate_override)
+        if not km_rate:
+            km_rate = 25.0
+        m = MileageEntry(
+            project_id=project_id,
+            entry_date=entry_date,
+            km=km,
+            km_rate=km_rate,
+            description=request.form.get("description", ""),
+            billable=request.form.get("billable") == "1",
+            status="approved",
+        )
+        db.session.add(m)
+        db.session.commit()
+        flash("Reseersättning sparad / Mileage saved", "success")
+        return redirect(url_for("mileage_index"))
+    entries = MileageEntry.query.order_by(MileageEntry.entry_date.desc()).all()
+    return render_template("mileage/index.html", entries=entries, projects=projects, today=date.today())
+
+@app.route("/mileage/<int:entry_id>/delete", methods=["POST"])
+@login_required
+def mileage_delete(entry_id):
+    m = MileageEntry.query.get_or_404(entry_id)
+    if m.invoice_id:
+        flash("Kan ej ta bort fakturerad reseersättning / Cannot delete invoiced mileage", "error")
+        return redirect(url_for("mileage_index"))
+    db.session.delete(m)
+    db.session.commit()
+    flash("Borttaget / Deleted", "success")
+    return redirect(url_for("mileage_index"))
+
 # ── Invoices ──────────────────────────────────────────────────────────────────
 
 @app.route("/invoices")
@@ -705,6 +781,33 @@ def invoices_new():
         client = Client.query.get_or_404(client_id)
         period_start = datetime.strptime(request.form["period_start"], "%Y-%m-%d").date()
         period_end = datetime.strptime(request.form["period_end"], "%Y-%m-%d").date()
+
+        # Check for existing draft/approved invoices overlapping this period
+        confirm_replace = request.form.get("confirm_replace") == "1"
+        conflicting = Invoice.query.filter(
+            Invoice.client_id == client_id,
+            Invoice.status.in_(["draft", "approved"]),
+            Invoice.period_start <= period_end,
+            Invoice.period_end >= period_start,
+        ).all()
+        if conflicting and not confirm_replace:
+            return render_template("invoices/new.html",
+                clients=clients,
+                default_start=request.form["period_start"],
+                default_end=request.form["period_end"],
+                selected_client_id=client_id,
+                conflicting=conflicting,
+            )
+        # Delete confirmed conflicts before creating
+        for old_inv in conflicting:
+            for e in old_inv.time_entries:
+                e.invoice_id = None
+                e.invoiced = False
+            for exp in old_inv.expenses:
+                exp.invoice_id = None
+                exp.status = "approved"
+            db.session.delete(old_inv)
+        db.session.flush()
 
         # Gather uninvoiced time entries
         entries = (TimeEntry.query
@@ -731,12 +834,26 @@ def invoices_new():
                 )
             ).all())
 
+        # Gather approved billable mileage entries
+        mileage = (MileageEntry.query
+            .join(Project)
+            .filter(
+                Project.client_id == client_id,
+                MileageEntry.billable == True,
+                MileageEntry.status == "approved",
+                MileageEntry.invoice_id == None,
+                MileageEntry.entry_date >= period_start,
+                MileageEntry.entry_date <= period_end,
+            ).all())
+
         total_hours = sum(e.hours for e in entries)
         time_subtotal = round(sum(e.hours * e.effective_rate for e in entries), 2)
         expense_subtotal = round(sum(e.amount_excl_vat for e in expenses), 2)
-        subtotal = time_subtotal + expense_subtotal
+        mileage_subtotal = round(sum(m.amount for m in mileage), 2)
+        subtotal = time_subtotal + expense_subtotal + mileage_subtotal
         vat = round(subtotal * 0.25, 2)
-        total = round(subtotal + vat, 2)
+        total_exact = round(subtotal + vat, 2)
+        total = round(total_exact)  # round to whole kronor
 
         inv = Invoice(
             client_id=client_id,
@@ -763,6 +880,10 @@ def invoices_new():
             exp.invoice_id = inv.id
             # DEBUG: locking disabled for template iteration
             # exp.status = "invoiced"
+
+        for m in mileage:
+            m.invoice_id = inv.id
+            # m.status = "invoiced"
 
         db.session.commit()
         return redirect(url_for("invoices_proforma", invoice_id=inv.id))
@@ -915,6 +1036,27 @@ def invoices_mark_paid(invoice_id):
     flash("Markerad som betald / Marked as paid", "success")
     return redirect(url_for("invoices_list"))
 
+@app.route("/invoices/<int:invoice_id>/set-number", methods=["POST"])
+@login_required
+def invoices_set_number(invoice_id):
+    import re
+    inv = Invoice.query.get_or_404(invoice_id)
+    if inv.status != "draft":
+        flash("Kan bara ändra nummer på utkast / Can only change number on drafts", "error")
+        return redirect(url_for("invoices_proforma", invoice_id=invoice_id))
+    new_number = request.form.get("invoice_number", "").strip()
+    if not re.match(r"^\d{4}-\d{3}$", new_number):
+        flash("Ogiltigt format — använd ÅÅÅÅ-NNN t.ex. 2025-007 / Invalid format — use YYYY-NNN e.g. 2025-007", "error")
+        return redirect(url_for("invoices_proforma", invoice_id=invoice_id))
+    conflict = Invoice.query.filter(Invoice.invoice_number == new_number, Invoice.id != invoice_id).first()
+    if conflict:
+        flash(f"Fakturanummer {new_number} används redan / Invoice number {new_number} already in use", "error")
+        return redirect(url_for("invoices_proforma", invoice_id=invoice_id))
+    inv.invoice_number = new_number
+    db.session.commit()
+    flash(f"Fakturanummer uppdaterat till {new_number} / Invoice number updated to {new_number}", "success")
+    return redirect(url_for("invoices_proforma", invoice_id=invoice_id))
+
 @app.route("/invoices/<int:invoice_id>/delete", methods=["POST"])
 @login_required
 def invoices_delete(invoice_id):
@@ -929,6 +1071,9 @@ def invoices_delete(invoice_id):
     for exp in inv.expenses:
         exp.invoice_id = None
         exp.status = "approved"
+    for m in inv.mileage_entries:
+        m.invoice_id = None
+        m.status = "approved"
     db.session.delete(inv)
     db.session.commit()
     flash("Faktura borttagen / Invoice deleted", "success")
@@ -981,6 +1126,133 @@ def change_password():
         db.session.commit()
         flash("Lösenord uppdaterat / Password updated", "success")
     return redirect(url_for("settings"))
+
+# ── Backup / Restore ──────────────────────────────────────────────────────────
+
+def _model_rows(model_class):
+    """Serialize all rows of a SQLAlchemy model to a list of plain dicts."""
+    rows = []
+    for obj in model_class.query.all():
+        d = {}
+        for col in obj.__table__.columns:
+            val = getattr(obj, col.name)
+            if isinstance(val, (datetime, date)):
+                val = val.isoformat()
+            d[col.name] = val
+        rows.append(d)
+    return rows
+
+
+def _restore_rows(model_class, records, date_cols=(), datetime_cols=()):
+    """Re-insert records (with original IDs) into the database."""
+    for r in records:
+        kwargs = dict(r)
+        for col in date_cols:
+            if kwargs.get(col):
+                kwargs[col] = date.fromisoformat(kwargs[col])
+        for col in datetime_cols:
+            if kwargs.get(col):
+                kwargs[col] = datetime.fromisoformat(kwargs[col])
+        db.session.add(model_class(**kwargs))
+
+
+@app.route("/settings/backup")
+@login_required
+def settings_backup():
+    payload = {
+        "version": 1,
+        "exported_at": datetime.utcnow().isoformat(),
+        "data": {
+            "clients":         _model_rows(Client),
+            "projects":        _model_rows(Project),
+            "purchase_orders": _model_rows(PurchaseOrder),
+            "po_hour_types":   _model_rows(POHourType),
+            "invoices":        _model_rows(Invoice),
+            "time_entries":    _model_rows(TimeEntry),
+            "expenses":        _model_rows(Expense),
+            "mileage_entries": _model_rows(MileageEntry),
+            "settings":        _model_rows(Settings),
+            "users":           _model_rows(User),
+        },
+    }
+    buf = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+    ts  = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    return send_file(
+        io.BytesIO(buf),
+        mimetype="application/json",
+        as_attachment=True,
+        download_name=f"onedesk_backup_{ts}.json",
+    )
+
+
+@app.route("/settings/restore", methods=["POST"])
+@login_required
+def settings_restore():
+    f = request.files.get("backup_file")
+    if not f or not f.filename:
+        flash("Ingen fil vald / No file selected", "error")
+        return redirect(url_for("settings"))
+
+    try:
+        payload = json.loads(f.read().decode("utf-8"))
+    except Exception as e:
+        flash(f"Ogiltig backup-fil / Invalid backup file: {e}", "error")
+        return redirect(url_for("settings"))
+
+    if payload.get("version") != 1:
+        flash("Okänd backup-version / Unknown backup version", "error")
+        return redirect(url_for("settings"))
+
+    d = payload.get("data", {})
+
+    try:
+        # Delete in FK dependency order (children first)
+        TimeEntry.query.delete()
+        MileageEntry.query.delete()
+        Expense.query.delete()
+        POHourType.query.delete()
+        PurchaseOrder.query.delete()
+        Invoice.query.delete()
+        Project.query.delete()
+        Client.query.delete()
+        Settings.query.delete()
+        User.query.delete()
+        db.session.flush()
+
+        # Restore in parent-first order
+        _restore_rows(Client, d.get("clients", []),
+                      datetime_cols=("created_at",))
+        _restore_rows(Project, d.get("projects", []),
+                      date_cols=("start_date", "end_date"),
+                      datetime_cols=("created_at",))
+        _restore_rows(PurchaseOrder, d.get("purchase_orders", []),
+                      date_cols=("valid_from", "valid_to"),
+                      datetime_cols=("created_at",))
+        _restore_rows(POHourType, d.get("po_hour_types", []),
+                      datetime_cols=("created_at",))
+        _restore_rows(Invoice, d.get("invoices", []),
+                      date_cols=("period_start", "period_end", "issue_date", "due_date"),
+                      datetime_cols=("created_at", "sent_at"))
+        _restore_rows(TimeEntry, d.get("time_entries", []),
+                      date_cols=("entry_date",),
+                      datetime_cols=("created_at",))
+        _restore_rows(Expense, d.get("expenses", []),
+                      date_cols=("expense_date",),
+                      datetime_cols=("created_at",))
+        _restore_rows(MileageEntry, d.get("mileage_entries", []),
+                      date_cols=("entry_date",),
+                      datetime_cols=("created_at",))
+        _restore_rows(Settings, d.get("settings", []))
+        _restore_rows(User, d.get("users", []))
+
+        db.session.commit()
+        flash("Databasen återställd / Database restored successfully", "success")
+    except Exception as e:
+        db.session.rollback()
+        flash(f"Fel vid återställning / Restore failed: {e}", "error")
+
+    return redirect(url_for("settings"))
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -1050,6 +1322,9 @@ def init_db():
             "ALTER TABLE time_entry ADD COLUMN hour_type_id INTEGER REFERENCES po_hour_type(id)",
             "ALTER TABLE po_hour_type ADD COLUMN hourly_rate REAL",
             "ALTER TABLE purchase_order ADD COLUMN po_amount REAL",
+            "ALTER TABLE project ADD COLUMN project_number VARCHAR(20)",
+            "ALTER TABLE client ADD COLUMN km_rate REAL DEFAULT 25.0",
+            "ALTER TABLE purchase_order ADD COLUMN km_rate REAL",
         ]
         for stmt in migrations:
             try:

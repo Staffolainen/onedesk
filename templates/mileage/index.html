@@ -1,0 +1,151 @@
+{% extends "base.html" %}
+{% block title %}{{ g.t.mileage }}{% endblock %}
+{% block page_title %}{{ g.t.mileage }}{% endblock %}
+
+{% block content %}
+<div style="display:grid;grid-template-columns:1fr 340px;gap:20px;align-items:start;">
+
+  <!-- List -->
+  <div>
+    {% if entries %}
+    <div class="card" style="padding:0;">
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>{{ g.t.date }}</th>
+              <th>{{ g.t.project }}</th>
+              <th>{{ g.t.description }}</th>
+              <th class="right">{{ "Km" }}</th>
+              <th class="right">{{ "Kr/km" }}</th>
+              <th class="right">{{ g.t.amount }}</th>
+              <th>{{ g.t.status }}</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for m in entries %}
+            <tr>
+              <td class="mono" style="white-space:nowrap;">{{ m.entry_date }}</td>
+              <td style="font-size:12px;">
+                {% if m.project %}
+                  <span style="color:var(--accent);">{{ m.project.client.name }}</span><br>
+                  {{ m.project.name }}
+                {% else %}—{% endif %}
+              </td>
+              <td style="color:var(--muted);font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                {{ m.description or "—" }}
+              </td>
+              <td class="right mono">{{ "%.0f"|format(m.km) }}</td>
+              <td class="right mono" style="color:var(--muted);font-size:12px;">{{ m.km_rate|fmt_amount }}</td>
+              <td class="right mono" style="font-weight:700;">{{ m.amount|fmt_amount }}</td>
+              <td>
+                <span class="badge badge-{{ m.status }}">
+                  {% if m.status == "approved" %}{{ "Godkänd" if g.lang == "sv" else "Approved" }}
+                  {% elif m.status == "invoiced" %}{{ "Fakturerad" if g.lang == "sv" else "Invoiced" }}
+                  {% else %}{{ m.status }}{% endif %}
+                </span>
+                {% if m.billable %}
+                <span class="badge badge-billable" style="margin-left:4px;">{{ g.t.billable }}</span>
+                {% else %}
+                <span class="badge badge-internal" style="margin-left:4px;">{{ g.t.internal }}</span>
+                {% endif %}
+              </td>
+              <td class="right">
+                {% if not m.invoice_id %}
+                <form method="POST" action="{{ url_for('mileage_delete', entry_id=m.id) }}" style="display:inline;">
+                  <button type="submit" class="btn btn-ghost btn-sm"
+                          style="font-size:11px;color:var(--muted);"
+                          onclick="return confirm('{{ 'Ta bort?' if g.lang == 'sv' else 'Delete?' }}')">✕</button>
+                </form>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% else %}
+    <div class="card" style="text-align:center;padding:60px;">
+      <div style="font-size:48px;margin-bottom:16px;opacity:0.3;">◎</div>
+      <p style="color:var(--muted);">{{ "Ingen reseersättning registrerad" if g.lang == "sv" else "No mileage entries yet" }}</p>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Add form -->
+  <div class="card" style="position:sticky;top:calc(var(--nav-h) + 60px);">
+    <div class="card-title">{{ "Rapportera resa" if g.lang == "sv" else "Report mileage" }}</div>
+    <form method="POST" action="{{ url_for('mileage_index') }}">
+
+      <div class="form-group">
+        <label class="form-label">{{ g.t.date }} *</label>
+        <input type="date" name="entry_date" class="form-control" value="{{ today.isoformat() }}" required>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">{{ g.t.project }} *</label>
+        <select name="project_id" id="mile-project" class="form-control" required onchange="updateRate(this)">
+          <option value="">— {{ "Välj uppdrag" if g.lang == "sv" else "Select assignment" }} —</option>
+          {% for p in projects %}
+          <option value="{{ p.id }}" data-kmrate="{{ p.client.km_rate }}">
+            {{ p.client.name }} / {{ p.name }}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+        <div class="form-group">
+          <label class="form-label">{{ "Km" }} *</label>
+          <input type="number" name="km" class="form-control" step="1" min="0" required
+                 placeholder="0">
+        </div>
+        <div class="form-group">
+          <label class="form-label">{{ "Kr/km" }}</label>
+          <input type="number" name="km_rate" id="mile-rate" class="form-control" step="0.1" min="0"
+                 placeholder="{{ "Auto" if g.lang == "sv" else "Auto" }}"
+                 title="{{ 'Lämna tomt för att använda PO/kundpris' if g.lang == 'sv' else 'Leave blank to use PO/client rate' }}">
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">{{ g.t.description }}</label>
+        <input type="text" name="description" class="form-control"
+               placeholder="{{ 'T.ex. Kundbesök Stockholm' if g.lang == 'sv' else 'e.g. Client visit Stockholm' }}">
+      </div>
+
+      <div class="form-group" style="display:flex;align-items:center;gap:8px;">
+        <input type="checkbox" name="billable" value="1" id="mile-billable" checked
+               style="accent-color:var(--accent);width:14px;height:14px;">
+        <label for="mile-billable" style="font-size:13px;cursor:pointer;">{{ g.t.billable }}</label>
+      </div>
+
+      <button type="submit" class="btn btn-primary" style="width:100%;padding:12px;">
+        {{ "Spara →" if g.lang == "sv" else "Save →" }}
+      </button>
+    </form>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const projectRates = {
+  {% for p in projects %}
+  "{{ p.id }}": {{ p.client.km_rate }},
+  {% endfor %}
+};
+function updateRate(sel) {
+  const rate = projectRates[sel.value];
+  const input = document.getElementById('mile-rate');
+  if (rate) {
+    input.placeholder = rate + ' ({{ "kundpris" if g.lang == "sv" else "client rate" }})';
+  } else {
+    input.placeholder = '{{ "Auto" }}';
+  }
+}
+</script>
+{% endblock %}

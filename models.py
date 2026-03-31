@@ -60,6 +60,7 @@ class Client(db.Model):
     address = db.Column(db.Text)
     vat_nr = db.Column(db.String(50))
     hourly_rate = db.Column(db.Float, nullable=False, default=1500.0)
+    km_rate = db.Column(db.Float, default=25.0)   # default mileage rate SEK/km
     currency = db.Column(db.String(10), default="SEK")
     payment_days = db.Column(db.Integer, default=30)
     invoice_language = db.Column(db.String(10), default="sv")  # sv or en
@@ -73,6 +74,7 @@ class Client(db.Model):
 class Project(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     client_id = db.Column(db.Integer, db.ForeignKey("client.id"), nullable=False)
+    project_number = db.Column(db.String(20))   # e.g. P2601
     name = db.Column(db.String(200), nullable=False)
     description = db.Column(db.Text)
     start_date = db.Column(db.Date)
@@ -80,8 +82,27 @@ class Project(db.Model):
     active = db.Column(db.Boolean, default=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+    @classmethod
+    def generate_number(cls, year=None):
+        """Generate next project number for the given year, e.g. P2601, P2602."""
+        if year is None:
+            year = date.today().year
+        yy = str(year)[-2:]
+        prefix = f"P{yy}"
+        existing = cls.query.filter(cls.project_number.like(f"{prefix}%")).all()
+        max_seq = 0
+        for p in existing:
+            try:
+                seq = int(p.project_number[len(prefix):])
+                if seq > max_seq:
+                    max_seq = seq
+            except (ValueError, TypeError):
+                pass
+        return f"{prefix}{max_seq + 1:02d}"
+
     time_entries = db.relationship("TimeEntry", backref="project", lazy=True, cascade="all, delete-orphan")
     expenses = db.relationship("Expense", backref="project", lazy=True)
+    mileage_entries = db.relationship("MileageEntry", backref="project", lazy=True, cascade="all, delete-orphan")
     purchase_orders = db.relationship(
         "PurchaseOrder", backref="project", lazy=True,
         cascade="all, delete-orphan",
@@ -126,6 +147,14 @@ class Project(db.Model):
     def current_hourly_rate(self):
         return self.get_hourly_rate(date.today())
 
+    def get_km_rate(self, for_date=None):
+        """Return the applicable km rate for the given date.
+        Uses the active PO's km_rate if set, else falls back to client default."""
+        po = self.get_active_po(for_date)
+        if po is not None and po.km_rate is not None:
+            return po.km_rate
+        return self.client.km_rate or 25.0
+
 
 class PurchaseOrder(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -134,6 +163,7 @@ class PurchaseOrder(db.Model):
     description = db.Column(db.Text)
     po_amount = db.Column(db.Float, nullable=True)  # Total PO budget (excl. VAT), None = open
     hourly_rate = db.Column(db.Float, nullable=False)
+    km_rate = db.Column(db.Float, nullable=True)   # None = inherit from client
     currency = db.Column(db.String(10), default="SEK")
     valid_from = db.Column(db.Date)             # None = from the beginning
     valid_to = db.Column(db.Date)               # None = no expiry
@@ -237,6 +267,7 @@ class Invoice(db.Model):
 
     time_entries = db.relationship("TimeEntry", backref="invoice", lazy=True, foreign_keys=[TimeEntry.invoice_id])
     expenses = db.relationship("Expense", backref="invoice", lazy=True, foreign_keys=[Expense.invoice_id])
+    mileage_entries = db.relationship("MileageEntry", backref="invoice", lazy=True, foreign_keys="MileageEntry.invoice_id")
 
     def generate_number(self, fy_start_month=5):
         """Generate invoice number based on fiscal year, e.g. 2025-001.
@@ -247,3 +278,22 @@ class Invoice(db.Model):
             Invoice.invoice_number.like(f"{fy}-%")
         ).count() + 1
         self.invoice_number = f"{fy}-{count:03d}"
+
+
+class MileageEntry(db.Model):
+    """Mileage reimbursement (Reseersättning) entry."""
+    __tablename__ = "mileage_entry"
+    id = db.Column(db.Integer, primary_key=True)
+    project_id = db.Column(db.Integer, db.ForeignKey("project.id"), nullable=True)
+    entry_date = db.Column(db.Date, nullable=False, default=date.today)
+    km = db.Column(db.Float, nullable=False)
+    km_rate = db.Column(db.Float, nullable=False)   # rate resolved and stored at entry time
+    description = db.Column(db.Text)
+    billable = db.Column(db.Boolean, default=True)
+    status = db.Column(db.String(20), default="approved")  # approved, invoiced
+    invoice_id = db.Column(db.Integer, db.ForeignKey("invoice.id"), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    @property
+    def amount(self):
+        return round(self.km * self.km_rate, 2)

@@ -74,6 +74,37 @@
     </div>
   </div>
 
+  <!-- Backup & Restore -->
+  <div class="card" style="margin-bottom:16px;">
+    <div class="card-title">{{ "Säkerhetskopiering" if g.lang == "sv" else "Backup & Restore" }}</div>
+
+    <!-- Export -->
+    <div style="margin-bottom:20px;">
+      <div style="font-size:13px;color:var(--muted);margin-bottom:10px;">
+        {{ "Exportera hela databasen som JSON-fil." if g.lang == "sv" else "Export the entire database as a JSON file." }}
+      </div>
+      <a href="{{ url_for('settings_backup') }}" class="btn btn-secondary btn-sm">
+        ↓ {{ "Exportera backup" if g.lang == "sv" else "Download backup" }}
+      </a>
+    </div>
+
+    <!-- Import -->
+    <div style="border-top:1px solid var(--border);padding-top:16px;">
+      <div style="font-size:13px;color:var(--muted);margin-bottom:10px;">
+        {{ "Återställ från en tidigare exporterad backup-fil. All befintlig data ersätts." if g.lang == "sv" else "Restore from a previously exported backup file. All existing data will be replaced." }}
+      </div>
+      <form method="POST" action="{{ url_for('settings_restore') }}" enctype="multipart/form-data"
+            onsubmit="return confirm('{{ 'All befintlig data tas bort och ersätts med backup-filens innehåll. Fortsätt?' if g.lang == 'sv' else 'All existing data will be deleted and replaced with the backup file contents. Continue?' }}')">
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+          <input type="file" name="backup_file" accept=".json" class="form-control" style="flex:1;min-width:200px;" required>
+          <button type="submit" class="btn btn-danger btn-sm">
+            ↑ {{ "Återställ" if g.lang == "sv" else "Restore" }}
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <!-- Change password -->
   <div class="card">
     <div class="card-title">{{ "Byt lösenord" if g.lang == "sv" else "Change password" }}</div>

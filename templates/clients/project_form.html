@@ -1,6 +1,9 @@
 {% extends "base.html" %}
-{% block title %}{{ "Nytt projekt" if g.lang == "sv" else "New Project" }}{% endblock %}
-{% block page_title %}{{ "Nytt projekt för" if g.lang == "sv" else "New project for" }} {{ client.name }}{% endblock %}
+{% set editing = project is not none %}
+{% block title %}{{ ("Redigera uppdrag" if g.lang == "sv" else "Edit Assignment") if editing else ("Nytt uppdrag" if g.lang == "sv" else "New Assignment") }}{% endblock %}
+{% block page_title %}
+  {{ ("Redigera uppdrag" if g.lang == "sv" else "Edit assignment") if editing else (("Nytt uppdrag för" if g.lang == "sv" else "New assignment for") + " " + client.name) }}
+{% endblock %}
 
 {% block topbar_actions %}
   <a href="{{ url_for('clients_list') }}" class="btn btn-ghost btn-sm">← {{ g.t.back }}</a>
@@ -9,23 +12,53 @@
 {% block content %}
 <div style="max-width:480px;margin:0 auto;">
   <div class="card">
-    <form method="POST" action="{{ url_for('projects_new', client_id=client.id) }}">
+    <form method="POST" action="{{ url_for('projects_edit', project_id=project.id) if editing else url_for('projects_new', client_id=client.id) }}">
+
       <div class="form-group">
-        <label class="form-label">{{ "Projektnamn" if g.lang == "sv" else "Project name" }} *</label>
+        <label class="form-label">{{ "Uppdragsnummer" if g.lang == "sv" else "Assignment number" }}</label>
+        <input type="text" name="project_number" class="form-control"
+               value="{{ project.project_number if (editing and project.project_number) else next_number }}"
+               placeholder="{{ 'Autogenereras' if g.lang == 'sv' else 'Auto-generated' }}">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">{{ "Uppdragsnamn" if g.lang == "sv" else "Assignment name" }} *</label>
         <input type="text" name="name" class="form-control" required autofocus
+               value="{{ project.name if editing else '' }}"
                placeholder="{{ 'T.ex. IT-strategi 2025' if g.lang == 'sv' else 'e.g. IT Strategy 2025' }}">
       </div>
+
       <div class="form-group">
         <label class="form-label">{{ "Beskrivning" if g.lang == "sv" else "Description" }}</label>
-        <textarea name="description" class="form-control" rows="2"></textarea>
+        <textarea name="description" class="form-control" rows="2">{{ project.description if editing else '' }}</textarea>
       </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div class="form-group">
+          <label class="form-label">{{ "Startdatum" if g.lang == "sv" else "Start date" }}</label>
+          <input type="date" name="start_date" class="form-control"
+                 value="{{ project.start_date.isoformat() if editing and project.start_date else '' }}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">{{ "Slutdatum" if g.lang == "sv" else "End date" }}</label>
+          <input type="date" name="end_date" class="form-control"
+                 value="{{ project.end_date.isoformat() if editing and project.end_date else '' }}">
+        </div>
+      </div>
+
+      {% if editing %}
       <div class="form-group">
-        <label class="form-label">{{ "Startdatum" if g.lang == "sv" else "Start date" }}</label>
-        <input type="date" name="start_date" class="form-control">
+        <label class="form-label">{{ "Status" }}</label>
+        <select name="active" class="form-control">
+          <option value="1" {% if project.active %}selected{% endif %}>{{ "Aktiv" if g.lang == "sv" else "Active" }}</option>
+          <option value="0" {% if not project.active %}selected{% endif %}>{{ "Inaktiv" if g.lang == "sv" else "Inactive" }}</option>
+        </select>
       </div>
-      <div style="display:flex;gap:10px;">
+      {% endif %}
+
+      <div style="display:flex;gap:10px;margin-top:4px;">
         <button type="submit" class="btn btn-primary" style="flex:1;padding:13px;">
-          {{ "Skapa projekt" if g.lang == "sv" else "Create project" }}
+          {{ ("Spara ändringar" if g.lang == "sv" else "Save changes") if editing else ("Skapa uppdrag" if g.lang == "sv" else "Create assignment") }}
         </button>
         <a href="{{ url_for('clients_list') }}" class="btn btn-ghost" style="padding:13px 20px;">{{ g.t.cancel }}</a>
       </div>

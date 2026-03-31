@@ -51,11 +51,21 @@
                  step="1" min="0" required>
         </div>
         <div class="form-group">
+          <label class="form-label">{{ "Milersättning (SEK/km)" if g.lang == "sv" else "Mileage rate (SEK/km)" }}</label>
+          <input type="number" name="km_rate" class="form-control"
+                 value="{{ client.km_rate if client else 25 }}"
+                 step="0.1" min="0"
+                 placeholder="25">
+        </div>
+      </div>
+      <div class="grid-2">
+        <div class="form-group">
           <label class="form-label">{{ "Betalningsvillkor (dagar)" if g.lang == "sv" else "Payment terms (days)" }}</label>
           <input type="number" name="payment_days" class="form-control"
                  value="{{ client.payment_days if client else 30 }}"
                  min="0" max="90">
         </div>
+        <div></div>
       </div>
 
       <div class="form-group">

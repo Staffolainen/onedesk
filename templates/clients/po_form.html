@@ -1,10 +1,10 @@
 {% extends "base.html" %}
-{% block title %}{{ "Inköpsorder" if g.lang == "sv" else "Purchase Order" }}{% endblock %}
+{% block title %}{{ "Beställning" if g.lang == "sv" else "Order" }}{% endblock %}
 {% block page_title %}
   {% if po %}
-    {{ "Redigera PO" if g.lang == "sv" else "Edit PO" }}
+    {{ "Redigera beställning" if g.lang == "sv" else "Edit order" }}
   {% else %}
-    {{ "Ny inköpsorder" if g.lang == "sv" else "New Purchase Order" }}
+    {{ "Ny beställning" if g.lang == "sv" else "New order" }}
   {% endif %}
   – {{ project.name }}
 {% endblock %}
@@ -16,17 +16,17 @@
 {% block content %}
 <div style="max-width:520px;margin:0 auto;">
 
-  <!-- PO details card -->
+  <!-- Order details card -->
   <div class="card">
     <div style="font-size:11px;color:var(--muted);margin-bottom:16px;font-family:var(--mono);letter-spacing:1px;">
       {{ project.client.name }} › {{ project.name }}
     </div>
     <form method="POST">
       <div class="form-group">
-        <label class="form-label">{{ "PO-nummer / referens" if g.lang == "sv" else "PO number / reference" }}</label>
+        <label class="form-label">{{ "Beställningsnummer / referens" if g.lang == "sv" else "Order number / reference" }}</label>
         <input type="text" name="po_number" class="form-control"
                value="{{ po.po_number or '' if po else '' }}"
-               placeholder="{{ 'T.ex. PO-2025-001' if g.lang == 'sv' else 'e.g. PO-2025-001' }}">
+               placeholder="{{ 'T.ex. BST-2025-001' if g.lang == 'sv' else 'e.g. ORD-2025-001' }}">
       </div>
       <div class="form-group">
         <label class="form-label">{{ "Beskrivning" if g.lang == "sv" else "Description" }}</label>
@@ -39,11 +39,17 @@
                  value="{{ po.hourly_rate if po else project.client.hourly_rate }}">
         </div>
         <div class="form-group">
-          <label class="form-label">{{ "PO-belopp (SEK, ex. moms)" if g.lang == "sv" else "PO amount (SEK, excl. VAT)" }}</label>
-          <input type="number" name="po_amount" class="form-control" step="1" min="0"
-                 value="{{ po.po_amount|int if po and po.po_amount else '' }}"
-                 placeholder="{{ 'Tomt = öppet PO' if g.lang == 'sv' else 'Empty = open PO' }}">
+          <label class="form-label">{{ "Milersättning (SEK/km)" if g.lang == "sv" else "Mileage rate (SEK/km)" }}</label>
+          <input type="number" name="km_rate" class="form-control" step="0.1" min="0"
+                 value="{{ po.km_rate if po and po.km_rate is not none else '' }}"
+                 placeholder="{{ 'Tomt = använd kundpris (' + (project.client.km_rate|string) + ')' if g.lang == 'sv' else 'Empty = use client rate (' + (project.client.km_rate|string) + ')' }}">
         </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">{{ "Beställningsbelopp (SEK, ex. moms)" if g.lang == "sv" else "Order amount (SEK, excl. VAT)" }}</label>
+        <input type="number" name="po_amount" class="form-control" step="1" min="0"
+               value="{{ po.po_amount|int if po and po.po_amount else '' }}"
+               placeholder="{{ 'Tomt = öppen beställning' if g.lang == 'sv' else 'Empty = open order' }}">
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
         <div class="form-group">
@@ -60,9 +66,9 @@
       <div style="display:flex;gap:10px;margin-top:8px;">
         <button type="submit" class="btn btn-primary" style="flex:1;padding:13px;">
           {% if po %}
-            {{ "Spara PO" if g.lang == "sv" else "Save PO" }}
+            {{ "Spara beställning" if g.lang == "sv" else "Save order" }}
           {% else %}
-            {{ "Skapa PO" if g.lang == "sv" else "Create PO" }}
+            {{ "Skapa beställning" if g.lang == "sv" else "Create order" }}
           {% endif %}
         </button>
         <a href="{{ url_for('clients_list') }}" class="btn btn-ghost" style="padding:13px 20px;">{{ g.t.cancel }}</a>
@@ -71,9 +77,9 @@
 
     {% if po %}
     <form method="POST" action="{{ url_for('po_delete', po_id=po.id) }}" style="margin-top:12px;"
-          onsubmit="return confirm('{{ 'Ta bort detta PO?' if g.lang == 'sv' else 'Delete this PO?' }}')">
+          onsubmit="return confirm('{{ 'Ta bort denna beställning?' if g.lang == 'sv' else 'Delete this order?' }}')">
       <button type="submit" class="btn btn-ghost btn-sm" style="color:var(--danger,#c44f5a);width:100%;">
-        {{ "Ta bort PO" if g.lang == "sv" else "Delete PO" }}
+        {{ "Ta bort beställning" if g.lang == "sv" else "Delete order" }}
       </button>
     </form>
     {% endif %}
@@ -90,7 +96,7 @@
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:20px;">
       <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:14px;">
         <div style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);margin-bottom:6px;">
-          {{ "PO-belopp" if g.lang == "sv" else "PO amount" }}
+          {{ "Beställningsbelopp" if g.lang == "sv" else "Order amount" }}
         </div>
         <div style="font-size:16px;font-weight:700;font-family:var(--mono);">{{ po.po_amount|fmt_amount }}</div>
       </div>
@@ -147,16 +153,13 @@
             </span>
             {% endif %}
           </td>
-          <td style="padding:8px 0;border-bottom:1px solid var(--border);text-align:right;
-                     font-family:var(--mono);">
+          <td style="padding:8px 0;border-bottom:1px solid var(--border);text-align:right;font-family:var(--mono);">
             {{ "%.2f"|format(row.hours) if row.hours else "–" }}
           </td>
-          <td style="padding:8px 0;border-bottom:1px solid var(--border);text-align:right;
-                     font-family:var(--mono);color:var(--muted);">
+          <td style="padding:8px 0;border-bottom:1px solid var(--border);text-align:right;font-family:var(--mono);color:var(--muted);">
             {{ row.rate|fmt_amount }}
           </td>
-          <td style="padding:8px 0;border-bottom:1px solid var(--border);text-align:right;
-                     font-family:var(--mono);">
+          <td style="padding:8px 0;border-bottom:1px solid var(--border);text-align:right;font-family:var(--mono);">
             {% if row.hours %}{{ row.amount|fmt_amount }}{% else %}–{% endif %}
           </td>
         </tr>
@@ -168,8 +171,7 @@
             {{ "%.2f"|format(total_hours) }}
           </td>
           <td></td>
-          <td style="padding:10px 0;text-align:right;font-family:var(--mono);font-weight:700;
-                     color:var(--accent);">
+          <td style="padding:10px 0;text-align:right;font-family:var(--mono);font-weight:700;color:var(--accent);">
             {{ total_amount|fmt_amount }}
           </td>
         </tr>
@@ -183,12 +185,11 @@
   </div>
   {% endif %}
 
-  <!-- Hour types card — only shown when editing an existing PO -->
+  <!-- Hour types card -->
   {% if po %}
   <div class="card">
     <div class="card-title">{{ "Tidtyper" if g.lang == "sv" else "Hour Types" }}</div>
 
-    <!-- Existing hour types — update forms declared outside the row div to avoid nesting -->
     {% set active_types = po.hour_types | selectattr('active') | list %}
     {% if active_types %}
     {% for ht in active_types %}
@@ -209,7 +210,7 @@
                  placeholder="{{ po.hourly_rate|int }}"
                  class="form-control"
                  style="width:100px;padding:5px 9px;font-size:13px;font-family:var(--mono);"
-                 title="{{ 'Tomt = använd PO-timpris' if g.lang == 'sv' else 'Empty = use PO rate' }}">
+                 title="{{ 'Tomt = använd beställningens timpris' if g.lang == 'sv' else 'Empty = use order rate' }}">
           <span style="font-family:var(--mono);font-size:10px;color:var(--muted);white-space:nowrap;">
             {{ "kr/h" if g.lang == "sv" else "/h" }}
           </span>
@@ -246,7 +247,7 @@
                placeholder="{{ po.hourly_rate|int }}"
                class="form-control"
                style="width:100px;padding:6px 9px;font-size:12px;font-family:var(--mono);"
-               title="{{ 'Tomt = använd PO-timpris' if g.lang == 'sv' else 'Empty = use PO rate' }}">
+               title="{{ 'Tomt = använd beställningens timpris' if g.lang == 'sv' else 'Empty = use order rate' }}">
         <span style="font-family:var(--mono);font-size:10px;color:var(--muted);white-space:nowrap;">
           {{ "kr/h" if g.lang == "sv" else "/h" }}
         </span>
@@ -265,14 +266,14 @@
     <div style="margin-top:14px;padding:10px 12px;background:var(--surface2);border-radius:6px;
                 border-left:3px solid var(--border);">
       <p style="font-family:var(--mono);font-size:10px;color:var(--muted);line-height:1.6;">
-        {{ "Normal och Restid skapas automatiskt för nya PO." if g.lang == "sv" else "Normal and Travel time are created automatically for new POs." }}<br>
-        {{ "Sjukfrånvaro rapporteras alltid som intern tid, aldrig mot PO." if g.lang == "sv" else "Sick leave is always reported as internal time, never against a PO." }}
+        {{ "Normal och Restid skapas automatiskt för nya beställningar." if g.lang == "sv" else "Normal and Travel time are created automatically for new orders." }}<br>
+        {{ "Sjukfrånvaro rapporteras alltid som intern tid, aldrig mot beställning." if g.lang == "sv" else "Sick leave is always reported as internal time, never against an order." }}
       </p>
     </div>
   </div>
   {% else %}
   <div style="text-align:center;padding:16px;font-family:var(--mono);font-size:11px;color:var(--muted);">
-    {{ "Spara PO:t för att lägga till tidtyper" if g.lang == "sv" else "Save the PO to manage hour types" }}
+    {{ "Spara beställningen för att lägga till tidtyper" if g.lang == "sv" else "Save the order to manage hour types" }}
   </div>
   {% endif %}
 

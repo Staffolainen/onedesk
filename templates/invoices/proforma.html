@@ -91,7 +91,19 @@
   <div class="proforma-meta">
     <div class="meta-item">
       <div class="meta-label">{{ "Fakturanr" if g.lang == "sv" else "Invoice No." }}</div>
+      {% if inv.status == "draft" %}
+      <form method="POST" action="{{ url_for('invoices_set_number', invoice_id=inv.id) }}"
+            style="display:flex;align-items:center;gap:6px;">
+        <input type="text" name="invoice_number" value="{{ inv.invoice_number }}"
+               class="form-control mono"
+               style="width:120px;padding:4px 8px;font-size:13px;font-weight:600;"
+               pattern="\d{4}-\d{3}" title="{{ 'Format: ÅÅÅÅ-NNN t.ex. 2025-007' if g.lang == 'sv' else 'Format: YYYY-NNN e.g. 2025-007' }}"
+               required>
+        <button type="submit" class="btn btn-ghost btn-sm" title="{{ 'Spara nummer' if g.lang == 'sv' else 'Save number' }}">↵</button>
+      </form>
+      {% else %}
       <div class="meta-value mono">{{ inv.invoice_number }}</div>
+      {% endif %}
     </div>
     <div class="meta-item">
       <div class="meta-label">{{ "Period" }}</div>

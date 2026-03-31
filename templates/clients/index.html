@@ -38,18 +38,20 @@
     {% if c.projects %}
     <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border);">
       <div style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:2px;color:var(--muted);margin-bottom:8px;">
-        {{ "Projekt" if g.lang == "sv" else "Projects" }}
+        {{ "Uppdrag" if g.lang == "sv" else "Assignments" }}
       </div>
       {% for p in c.projects if p.active %}
       <div style="margin-bottom:8px;padding:10px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;">
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
           <div>
+            {% if p.project_number %}<span style="font-family:var(--mono);font-size:10px;color:var(--accent);margin-right:8px;">{{ p.project_number }}</span>{% endif %}
             <span style="font-weight:700;font-size:13px;">{{ p.name }}</span>
             {% if p.start_date %}<span style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-left:8px;">{{ p.start_date }}{% if p.end_date %} – {{ p.end_date }}{% endif %}</span>{% endif %}
           </div>
           <div style="display:flex;gap:8px;align-items:center;">
             <span style="font-family:var(--mono);font-size:12px;font-weight:700;">{{ p.current_hourly_rate|fmt_amount }} SEK/h</span>
-            <a href="{{ url_for('po_new', project_id=p.id) }}" class="btn btn-ghost btn-sm" style="font-size:11px;">+ PO</a>
+            <a href="{{ url_for('projects_edit', project_id=p.id) }}" class="btn btn-ghost btn-sm" style="font-size:11px;">{{ g.t.edit }}</a>
+            <a href="{{ url_for('po_new', project_id=p.id) }}" class="btn btn-ghost btn-sm" style="font-size:11px;">+ {{ "Beställning" if g.lang == "sv" else "Order" }}</a>
           </div>
         </div>
         {% set active_pos = p.purchase_orders | selectattr('active') | list %}

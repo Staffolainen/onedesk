@@ -96,9 +96,9 @@
 
       <div class="grid-2">
         <div class="form-group">
-          <label class="form-label">{{ "Projekt (valfritt)" if g.lang == "sv" else "Project (optional)" }}</label>
+          <label class="form-label">{{ "Uppdrag (valfritt)" if g.lang == "sv" else "Assignment (optional)" }}</label>
           <select name="project_id" class="form-control">
-            <option value="">— {{ "Inget projekt" if g.lang == "sv" else "No project" }} —</option>
+            <option value="">— {{ "Inget uppdrag" if g.lang == "sv" else "No assignment" }} —</option>
             {% for p in projects %}
             <option value="{{ p.id }}">{{ p.client.name }} / {{ p.name }}</option>
             {% endfor %}

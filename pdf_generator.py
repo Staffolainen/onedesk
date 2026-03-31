@@ -26,7 +26,7 @@ SZ     = 10
 SZ_BIG = 14
 
 PW       = 180 * mm
-TOTALS_H = 32 * mm
+TOTALS_H = 50 * mm
 
 
 # ── Number formatting ─────────────────────────────────────────────────────────
@@ -61,6 +61,10 @@ def _styles():
     s["big_b"]   = ParagraphStyle("big_b",   fontName=FONTB, fontSize=SZ_BIG, textColor=C_BLACK, leading=SZ_BIG * 1.3)
     s["inv"]     = ParagraphStyle("inv",     fontName=FONTB, fontSize=20,     textColor=C_BLACK, leading=24)
     s["company"] = ParagraphStyle("company", fontName=FONTB, fontSize=13,     textColor=C_BLACK, leading=16)
+    s["nr"]      = ParagraphStyle("nr",      fontName=FONT,  fontSize=SZ,     textColor=C_BLACK, leading=SZ * 1.45,    alignment=2)
+    s["br"]      = ParagraphStyle("br",      fontName=FONTB, fontSize=SZ,     textColor=C_BLACK, leading=SZ * 1.45,    alignment=2)
+    s["big_br"]  = ParagraphStyle("big_br",  fontName=FONTB, fontSize=SZ_BIG, textColor=C_BLACK, leading=SZ_BIG * 1.3, alignment=2)
+    s["inv_r"]   = ParagraphStyle("inv_r",   fontName=FONTB, fontSize=20,     textColor=C_BLACK, leading=24,           alignment=2)
     return s
 
 
@@ -145,7 +149,13 @@ def _ctx(invoice, config):
         for e in entries
         if e.hour_type and e.hour_type.po and e.hour_type.po.po_number
     )))
-    rounding = round(invoice.total) - invoice.total
+    project_numbers = ", ".join(sorted(set(
+        e.project.project_number
+        for e in entries
+        if e.project and e.project.project_number
+    )))
+    # rounding = difference between stored whole-kronor total and exact subtotal+vat
+    rounding = round(invoice.total - invoice.subtotal - invoice.vat_amount, 2)
     by_project = {}
     for e in entries:
         pid = e.project_id
@@ -166,6 +176,7 @@ def _ctx(invoice, config):
     return dict(
         lang=lang, company=company, logo_path=logo_path, logo_exists=logo_exists,
         entries=entries, total_hours=total_hours, po_numbers=po_numbers,
+        project_numbers=project_numbers,
         rounding=rounding, by_project=by_project,
         rate_summary=list(rate_groups.values()),
     )
@@ -185,19 +196,24 @@ def _build_invoice_story(invoice, ctx, s):
     else:
         logo_cell = Paragraph(co["name"], s["company"])
 
-    inv_meta = Table([
-        [Paragraph("Fakturanr"    if sv else "Invoice No.",   s["n"]),
-         Paragraph(str(invoice.invoice_number),               s["b"])],
-        [Paragraph("Fakturadatum" if sv else "Invoice date",  s["n"]),
-         Paragraph(str(invoice.issue_date),                   s["n"])],
-    ], colWidths=[38*mm, 32*mm], style=TableStyle([
+    inv_meta_rows = [
+        [Paragraph("Fakturanr"      if sv else "Invoice No.",    s["nr"]),
+         Paragraph(str(invoice.invoice_number),                  s["br"])],
+        [Paragraph("Fakturadatum"   if sv else "Invoice date",   s["nr"]),
+         Paragraph(str(invoice.issue_date),                      s["nr"])],
+    ]
+    if ctx["project_numbers"]:
+        inv_meta_rows.append([
+            Paragraph("Uppdragsnr" if sv else "Assignment No.", s["nr"]),
+            Paragraph(ctx["project_numbers"],                   s["br"]),
+        ])
+    inv_meta = Table(inv_meta_rows, colWidths=[38*mm, 32*mm], style=TableStyle([
         *_p0(),
-        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
     ]))
 
     story.append(Table(
         [[logo_cell,
-          Table([[Paragraph("FAKTURA" if sv else "INVOICE", s["inv"])],
+          Table([[Paragraph("FAKTURA" if sv else "INVOICE", s["inv_r"])],
                  [inv_meta]], colWidths=[70*mm],
                 style=TableStyle(_p0()))]],
         colWidths=[PW - 70*mm, 70*mm],
@@ -239,7 +255,7 @@ def _build_invoice_story(invoice, ctx, s):
 
     half = PW / 2
     left_meta = [
-        mrow("Kundnr"          if sv else "Customer No.",   client.fortnox_customer_nr or "–"),
+        mrow("Org.nr"           if sv else "Org. No.",       client.org_nr or "–"),
         mrow("Er referens"     if sv else "Your ref.",      client.contact_name or "–"),
         mrow("Ert ordernr"     if sv else "Your order No.", ctx["po_numbers"] or "–"),
         mrow("Ert VAT-nr"      if sv else "Your VAT No.",   client.vat_nr or "–"),
@@ -293,15 +309,18 @@ def _build_invoice_story(invoice, ctx, s):
         yr    = e.entry_date.year
         mo    = e.entry_date.month
         dtype = e.display_type or "Normal"
-        key   = (yr, mo, dtype, rate)
+        key   = (e.project_id, yr, mo, dtype, rate)
         if key not in month_groups:
-            month_groups[key] = {"year": yr, "month": mo, "type": dtype, "rate": rate, "hours": 0.0}
+            month_groups[key] = {
+                "project_name": e.project.name,
+                "year": yr, "month": mo, "type": dtype, "rate": rate, "hours": 0.0,
+            }
         month_groups[key]["hours"] += e.hours
 
     expense_sec_rows = []
     for key in sorted(month_groups.keys()):
         g      = month_groups[key]
-        desc   = f"{g['year']} {month_names[g['month'] - 1]}  {g['type']}"
+        desc   = f"{g['year']} {month_names[g['month'] - 1]}  {g['project_name']} - {g['type']}"
         amount = g["hours"] * g["rate"]
         vat_kr = amount * 0.25
         rows.append([td(desc), td(fmt_hours(g["hours"])), td("tim" if sv else "hr"),
@@ -316,6 +335,27 @@ def _build_invoice_story(invoice, ctx, s):
             rows.append([td(desc), td("1"), td("st" if sv else "pcs"),
                          td(sek(exp.amount_excl_vat)), td(f"{int(exp.vat_rate)}%"),
                          td(sek(vat_kr)), td(sek(exp.amount_excl_vat))])
+
+    if invoice.mileage_entries:
+        expense_sec_rows.append(len(rows))
+        rows.append([tdb("Reseersättning" if sv else "Mileage"), "", "", "", "", "", ""])
+        # Group mileage by (year, month, project)
+        mile_groups = {}
+        for m in sorted(invoice.mileage_entries, key=lambda x: x.entry_date):
+            yr, mo = m.entry_date.year, m.entry_date.month
+            key = (yr, mo, m.project_id, m.km_rate)
+            if key not in mile_groups:
+                mile_groups[key] = {"year": yr, "month": mo,
+                                    "project_name": m.project.name if m.project else "",
+                                    "km_rate": m.km_rate, "km": 0.0}
+            mile_groups[key]["km"] += m.km
+        for key in sorted(mile_groups.keys()):
+            g2 = mile_groups[key]
+            desc   = f"{g2['year']} {month_names[g2['month'] - 1]}  {g2['project_name']}"
+            amount = g2["km"] * g2["km_rate"]
+            vat_kr = amount * 0.25
+            rows.append([td(desc), td(f"{g2['km']:.0f}"), td("km"),
+                         td(sek(g2["km_rate"])), td("25%"), td(sek(vat_kr)), td(sek(amount))])
 
     items_ts = TableStyle([
         ("LINEBELOW",     (0, 0), (-1,  0), 0.75, C_BLACK),
@@ -346,28 +386,28 @@ def _build_totals_story(invoice, ctx, s):
     summary_left = [
         Paragraph(("Arbete upparbetat t.o.m " if sv else "Work performed through ") +
                   str(invoice.period_end), s["n"]),
-        Paragraph(fmt_hours(ctx["total_hours"]) + " h", s["n"]),
+        Paragraph(fmt_hours(ctx["total_hours"]) + " tim", s["n"]),
     ]
 
     totals_data = [
         [Paragraph("Belopp före moms" if sv else "Subtotal", s["n"]),
-         Paragraph(sek(invoice.subtotal),   s["b"])],
+         Paragraph(sek(invoice.subtotal),   s["br"])],
         [Paragraph("Moms 25%"          if sv else "VAT 25%", s["n"]),
-         Paragraph(sek(invoice.vat_amount), s["b"])],
+         Paragraph(sek(invoice.vat_amount), s["br"])],
     ]
     if abs(ctx["rounding"]) >= 0.005:
         totals_data.append([
             Paragraph("Öresavrundning" if sv else "Rounding", s["n"]),
-            Paragraph(sek(ctx["rounding"]), s["b"]),
+            Paragraph(sek(ctx["rounding"]), s["br"]),
         ])
     nt = len(totals_data)
     totals_data.append([
         Paragraph("Att betala" if sv else "Amount due", s["big_b"]),
-        Paragraph(sek(invoice.total),                   s["big_b"]),
+        Paragraph(sek(invoice.total),                   s["big_br"]),
     ])
     totals_data.append([
         Paragraph("Bankgiro", s["big_b"]),
-        Paragraph(ctx["company"]["bankgiro"], s["big_b"]),
+        Paragraph(ctx["company"]["bankgiro"], s["big_br"]),
     ])
 
     totals_ts = TableStyle([
@@ -419,20 +459,20 @@ def _build_timesheet_story(invoice, ctx, s):
             [Paragraph("Datum"       if sv else "Date",        s["b"]),
              Paragraph("Typ"         if sv else "Type",        s["b"]),
              Paragraph("Beskrivning" if sv else "Description", s["b"]),
-             Paragraph("Timmar"      if sv else "Hours",       s["b"])],
+             Paragraph("Tim"         if sv else "Hrs",         s["b"])],
         ]
         for e in group["entries"]:
             rows.append([
-                Paragraph(str(e.entry_date),    s["n"]),
-                Paragraph(e.display_type or "", s["n"]),
-                Paragraph(e.description or "–", s["n"]),
-                Paragraph(fmt_hours(e.hours),   s["n"]),
+                Paragraph(str(e.entry_date),              s["n"]),
+                Paragraph(e.display_type or "",           s["n"]),
+                Paragraph(e.description or "–",           s["n"]),
+                Paragraph(fmt_hours(e.hours) + " tim",    s["n"]),
             ])
         n = len(rows)
         rows.append([
             Paragraph("Summa" if sv else "Total", s["b"]),
             "", "",
-            Paragraph(fmt_hours(group["total"]) + " h", s["b"]),
+            Paragraph(fmt_hours(group["total"]) + " tim", s["b"]),
         ])
         ts = TableStyle([
             ("SPAN",          (0, 0),   (-1, 0)),
@@ -448,27 +488,34 @@ def _build_timesheet_story(invoice, ctx, s):
         story.append(Table(rows, colWidths=COLS, style=ts, repeatRows=2))
         story.append(Spacer(1, 5*mm))
 
-    summary_rows = [[
-        Paragraph("Timtyp / Rate" if sv else "Hour type / Rate", s["b"]),
-        Paragraph("Timmar"        if sv else "Hours",            s["b"]),
-        Paragraph("Belopp"        if sv else "Amount",           s["b"]),
-    ]]
-    for row in ctx["rate_summary"]:
-        summary_rows.append([
-            Paragraph(row["label"],                     s["n"]),
-            Paragraph(fmt_hours(row["hours"]) + " h",  s["n"]),
-            Paragraph(sek(row["hours"] * row["rate"]), s["n"]),
-        ])
-    story.append(Table(summary_rows,
-                       colWidths=[PW - 44*mm - 44*mm, 44*mm, 44*mm],
-                       style=TableStyle([
-                           ("LINEBELOW",     (0, 0), (-1,  0), 0.75, C_BLACK),
-                           ("TOPPADDING",    (0, 0), (-1, -1), 2),
-                           ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-                           ("LEFTPADDING",   (0, 0), (-1, -1), 0),
-                           ("RIGHTPADDING",  (0, 0), (-1, -1), 2),
-                           ("ALIGN",         (2, 0), (2,  -1), "RIGHT"),
-                       ])))
+    # Mileage section
+    if invoice.mileage_entries:
+        story.append(Paragraph("Reseersättning" if sv else "Mileage", s["b"]))
+        story.append(Spacer(1, 3*mm))
+        MCOLS = [28*mm, PW - 28*mm - 22*mm - 22*mm, 22*mm, 22*mm]
+        mile_rows = [
+            [Paragraph("Datum" if sv else "Date", s["b"]),
+             Paragraph("Beskrivning" if sv else "Description", s["b"]),
+             Paragraph("Km", s["b"]),
+             Paragraph("Kr/km", s["b"])],
+        ]
+        for m in sorted(invoice.mileage_entries, key=lambda x: x.entry_date):
+            mile_rows.append([
+                Paragraph(str(m.entry_date), s["n"]),
+                Paragraph(m.description or "–", s["n"]),
+                Paragraph(f"{m.km:.0f}", s["n"]),
+                Paragraph(fmt_hours(m.km_rate), s["n"]),
+            ])
+        story.append(Table(mile_rows, colWidths=MCOLS, style=TableStyle([
+            ("LINEBELOW",     (0, 0), (-1, 0),  0.75, C_BLACK),
+            ("TOPPADDING",    (0, 0), (-1, -1), 2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ("LEFTPADDING",   (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING",  (0, 0), (-1, -1), 2),
+            ("ALIGN",         (2, 0), (3, -1),  "RIGHT"),
+            ("VALIGN",        (0, 0), (-1, -1), "TOP"),
+        ])))
+
     return story
 
 
