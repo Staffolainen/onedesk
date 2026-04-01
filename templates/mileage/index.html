@@ -29,8 +29,7 @@
               <td class="mono" style="white-space:nowrap;">{{ m.entry_date }}</td>
               <td style="font-size:12px;">
                 {% if m.project %}
-                  <span style="color:var(--accent);">{{ m.project.client.name }}</span><br>
-                  {{ m.project.name }}
+                  <span style="color:var(--muted);">{{ m.project.client.name }}</span><span style="color:var(--border);padding:0 5px;">/</span><span style="font-weight:600;">{{ m.project.name }}</span>
                 {% else %}—{% endif %}
               </td>
               <td style="color:var(--muted);font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
@@ -54,6 +53,7 @@
               <td class="right">
                 {% if not m.invoice_id %}
                 <form method="POST" action="{{ url_for('mileage_delete', entry_id=m.id) }}" style="display:inline;">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <button type="submit" class="btn btn-ghost btn-sm"
                           style="font-size:11px;color:var(--muted);"
                           onclick="return confirm('{{ 'Ta bort?' if g.lang == 'sv' else 'Delete?' }}')">✕</button>
@@ -78,7 +78,7 @@
   <div class="card" style="position:sticky;top:calc(var(--nav-h) + 60px);">
     <div class="card-title">{{ "Rapportera resa" if g.lang == "sv" else "Report mileage" }}</div>
     <form method="POST" action="{{ url_for('mileage_index') }}">
-
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="form-group">
         <label class="form-label">{{ g.t.date }} *</label>
         <input type="date" name="entry_date" class="form-control" value="{{ today.isoformat() }}" required>

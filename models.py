@@ -80,6 +80,7 @@ class Project(db.Model):
     start_date = db.Column(db.Date)
     end_date = db.Column(db.Date)
     active = db.Column(db.Boolean, default=True)
+    accumulated_cost = db.Column(db.Float, default=0.0)  # pre-system historical cost
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     @classmethod
@@ -244,6 +245,8 @@ class Expense(db.Model):
 class Invoice(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     client_id = db.Column(db.Integer, db.ForeignKey("client.id"), nullable=False)
+    project_id = db.Column(db.Integer, db.ForeignKey("project.id"), nullable=True)
+    project = db.relationship("Project", backref="invoices", lazy=True)
     invoice_number = db.Column(db.String(50), unique=True)
     period_start = db.Column(db.Date, nullable=False)
     period_end = db.Column(db.Date, nullable=False)
@@ -278,6 +281,50 @@ class Invoice(db.Model):
             Invoice.invoice_number.like(f"{fy}-%")
         ).count() + 1
         self.invoice_number = f"{fy}-{count:03d}"
+
+    def line_groups(self):
+        """Group time entries by (year, month, po_id, hour_type_name, rate).
+        Primary label is 'YYYY MMM [hour_type]'. PO number is added in
+        parentheses only when multiple POs fall in the same (year, month,
+        hour_type_name) bucket — i.e. only when disambiguation is needed.
+        Returns a list of dicts sorted by (year, month, po_number, sort_order)."""
+        groups = {}
+        for e in self.time_entries:
+            ht      = e.hour_type
+            po      = ht.po if ht else None
+            rate    = e.effective_rate
+            yr      = e.entry_date.year
+            mo      = e.entry_date.month
+            ht_name = ht.name if ht else (e.time_type or "Normal")
+            po_id   = po.id if po else None
+            po_num  = (po.po_number or "") if po else ""
+            key     = (yr, mo, po_id, ht_name, rate)
+            if key not in groups:
+                groups[key] = {
+                    "year":           yr,
+                    "month":          mo,
+                    "po_number":      po_num,
+                    "hour_type_name": ht_name,
+                    "show_po":        False,   # resolved below
+                    "hours":          0.0,
+                    "rate":           rate,
+                    "sort_key":       (yr, mo, po_num, ht.sort_order if ht else 99),
+                }
+            groups[key]["hours"] = round(groups[key]["hours"] + e.hours, 4)
+
+        # Determine which (year, month, hour_type_name) buckets have >1 distinct PO
+        from collections import defaultdict
+        po_per_bucket = defaultdict(set)
+        for (yr, mo, po_id, ht_name, rate), g in groups.items():
+            po_per_bucket[(yr, mo, ht_name)].add(po_id)
+        for key, g in groups.items():
+            yr, mo, po_id, ht_name, rate = key
+            g["show_po"] = len(po_per_bucket[(yr, mo, ht_name)]) > 1
+
+        result = sorted(groups.values(), key=lambda g: g["sort_key"])
+        for g in result:
+            g["amount"] = round(g["hours"] * g["rate"], 2)
+        return result
 
 
 class MileageEntry(db.Model):

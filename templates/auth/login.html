@@ -69,8 +69,13 @@
       {% endwith %}
 
       <form method="POST" action="{{ url_for('auth_login') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <label class="form-label">{{ "Lösenord" if g.lang == "sv" else "Password" }}</label>
         <input type="password" name="password" class="form-control" autofocus autocomplete="current-password" placeholder="••••••••">
+        <label style="display:flex;align-items:center;gap:8px;margin-bottom:16px;font-size:12px;color:var(--muted);cursor:pointer;">
+          <input type="checkbox" name="remember" value="1" style="accent-color:var(--accent);">
+          {{ "Kom ihåg mig" if g.lang == "sv" else "Remember me" }}
+        </label>
         <button type="submit" class="btn-login">
           {{ "Logga in" if g.lang == "sv" else "Sign in" }} →
         </button>

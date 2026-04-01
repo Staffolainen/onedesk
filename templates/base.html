@@ -9,14 +9,14 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
     :root, [data-theme="dark"] {
-      --bg:      #0d0d0d;
-      --surface: #161616;
-      --surface2:#1e1e1e;
-      --border:  #272727;
+      --bg:      #111111;
+      --surface: #1c1c1c;
+      --surface2:#272727;
+      --border:  #363636;
       --accent:  #4E7796;
       --accent-h:#5f8faf;
-      --text:    #e8e8e8;
-      --muted:   #666666;
+      --text:    #f0f0f0;
+      --muted:   #909090;
       --success: #4ade80;
       --warning: #fbbf24;
       --danger:  #f87171;
@@ -78,7 +78,7 @@
       cursor: pointer; transition: all 0.12s;
     }
     .lang-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
-    .logout-btn { font-size: 12px; color: var(--muted); text-decoration: none; transition: color 0.12s; }
+    .logout-btn { font-size: 13px; color: var(--muted); text-decoration: none; transition: color 0.12s; }
     .logout-btn:hover { color: var(--text); }
     .theme-btn { background: transparent; border: 1px solid var(--border); color: var(--muted); font-size: 13px; cursor: pointer; padding: 3px 8px; border-radius: 6px; transition: all 0.12s; line-height: 1.6; }
     .theme-btn:hover { color: var(--text); border-color: var(--muted); }
@@ -107,7 +107,7 @@
     .flash-container { padding: 0 28px; margin-top: 14px; }
     .flash {
       padding: 10px 14px; border-radius: var(--radius);
-      font-size: 12px; margin-bottom: 6px;
+      font-size: 13px; margin-bottom: 6px;
       border: 1px solid;
     }
     .flash.success { background: rgba(74,222,128,0.07); border-color: rgba(74,222,128,0.25); color: var(--success); }
@@ -117,7 +117,7 @@
 
     /* ── Cards ── */
     .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 14px; }
-    .card-title { font-size: 11px; font-weight: 600; color: var(--muted); margin-bottom: 14px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .card-title { font-size: 13px; font-weight: 600; color: var(--muted); margin-bottom: 14px; }
 
     /* ── Buttons ── */
     .btn {
@@ -144,7 +144,7 @@
     .table-wrap { overflow-x: auto; }
     table.data-table { width: 100%; border-collapse: collapse; }
     table.data-table th {
-      font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px;
+      font-size: 13px; font-weight: 600;
       color: var(--muted); padding: 9px 14px; text-align: left;
       border-bottom: 1px solid var(--border); white-space: nowrap;
     }
@@ -155,7 +155,7 @@
 
     /* ── Forms ── */
     .form-group { margin-bottom: 14px; }
-    .form-label { display: block; font-size: 11px; font-weight: 600; color: var(--muted); margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.4px; }
+    .form-label { display: block; font-size: 13px; font-weight: 600; color: var(--muted); margin-bottom: 5px; }
     .form-control {
       width: 100%; padding: 8px 12px;
       background: var(--surface2); border: 1px solid var(--border);
@@ -185,9 +185,9 @@
 
     /* ── Stat cards ── */
     .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; }
-    .stat-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); margin-bottom: 8px; }
-    .stat-value { font-size: 24px; font-weight: 600; letter-spacing: -0.5px; }
-    .stat-sub   { font-size: 12px; color: var(--muted); margin-top: 4px; }
+    .stat-label { font-size: 13px; font-weight: 600; color: var(--muted); margin-bottom: 8px; }
+    .stat-value { font-size: 22px; font-weight: 600; letter-spacing: -0.5px; }
+    .stat-sub   { font-size: 13px; color: var(--muted); margin-top: 4px; }
 
     /* ── Mono helper (used sparingly) ── */
     .mono { font-variant-numeric: tabular-nums; }
@@ -202,6 +202,7 @@
       .hide-mobile { display: none; }
     }
   </style>
+  <meta name="csrf-token" content="{{ csrf_token() }}">
   {% block head %}{% endblock %}
   <script>
     (function() {

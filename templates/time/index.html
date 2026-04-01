@@ -81,16 +81,19 @@
     background: rgba(74,130,168,0.04);
     border-top: 1px solid var(--border);
   }
+  .time-table .project-cell {
+    font-size: 13px;
+    white-space: nowrap;
+  }
   .time-table .project-cell .client {
-    font-size: 10px;
-    color: var(--accent);
-    font-family: var(--mono);
-    letter-spacing: 0.5px;
-    margin-bottom: 2px;
+    color: var(--muted);
+  }
+  .time-table .project-cell .sep {
+    color: var(--border);
+    padding: 0 5px;
   }
   .time-table .project-cell .proj {
     font-weight: 600;
-    font-size: 13px;
   }
   .time-type-badge {
     font-family: var(--mono);
@@ -259,8 +262,7 @@
       {% set ri = loop.index0 %}
       <tr class="data-row">
         <td class="project-cell">
-          <div class="client">{{ row.project.client.name }}</div>
-          <div class="proj">{{ row.project.name }}</div>
+          <span class="client">{{ row.project.client.name }}</span><span class="sep">/</span><span class="proj">{{ row.project.name }}</span>
         </td>
         <td>
           <span class="time-type-badge">{{ row.display_type }}</span>
@@ -333,6 +335,16 @@
 
 {% block scripts %}
 <script>
+// Inject CSRF token into all form submissions on this page
+document.querySelectorAll('form').forEach(function(f) {
+  if (!f.querySelector('[name="csrf_token"]')) {
+    var inp = document.createElement('input');
+    inp.type = 'hidden'; inp.name = 'csrf_token';
+    inp.value = document.querySelector('meta[name="csrf-token"]').content;
+    f.appendChild(inp);
+  }
+});
+
 const hourTypesByProject = {{ hour_types_map_json | safe }};
 const INTERNAL_TYPES = [
   { key: "it_Sjuk",     name: "Sjuk" },

@@ -10,7 +10,7 @@
 <div style="max-width:600px;margin:0 auto;">
   <div class="card">
     <form method="POST" action="{{ url_for('clients_edit', client_id=client.id) if client else url_for('clients_new') }}">
-
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="form-group">
         <label class="form-label">{{ "Företagsnamn" if g.lang == "sv" else "Company name" }} *</label>
         <input type="text" name="name" class="form-control" value="{{ client.name if client else '' }}" required autofocus>

@@ -22,6 +22,7 @@
       {{ project.client.name }} › {{ project.name }}
     </div>
     <form method="POST">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="form-group">
         <label class="form-label">{{ "Beställningsnummer / referens" if g.lang == "sv" else "Order number / reference" }}</label>
         <input type="text" name="po_number" class="form-control"
@@ -78,6 +79,7 @@
     {% if po %}
     <form method="POST" action="{{ url_for('po_delete', po_id=po.id) }}" style="margin-top:12px;"
           onsubmit="return confirm('{{ 'Ta bort denna beställning?' if g.lang == 'sv' else 'Delete this order?' }}')">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button type="submit" class="btn btn-ghost btn-sm" style="color:var(--danger,#c44f5a);width:100%;">
         {{ "Ta bort beställning" if g.lang == "sv" else "Delete order" }}
       </button>
@@ -239,6 +241,7 @@
     <!-- Add new hour type -->
     <form method="POST" action="{{ url_for('hour_type_add', po_id=po.id) }}"
           style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <input type="text" name="name" class="form-control" required
              placeholder="{{ 'T.ex. Övertid 1' if g.lang == 'sv' else 'e.g. Overtime 1' }}"
              style="flex:1;min-width:120px;">

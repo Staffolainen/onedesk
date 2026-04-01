@@ -45,8 +45,7 @@
           </td>
           <td style="font-size:12px;">
             {% if exp.project %}
-              <span style="color:var(--accent);">{{ exp.project.client.name }}</span><br>
-              {{ exp.project.name }}
+              <span style="color:var(--muted);">{{ exp.project.client.name }}</span><span style="color:var(--border);padding:0 5px;">/</span><span style="font-weight:600;">{{ exp.project.name }}</span>
             {% else %}—{% endif %}
           </td>
           <td class="right mono" style="font-weight:700;">{{ exp.amount_incl_vat|fmt_amount }}</td>
@@ -66,11 +65,12 @@
           </td>
           <td class="right">
             {% if exp.receipt_filename %}
-            <a href="{{ url_for('static', filename='uploads/' + exp.receipt_filename) }}"
+            <a href="{{ url_for('uploaded_file', filename=exp.receipt_filename) }}"
                target="_blank" class="btn btn-ghost btn-sm" style="font-size:11px;">📎</a>
             {% endif %}
             {% if exp.status != "invoiced" %}
             <form method="POST" action="{{ url_for('expenses_delete', exp_id=exp.id) }}" style="display:inline;">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <button type="submit" class="btn btn-ghost btn-sm" style="font-size:11px;color:var(--muted);"
                 onclick="return confirm('{{ 'Ta bort?' if g.lang == 'sv' else 'Delete?' }}')">✕</button>
             </form>

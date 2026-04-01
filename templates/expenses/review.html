@@ -27,7 +27,7 @@
           <div>{{ filename }}</div>
         </div>
       {% else %}
-        <img src="{{ url_for('static', filename='uploads/' + filename) }}"
+        <img src="{{ url_for('uploaded_file', filename=filename) }}"
              style="width:100%;border-radius:8px;border:1px solid var(--border);"
              alt="Receipt">
       {% endif %}
@@ -57,6 +57,7 @@
     <div class="card-title">{{ "Bekräfta detaljer" if g.lang == "sv" else "Confirm Details" }}</div>
 
     <form method="POST" action="{{ url_for('expenses_review') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="grid-2">
         <div class="form-group">
           <label class="form-label">{{ "Butik / Leverantör" if g.lang == "sv" else "Merchant / Supplier" }}</label>

@@ -22,10 +22,9 @@
   <div class="card" style="margin-bottom:16px;">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
       <div>
-        <div style="font-size:11px;font-family:var(--mono);color:var(--accent);text-transform:uppercase;letter-spacing:1px;margin-bottom:2px;">
-          {{ group.project.client.name }}
+        <div style="font-size:17px;font-weight:700;">
+          <span style="font-weight:400;color:var(--muted);">{{ group.project.client.name }}</span><span style="color:var(--border);padding:0 8px;">/</span>{{ group.project.name }}
         </div>
-        <div style="font-size:17px;font-weight:700;">{{ group.project.name }}</div>
       </div>
       <div style="text-align:right;">
         <div style="font-family:var(--mono);font-size:22px;font-weight:700;">{{ "%.2f"|format(group.total) }} h</div>
@@ -54,6 +53,7 @@
             <td class="right">
               {% if not e.invoiced %}
               <form method="POST" action="{{ url_for('time_delete', entry_id=e.id) }}" style="display:inline;">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button type="submit" class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:11px;" onclick="return confirm('{{ 'Ta bort?' if g.lang == 'sv' else 'Delete?' }}')">✕</button>
               </form>
               {% else %}

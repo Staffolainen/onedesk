@@ -18,7 +18,7 @@
       </div>
       {% for inv in conflicting %}
       <div style="font-size:12px;color:var(--text);margin-bottom:4px;">
-        {{ inv.invoice_number }} · {{ inv.client.name }} · {{ inv.period_start }} – {{ inv.period_end }}
+        {{ inv.invoice_number }} · {{ inv.client.name }} / {{ inv.project.name if inv.project else '—' }} · {{ inv.period_start }} – {{ inv.period_end }}
         <span class="badge badge-{{ inv.status }}" style="margin-left:6px;">{{ inv.status }}</span>
       </div>
       {% endfor %}
@@ -29,18 +29,23 @@
     {% endif %}
 
     <form method="POST" action="{{ url_for('invoices_new') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       {% if conflicting %}
       <input type="hidden" name="confirm_replace" value="1">
       {% endif %}
 
       <div class="form-group">
-        <label class="form-label">{{ g.t.client }}</label>
-        <select name="client_id" class="form-control" required>
-          <option value="">— {{ "Välj kund" if g.lang == "sv" else "Select client" }} —</option>
-          {% for c in clients %}
-          <option value="{{ c.id }}" {% if selected_client_id and c.id == selected_client_id %}selected{% endif %}>
-            {{ c.name }}
-          </option>
+        <label class="form-label">{{ g.t.project }}</label>
+        <select name="project_id" class="form-control" required>
+          <option value="">— {{ "Välj uppdrag" if g.lang == "sv" else "Select assignment" }} —</option>
+          {% for cname, plist in projects|groupby('client.name') %}
+          <optgroup label="{{ cname }}">
+            {% for p in plist %}
+            <option value="{{ p.id }}" {% if selected_project_id and p.id == selected_project_id %}selected{% endif %}>
+              {{ (p.project_number + ' – ') if p.project_number else '' }}{{ p.name }}
+            </option>
+            {% endfor %}
+          </optgroup>
           {% endfor %}
         </select>
       </div>

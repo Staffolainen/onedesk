@@ -15,6 +15,7 @@
         <tr>
           <th>{{ "Nr" }}</th>
           <th>{{ g.t.client }}</th>
+          <th>{{ "Uppdrag" if g.lang == "sv" else "Assignment" }}</th>
           <th>{{ "Period" }}</th>
           <th>{{ "Datum" if g.lang == "sv" else "Date" }}</th>
           <th>{{ "Förfall" if g.lang == "sv" else "Due" }}</th>
@@ -33,6 +34,7 @@
             </a>
           </td>
           <td style="font-weight:600;">{{ inv.client.name }}</td>
+          <td style="color:var(--muted);">{{ inv.project.name if inv.project else '—' }}</td>
           <td class="mono" style="font-size:11px;color:var(--muted);">{{ inv.period_start }} – {{ inv.period_end }}</td>
           <td class="mono">{{ inv.issue_date }}</td>
           <td class="mono" style="{% if inv.status not in ('paid','sent') and inv.due_date and inv.due_date < today %}color:var(--accent);font-weight:700;{% endif %}">
@@ -59,12 +61,14 @@
               {% endif %}
               {% if inv.status == "sent" %}
               <form method="POST" action="{{ url_for('invoices_mark_paid', invoice_id=inv.id) }}" style="display:inline;">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button type="submit" class="btn btn-success btn-sm">{{ "Betald" if g.lang == "sv" else "Paid" }}</button>
               </form>
               {% endif %}
               {% if inv.status == "draft" %}
               <form method="POST" action="{{ url_for('invoices_delete', invoice_id=inv.id) }}" style="display:inline;"
                     onsubmit="return confirm('{{ ('Ta bort ' + inv.invoice_number + '?') if g.lang == 'sv' else ('Delete ' + inv.invoice_number + '?') }}')">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button type="submit" class="btn btn-danger btn-sm">{{ "Ta bort" if g.lang == "sv" else "Delete" }}</button>
               </form>
               {% endif %}

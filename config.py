@@ -5,10 +5,17 @@ load_dotenv()
 
 class Config:
     SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-change-me")
+    DEBUG = os.getenv("FLASK_DEBUG", "0") == "1"
     SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL", "sqlite:///onedesk.db")
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), "static", "uploads")
     MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # 16MB
+
+    # Session security
+    SESSION_COOKIE_HTTPONLY = True
+    SESSION_COOKIE_SAMESITE = "Lax"
+    SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "0") == "1"
+    PERMANENT_SESSION_LIFETIME = 86400 * 14  # 14 days for remembered sessions
 
     ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin")
 

@@ -71,6 +71,11 @@
         {{ "Faktura till" if g.lang == "sv" else "Invoice to" }}
       </div>
       <div style="font-size:20px;font-weight:800;">{{ inv.client.name }}</div>
+      {% if inv.project %}
+      <div style="font-size:13px;font-weight:600;color:var(--accent);margin-top:4px;">
+        {{ inv.project.project_number + ' – ' if inv.project.project_number else '' }}{{ inv.project.name }}
+      </div>
+      {% endif %}
       {% if inv.client.address %}
       <div style="font-size:12px;color:var(--muted);margin-top:4px;white-space:pre-line;">{{ inv.client.address }}</div>
       {% endif %}
@@ -94,6 +99,7 @@
       {% if inv.status == "draft" %}
       <form method="POST" action="{{ url_for('invoices_set_number', invoice_id=inv.id) }}"
             style="display:flex;align-items:center;gap:6px;">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <input type="text" name="invoice_number" value="{{ inv.invoice_number }}"
                class="form-control mono"
                style="width:120px;padding:4px 8px;font-size:13px;font-weight:600;"
@@ -138,39 +144,22 @@
         </tr>
       </thead>
       <tbody>
-        <!-- Time -->
-        {% if inv.time_entries %}
+        <!-- Time: one row per (year, month, hour type) -->
+        {% set month_sv = ['Jan','Feb','Mar','Apr','Maj','Jun','Jul','Aug','Sep','Okt','Nov','Dec'] %}
+        {% set month_en = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] %}
+        {% set mnames = month_sv if g.lang == 'sv' else month_en %}
+        {% for group in inv.line_groups() %}
+        {% set mo_str = group.year|string + ' ' + mnames[group.month - 1] + (' (' + group.po_number + ')' if group.show_po and group.po_number else '') %}
         <tr>
           <td>
-            <div style="font-weight:700;">{{ "Konsulttjänster" if g.lang == "sv" else "Consulting services" }}</div>
-            <div style="font-size:11px;color:var(--muted);margin-top:2px;">{{ inv.period_start }} – {{ inv.period_end }}</div>
-            <!-- Timesheet detail -->
-            <div class="timesheet-section">
-              {% set by_proj = {} %}
-              {% for e in inv.time_entries %}
-                {% set _ = by_proj.update({e.project_id: {'project': e.project, 'entries': by_proj.get(e.project_id, {'entries': []})['entries'] + [e], 'total': by_proj.get(e.project_id, {'total': 0})['total'] + e.hours}}) %}
-              {% endfor %}
-              {% for pid, group in by_proj.items() %}
-              <div style="margin-top:8px;padding:8px;background:var(--surface2);border-radius:6px;border:1px solid var(--border);">
-                <div style="font-size:11px;font-weight:700;color:var(--accent);margin-bottom:4px;">
-                  {{ group.project.name }} — {{ "%.2f"|format(group.total) }} h
-                </div>
-                {% for e in group.entries %}
-                <div class="ts-row">
-                  <span style="color:var(--muted);">{{ e.entry_date.strftime('%d %b') }} {{ e.description or '' }}</span>
-                  <span class="mono">{{ "%.2f"|format(e.hours) }} h</span>
-                </div>
-                {% endfor %}
-              </div>
-              {% endfor %}
-            </div>
+            <div style="font-weight:700;">{{ mo_str }}  {{ group.hour_type_name }}</div>
           </td>
-          <td class="r" style="white-space:nowrap;">{{ "%.2f"|format(total_hours) }} h</td>
-          <td class="r">{{ inv.client.hourly_rate|fmt_amount }}</td>
+          <td class="r" style="white-space:nowrap;">{{ "%.2f"|format(group.hours) }} h</td>
+          <td class="r">{{ group.rate|fmt_amount }}</td>
           <td class="r">25%</td>
-          <td class="r" style="font-weight:700;">{{ (total_hours * inv.client.hourly_rate)|round|int|fmt_amount }}</td>
+          <td class="r" style="font-weight:700;">{{ group.amount|fmt_amount }}</td>
         </tr>
-        {% endif %}
+        {% endfor %}
 
         <!-- Expenses -->
         {% for exp in inv.expenses %}
@@ -205,17 +194,47 @@
         </tr>
       </table>
     </div>
+    <!-- Timesheet detail -->
+    {% if inv.time_entries %}
+    <div style="margin-top:24px;border-top:1px solid var(--border);padding-top:20px;">
+      <div style="font-size:13px;font-weight:600;color:var(--muted);margin-bottom:12px;">
+        {{ "Tidrapport" if g.lang == "sv" else "Timesheet detail" }}
+      </div>
+      {% set by_proj = {} %}
+      {% for e in inv.time_entries|sort(attribute='entry_date') %}
+        {% set _ = by_proj.update({e.project_id: {'project': e.project, 'entries': by_proj.get(e.project_id, {'entries': []})['entries'] + [e], 'total': by_proj.get(e.project_id, {'total': 0})['total'] + e.hours}}) %}
+      {% endfor %}
+      {% for pid, group in by_proj.items() %}
+      <div style="margin-bottom:12px;padding:12px;background:var(--surface2);border-radius:6px;border:1px solid var(--border);">
+        <div style="font-weight:600;color:var(--accent);margin-bottom:8px;">
+          {{ group.project.name }} — {{ "%.2f"|format(group.total) }} h
+        </div>
+        {% for e in group.entries %}
+        <div class="ts-row">
+          <span style="color:var(--muted);">{{ e.entry_date.strftime('%d %b') }}
+            {% if e.hour_type %}<span style="font-size:11px;color:var(--accent-h);">[{{ e.hour_type.po.po_number if e.hour_type.po and e.hour_type.po.po_number else "" }} {{ e.display_type }}]</span>{% endif %}
+            {{ e.description or '' }}
+          </span>
+          <span class="mono">{{ "%.2f"|format(e.hours) }} h</span>
+        </div>
+        {% endfor %}
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
   </div>
 
   <!-- Action bar -->
   <div class="action-bar">
     {% if inv.status == "draft" %}
       <form method="POST" action="{{ url_for('invoices_approve', invoice_id=inv.id) }}" style="display:inline;">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button type="submit" class="btn btn-success">
           ✓ {{ "Godkänn & generera PDF" if g.lang == "sv" else "Approve & generate PDF" }}
         </button>
       </form>
       <form method="POST" action="{{ url_for('invoices_delete', invoice_id=inv.id) }}" style="display:inline;">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button type="submit" class="btn btn-danger" onclick="return confirm('{{ 'Ta bort faktura?' if g.lang == 'sv' else 'Delete invoice?' }}')">
           {{ "Ta bort" if g.lang == "sv" else "Delete" }}
         </button>
@@ -223,6 +242,7 @@
 
     {% elif inv.status == "approved" %}
       <form method="POST" action="{{ url_for('invoices_send', invoice_id=inv.id) }}" style="display:inline;">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button type="submit" class="btn btn-primary" onclick="return confirm('{{ 'Skicka faktura till ' + inv.client.contact_email + '?' if g.lang == 'sv' else 'Send invoice to ' + inv.client.contact_email + '?' }}')">
           ✉ {{ "Skicka till kund" if g.lang == "sv" else "Send to client" }}
         </button>
@@ -243,6 +263,7 @@
         → {{ inv.client.contact_email }}
       </div>
       <form method="POST" action="{{ url_for('invoices_mark_paid', invoice_id=inv.id) }}" style="display:inline;">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button type="submit" class="btn btn-success">
           ✓ {{ "Markera som betald" if g.lang == "sv" else "Mark as paid" }}
         </button>

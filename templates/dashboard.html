@@ -96,6 +96,92 @@
   </div>
 </div>
 
+<!-- Assignment budget overview -->
+{% if project_budgets %}
+<div class="card" style="margin-bottom:28px;">
+  <div class="card-title">{{ "Uppdragsbudget" if g.lang == "sv" else "Assignment budget" }}</div>
+
+  <!-- Legend -->
+  <div style="display:flex;gap:20px;margin-bottom:20px;flex-wrap:wrap;">
+    <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);">
+      <div style="width:12px;height:12px;border-radius:2px;background:var(--surface2);border:1px solid var(--border);"></div>
+      {{ "Historisk kostnad" if g.lang == "sv" else "Historical cost" }}
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);">
+      <div style="width:12px;height:12px;border-radius:2px;background:var(--accent);"></div>
+      {{ "Fakturerat (aktuell order)" if g.lang == "sv" else "Invoiced (current order)" }}
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);">
+      <div style="width:12px;height:12px;border-radius:2px;background:var(--warning);"></div>
+      {{ "Rapporterat, ej fakturerat" if g.lang == "sv" else "Reported, not invoiced" }}
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);">
+      <div style="width:12px;height:12px;border-radius:2px;background:rgba(74,222,128,0.35);border:1px solid rgba(74,222,128,0.5);"></div>
+      {{ "Tillgängligt utrymme" if g.lang == "sv" else "Available headroom" }}
+    </div>
+  </div>
+
+  {% for pb in project_budgets %}
+  {% set p = pb.project %}
+  <div style="margin-bottom:20px;">
+    <!-- Label row -->
+    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px;">
+      <div>
+        <span style="color:var(--muted);font-size:12px;">{{ p.client.name }}</span>
+        <span style="color:var(--border);padding:0 5px;">/</span>
+        <span style="font-weight:600;font-size:13px;">{{ (p.project_number + ' – ') if p.project_number else '' }}{{ p.name }}</span>
+        {% if pb.current_po %}
+        <span style="font-size:11px;color:var(--muted);margin-left:8px;">{{ pb.current_po.po_number or '' }}</span>
+        {% endif %}
+      </div>
+      <div style="font-size:12px;color:var(--muted);text-align:right;white-space:nowrap;margin-left:16px;">
+        {% if pb.po_budget %}
+          <span style="font-weight:600;color:var(--text);">{{ pb.po_budget|int|fmt_amount }}</span>
+          <span style="color:var(--border);padding:0 4px;">kr order</span>
+        {% endif %}
+        {% if pb.headroom is not none %}
+          · <span style="color:{% if pb.headroom < pb.po_budget * 0.1 %}var(--danger){% elif pb.headroom < pb.po_budget * 0.25 %}var(--warning){% else %}var(--success){% endif %};">{{ pb.headroom|int|fmt_amount }} kr kvar</span>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- Segmented bar -->
+    <div style="height:10px;border-radius:5px;background:var(--surface2);border:1px solid var(--border);overflow:hidden;display:flex;">
+      {% if pb.hist_cost > 0 %}
+      <div title="{{ 'Historisk: ' if g.lang == 'sv' else 'Historical: ' }}{{ pb.hist_cost|int|fmt_amount }} kr"
+           style="width:{{ (pb.hist_cost / pb.total_bar * 100)|round(2) }}%;background:var(--surface2);border-right:2px solid var(--border);flex-shrink:0;"></div>
+      {% endif %}
+      {% if pb.current_invoiced > 0 %}
+      <div title="{{ 'Fakturerat: ' if g.lang == 'sv' else 'Invoiced: ' }}{{ pb.current_invoiced|int|fmt_amount }} kr"
+           style="width:{{ (pb.current_invoiced / pb.total_bar * 100)|round(2) }}%;background:var(--accent);flex-shrink:0;"></div>
+      {% endif %}
+      {% if pb.current_uninvoiced > 0 %}
+      <div title="{{ 'Ej fakturerat: ' if g.lang == 'sv' else 'Uninvoiced: ' }}{{ pb.current_uninvoiced|int|fmt_amount }} kr"
+           style="width:{{ (pb.current_uninvoiced / pb.total_bar * 100)|round(2) }}%;background:var(--warning);flex-shrink:0;"></div>
+      {% endif %}
+      {% if pb.headroom and pb.headroom > 0 %}
+      <div title="{{ 'Utrymme: ' if g.lang == 'sv' else 'Headroom: ' }}{{ pb.headroom|int|fmt_amount }} kr"
+           style="width:{{ (pb.headroom / pb.total_bar * 100)|round(2) }}%;background:rgba(74,222,128,0.3);flex-shrink:0;"></div>
+      {% endif %}
+    </div>
+
+    <!-- Amount labels under bar -->
+    <div style="display:flex;gap:12px;margin-top:4px;font-size:11px;color:var(--muted);flex-wrap:wrap;">
+      {% if pb.hist_cost > 0 %}
+      <span>{{ pb.hist_cost|int|fmt_amount }} {{ "hist." if g.lang == "sv" else "hist." }}</span>
+      {% endif %}
+      {% if pb.current_invoiced > 0 %}
+      <span style="color:var(--accent);">{{ pb.current_invoiced|int|fmt_amount }} {{ "fakt." if g.lang == "sv" else "inv." }}</span>
+      {% endif %}
+      {% if pb.current_uninvoiced > 0 %}
+      <span style="color:var(--warning);">{{ pb.current_uninvoiced|int|fmt_amount }} {{ "ej fakt." if g.lang == "sv" else "uninv." }}</span>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
 <!-- Recent time entries -->
 <div class="card">
   <div class="card-title">{{ "Senaste tidsposter" if g.lang == "sv" else "Recent time entries" }}</div>
@@ -115,8 +201,7 @@
         <tr>
           <td class="mono">{{ e.entry_date }}</td>
           <td>
-            <span style="color:var(--accent);font-size:12px;">{{ e.project.client.name }}</span><br>
-            <span style="font-size:13px;">{{ e.project.name }}</span>
+            <span style="color:var(--muted);">{{ e.project.client.name }}</span><span style="color:var(--border);padding:0 5px;">/</span><span style="font-weight:600;">{{ e.project.name }}</span>
           </td>
           <td style="color:var(--muted);font-size:12px;">{{ e.description or "—" }}</td>
           <td class="right mono" style="font-weight:700;">{{ "%.2f"|format(e.hours) }}</td>

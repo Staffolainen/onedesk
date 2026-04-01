@@ -93,6 +93,7 @@
   </div>
 
   <form method="POST" enctype="multipart/form-data" id="captureForm" action="{{ url_for('expenses_capture') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <!-- Camera capture (mobile-first) -->
     <div id="cameraSection">
       <label class="camera-btn" for="cameraInput">

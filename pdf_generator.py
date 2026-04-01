@@ -298,33 +298,21 @@ def _build_invoice_story(invoice, ctx, s):
         tdb("Belopp"       if sv else "Amount"),
     ]]
 
-    # Group time entries by (year, month, display_type, effective_rate)
+    # One row per (year, month, hour type) — uses Invoice.line_groups()
     month_names_sv = ["Jan","Feb","Mar","Apr","Maj","Jun","Jul","Aug","Sep","Okt","Nov","Dec"]
     month_names_en = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
-    month_names = month_names_sv if sv else month_names_en
-
-    month_groups = {}
-    for e in ctx["entries"]:
-        rate  = e.effective_rate
-        yr    = e.entry_date.year
-        mo    = e.entry_date.month
-        dtype = e.display_type or "Normal"
-        key   = (e.project_id, yr, mo, dtype, rate)
-        if key not in month_groups:
-            month_groups[key] = {
-                "project_name": e.project.name,
-                "year": yr, "month": mo, "type": dtype, "rate": rate, "hours": 0.0,
-            }
-        month_groups[key]["hours"] += e.hours
+    mnames = month_names_sv if sv else month_names_en
 
     expense_sec_rows = []
-    for key in sorted(month_groups.keys()):
-        g      = month_groups[key]
-        desc   = f"{g['year']} {month_names[g['month'] - 1]}  {g['project_name']} - {g['type']}"
-        amount = g["hours"] * g["rate"]
-        vat_kr = amount * 0.25
-        rows.append([td(desc), td(fmt_hours(g["hours"])), td("tim" if sv else "hr"),
-                     td(sek(g["rate"])), td("25%"), td(sek(vat_kr)), td(sek(amount))])
+    for group in invoice.line_groups():
+        mo_str = f"{group['year']} {mnames[group['month'] - 1]}"
+        if group["show_po"] and group["po_number"]:
+            mo_str += f" ({group['po_number']})"
+        desc   = f"{mo_str}  {group['hour_type_name']}"
+        amount = group["amount"]
+        vat_kr = round(amount * 0.25, 2)
+        rows.append([td(desc), td(fmt_hours(group["hours"])), td("tim" if sv else "hr"),
+                     td(sek(group["rate"])), td("25%"), td(sek(vat_kr)), td(sek(amount))])
 
     if invoice.expenses:
         expense_sec_rows.append(len(rows))

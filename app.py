@@ -13,6 +13,9 @@ from functools import wraps
 from flask import (Flask, render_template, request, redirect, url_for,
                    flash, session, jsonify, send_file, abort, g)
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
+from flask_wtf.csrf import CSRFProtect
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 
@@ -26,6 +29,8 @@ app = Flask(__name__)
 app.config.from_object(Config)
 
 db.init_app(app)
+csrf = CSRFProtect(app)
+limiter = Limiter(get_remote_address, app=app, default_limits=[], storage_uri="memory://")
 
 login_manager = LoginManager(app)
 login_manager.login_view = "auth_login"
@@ -76,23 +81,58 @@ def set_lang(lang):
         session["lang"] = lang
     return redirect(request.referrer or url_for("dashboard"))
 
+@app.after_request
+def set_security_headers(response):
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "font-src 'self';"
+    )
+    return response
+
 def fmt_amount(amount):
     """Format number as Swedish currency string"""
     return f"{amount:,.0f}".replace(",", " ")
 
 app.jinja_env.filters["fmt_amount"] = fmt_amount
 
+def _safe_float(value, default=0.0):
+    try:
+        return float(value) if value and str(value).strip() else default
+    except (ValueError, TypeError):
+        return default
+
+def _safe_int(value, default=0):
+    try:
+        return int(value) if value and str(value).strip() else default
+    except (ValueError, TypeError):
+        return default
+
+def _safe_date(value):
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date() if value and value.strip() else None
+    except (ValueError, TypeError):
+        return None
+
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
 @app.route("/login", methods=["GET", "POST"])
+@limiter.limit("10 per minute; 30 per hour")
 def auth_login():
     if current_user.is_authenticated:
         return redirect(url_for("dashboard"))
     if request.method == "POST":
-        password = request.form.get("password")
+        password = request.form.get("password", "")
+        remember = request.form.get("remember") == "1"
         user = User.query.first()
         if user and check_password_hash(user.password_hash, password):
-            login_user(user, remember=True)
+            login_user(user, remember=remember)
             return redirect(url_for("dashboard"))
         flash("Fel lösenord / Wrong password", "error")
     return render_template("auth/login.html")
@@ -102,6 +142,17 @@ def auth_login():
 def auth_logout():
     logout_user()
     return redirect(url_for("auth_login"))
+
+@app.route("/uploads/<path:filename>")
+@login_required
+def uploaded_file(filename):
+    """Serve upload files only to authenticated users."""
+    upload_folder = app.config["UPLOAD_FOLDER"]
+    # Prevent path traversal
+    safe_path = os.path.realpath(os.path.join(upload_folder, filename))
+    if not safe_path.startswith(os.path.realpath(upload_folder) + os.sep):
+        abort(404)
+    return send_file(safe_path)
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────
 
@@ -133,11 +184,86 @@ def dashboard():
         .order_by(TimeEntry.entry_date.desc())
         .limit(5).all())
 
+    # Assignment budget overview
+    active_projects = (Project.query
+        .join(Client)
+        .filter(Project.active == True, Client.active == True)
+        .order_by(Client.name, Project.name)
+        .all())
+
+    project_budgets = []
+    for p in active_projects:
+        current_po = p.get_active_po(today)
+        current_po_id = current_po.id if current_po else None
+
+        hist_cost        = float(p.accumulated_cost or 0)
+        current_invoiced = 0.0
+        current_uninvoiced = 0.0
+
+        po_from = current_po.valid_from or date.min if current_po else None
+        po_to   = current_po.valid_to   or date.max if current_po else None
+
+        def _in_current_po(d):
+            return current_po is not None and po_from <= d <= po_to
+
+        for e in p.time_entries:
+            entry_po_id = e.hour_type.po_id if e.hour_type else None
+            cost = e.hours * e.effective_rate
+            if current_po_id and entry_po_id == current_po_id:
+                if e.invoice_id:
+                    current_invoiced += cost
+                else:
+                    current_uninvoiced += cost
+            else:
+                hist_cost += cost
+
+        for exp in p.expenses:
+            if exp.status == "pending":
+                continue  # not yet approved, exclude
+            cost = exp.amount_excl_vat
+            if _in_current_po(exp.expense_date):
+                if exp.invoice_id:
+                    current_invoiced += cost
+                else:
+                    current_uninvoiced += cost
+            else:
+                hist_cost += cost
+
+        for m in p.mileage_entries:
+            cost = m.amount
+            if _in_current_po(m.entry_date):
+                if m.invoice_id:
+                    current_invoiced += cost
+                else:
+                    current_uninvoiced += cost
+            else:
+                hist_cost += cost
+
+        po_budget = float(current_po.po_amount) if current_po and current_po.po_amount else None
+        headroom  = max(0.0, po_budget - current_invoiced - current_uninvoiced) if po_budget is not None else None
+        total_bar = hist_cost + (po_budget if po_budget is not None else current_invoiced + current_uninvoiced)
+
+        # Skip projects with no data at all
+        if total_bar == 0 and not current_po:
+            continue
+
+        project_budgets.append({
+            "project":            p,
+            "hist_cost":          round(hist_cost, 0),
+            "current_invoiced":   round(current_invoiced, 0),
+            "current_uninvoiced": round(current_uninvoiced, 0),
+            "headroom":           round(headroom, 0) if headroom is not None else None,
+            "po_budget":          round(po_budget, 0) if po_budget is not None else None,
+            "total_bar":          max(total_bar, 1),
+            "current_po":         current_po,
+        })
+
     return render_template("dashboard.html",
         hours_by_client=hours_by_client,
         pending_expenses=pending_expenses,
         open_invoices=open_invoices,
         recent_entries=recent_entries,
+        project_budgets=project_budgets,
         today=today,
     )
 
@@ -160,9 +286,9 @@ def clients_new():
             contact_email=request.form.get("contact_email"),
             address=request.form.get("address"),
             vat_nr=request.form.get("vat_nr"),
-            hourly_rate=float(request.form.get("hourly_rate") or app.config["DEFAULT_HOURLY_RATE"]),
-            km_rate=float(request.form.get("km_rate") or 25.0),
-            payment_days=int(request.form.get("payment_days") or 30),
+            hourly_rate=_safe_float(request.form.get("hourly_rate"), app.config["DEFAULT_HOURLY_RATE"]),
+            km_rate=_safe_float(request.form.get("km_rate"), 25.0),
+            payment_days=_safe_int(request.form.get("payment_days"), 30),
             invoice_language=request.form.get("invoice_language", "sv"),
         )
         db.session.add(c)
@@ -182,9 +308,9 @@ def clients_edit(client_id):
         c.contact_email = request.form.get("contact_email")
         c.address = request.form.get("address")
         c.vat_nr = request.form.get("vat_nr")
-        c.hourly_rate = float(request.form.get("hourly_rate") or 1500)
-        c.km_rate = float(request.form.get("km_rate") or 25.0)
-        c.payment_days = int(request.form.get("payment_days") or 30)
+        c.hourly_rate = _safe_float(request.form.get("hourly_rate"), 1500)
+        c.km_rate = _safe_float(request.form.get("km_rate"), 25.0)
+        c.payment_days = _safe_int(request.form.get("payment_days"), 30)
         c.invoice_language = request.form.get("invoice_language", "sv")
         db.session.commit()
         flash("Kund uppdaterad / Client updated", "success")
@@ -201,8 +327,9 @@ def projects_new(client_id):
             project_number=request.form.get("project_number", "").strip() or Project.generate_number(),
             name=request.form["name"],
             description=request.form.get("description"),
-            start_date=datetime.strptime(request.form["start_date"], "%Y-%m-%d").date() if request.form.get("start_date") else None,
-            end_date=datetime.strptime(request.form["end_date"], "%Y-%m-%d").date() if request.form.get("end_date") else None,
+            start_date=_safe_date(request.form.get("start_date")),
+            end_date=_safe_date(request.form.get("end_date")),
+            accumulated_cost=_safe_float(request.form.get("accumulated_cost"), 0),
         )
         db.session.add(p)
         db.session.commit()
@@ -216,12 +343,13 @@ def projects_new(client_id):
 def projects_edit(project_id):
     p = Project.query.get_or_404(project_id)
     if request.method == "POST":
-        p.project_number = request.form.get("project_number", "").strip() or p.project_number
-        p.name        = request.form["name"]
-        p.description = request.form.get("description")
-        p.start_date  = datetime.strptime(request.form["start_date"], "%Y-%m-%d").date() if request.form.get("start_date") else None
-        p.end_date    = datetime.strptime(request.form["end_date"],   "%Y-%m-%d").date() if request.form.get("end_date")   else None
-        p.active      = request.form.get("active") == "1"
+        p.project_number   = request.form.get("project_number", "").strip() or p.project_number
+        p.name             = request.form["name"]
+        p.description      = request.form.get("description")
+        p.start_date       = _safe_date(request.form.get("start_date"))
+        p.end_date         = _safe_date(request.form.get("end_date"))
+        p.active           = request.form.get("active") == "1"
+        p.accumulated_cost = _safe_float(request.form.get("accumulated_cost"), 0)
         db.session.commit()
         flash("Uppdrag uppdaterat / Assignment updated", "success")
         return redirect(url_for("clients_list"))
@@ -250,8 +378,8 @@ def _po_overlaps(project_id, valid_from, valid_to, exclude_po_id=None):
 def po_new(project_id):
     p = Project.query.get_or_404(project_id)
     if request.method == "POST":
-        valid_from = datetime.strptime(request.form["valid_from"], "%Y-%m-%d").date() if request.form.get("valid_from") else None
-        valid_to   = datetime.strptime(request.form["valid_to"],   "%Y-%m-%d").date() if request.form.get("valid_to")   else None
+        valid_from = _safe_date(request.form.get("valid_from"))
+        valid_to   = _safe_date(request.form.get("valid_to"))
         overlap = _po_overlaps(project_id, valid_from, valid_to)
         if overlap:
             flash(f"Datumkonflik med beställning {overlap.po_number or overlap.id} – perioder får ej överlappa / "
@@ -262,8 +390,8 @@ def po_new(project_id):
             project_id=project_id,
             po_number=request.form.get("po_number") or None,
             description=request.form.get("description") or None,
-            hourly_rate=float(request.form["hourly_rate"]),
-            km_rate=float(km_rate_str) if km_rate_str else None,
+            hourly_rate=_safe_float(request.form.get("hourly_rate"), app.config["DEFAULT_HOURLY_RATE"]),
+            km_rate=_safe_float(km_rate_str) if km_rate_str else None,
             valid_from=valid_from,
             valid_to=valid_to,
         )
@@ -282,8 +410,8 @@ def po_edit(po_id):
     po = PurchaseOrder.query.get_or_404(po_id)
     project = po.project
     if request.method == "POST":
-        valid_from = datetime.strptime(request.form["valid_from"], "%Y-%m-%d").date() if request.form.get("valid_from") else None
-        valid_to   = datetime.strptime(request.form["valid_to"],   "%Y-%m-%d").date() if request.form.get("valid_to")   else None
+        valid_from = _safe_date(request.form.get("valid_from"))
+        valid_to   = _safe_date(request.form.get("valid_to"))
         overlap = _po_overlaps(po.project_id, valid_from, valid_to, exclude_po_id=po.id)
         if overlap:
             flash(f"Datumkonflik med beställning {overlap.po_number or overlap.id} – perioder får ej överlappa / "
@@ -291,11 +419,11 @@ def po_edit(po_id):
             return redirect(url_for("po_edit", po_id=po.id))
         po.po_number = request.form.get("po_number") or None
         po.description = request.form.get("description") or None
-        po.hourly_rate = float(request.form["hourly_rate"])
+        po.hourly_rate = _safe_float(request.form.get("hourly_rate"), po.hourly_rate)
         po_amount_str = request.form.get("po_amount", "").strip()
-        po.po_amount = float(po_amount_str) if po_amount_str else None
+        po.po_amount = _safe_float(po_amount_str) if po_amount_str else None
         km_rate_str = request.form.get("km_rate", "").strip()
-        po.km_rate = float(km_rate_str) if km_rate_str else None
+        po.km_rate = _safe_float(km_rate_str) if km_rate_str else None
         po.valid_from = valid_from
         po.valid_to   = valid_to
         db.session.commit()
@@ -659,14 +787,18 @@ def expenses_review():
             return redirect(url_for("expenses_index"))
 
         # Save expense
-        amount_incl = float(request.form["amount_incl_vat"])
-        vat_rate = float(request.form.get("vat_rate", 25))
+        amount_incl = _safe_float(request.form.get("amount_incl_vat"), 0.0)
+        vat_rate = _safe_float(request.form.get("vat_rate"), 25.0)
         vat_amount = round(amount_incl * vat_rate / (100 + vat_rate), 2)
         amount_excl = round(amount_incl - vat_amount, 2)
+        expense_date = _safe_date(request.form.get("expense_date"))
+        if not expense_date:
+            flash("Ogiltigt datum / Invalid date", "error")
+            return redirect(url_for("expenses_review"))
 
         exp = Expense(
-            project_id=int(request.form["project_id"]) if request.form.get("project_id") else None,
-            expense_date=datetime.strptime(request.form["expense_date"], "%Y-%m-%d").date(),
+            project_id=_safe_int(request.form.get("project_id")) or None,
+            expense_date=expense_date,
             merchant=request.form.get("merchant", ""),
             description=request.form.get("description", ""),
             amount_incl_vat=amount_incl,
@@ -720,9 +852,12 @@ def expenses_delete(exp_id):
 def mileage_index():
     projects = Project.query.filter_by(active=True).join(Client).order_by(Client.name).all()
     if request.method == "POST":
-        project_id = int(request.form["project_id"]) if request.form.get("project_id") else None
-        entry_date = datetime.strptime(request.form["entry_date"], "%Y-%m-%d").date()
-        km = float(request.form["km"])
+        project_id = _safe_int(request.form.get("project_id")) or None
+        entry_date = _safe_date(request.form.get("entry_date"))
+        if not entry_date:
+            flash("Ogiltigt datum / Invalid date", "error")
+            return redirect(url_for("mileage_index"))
+        km = _safe_float(request.form.get("km"), 0.0)
         # Resolve km rate: PO for that date → client default
         km_rate = None
         if project_id:
@@ -731,7 +866,7 @@ def mileage_index():
         # Allow manual override
         km_rate_override = request.form.get("km_rate", "").strip()
         if km_rate_override:
-            km_rate = float(km_rate_override)
+            km_rate = _safe_float(km_rate_override, km_rate)
         if not km_rate:
             km_rate = 25.0
         m = MileageEntry(
@@ -768,34 +903,42 @@ def mileage_delete(entry_id):
 @login_required
 def invoices_list():
     invoices = Invoice.query.order_by(Invoice.issue_date.desc()).all()
-    clients = Client.query.filter_by(active=True).order_by(Client.name).all()
-    return render_template("invoices/index.html", invoices=invoices, clients=clients, today=date.today())
+    return render_template("invoices/index.html", invoices=invoices, today=date.today())
 
 @app.route("/invoices/new", methods=["GET", "POST"])
 @login_required
 def invoices_new():
-    clients = Client.query.filter_by(active=True).order_by(Client.name).all()
+    projects = (Project.query
+        .join(Client)
+        .filter(Client.active == True, Project.active == True)
+        .order_by(Client.name, Project.name)
+        .all())
     today = date.today()
     if request.method == "POST":
-        client_id = int(request.form["client_id"])
-        client = Client.query.get_or_404(client_id)
-        period_start = datetime.strptime(request.form["period_start"], "%Y-%m-%d").date()
-        period_end = datetime.strptime(request.form["period_end"], "%Y-%m-%d").date()
+        project_id = _safe_int(request.form.get("project_id"))
+        project = Project.query.get_or_404(project_id)
+        client = project.client
+        client_id = client.id
+        period_start = _safe_date(request.form.get("period_start"))
+        period_end = _safe_date(request.form.get("period_end"))
+        if not period_start or not period_end:
+            flash("Ogiltiga datum / Invalid dates", "error")
+            return redirect(url_for("invoices_new"))
 
-        # Check for existing draft/approved invoices overlapping this period
+        # Check for existing draft/approved invoices overlapping this period for this assignment
         confirm_replace = request.form.get("confirm_replace") == "1"
         conflicting = Invoice.query.filter(
-            Invoice.client_id == client_id,
+            Invoice.project_id == project_id,
             Invoice.status.in_(["draft", "approved"]),
             Invoice.period_start <= period_end,
             Invoice.period_end >= period_start,
         ).all()
         if conflicting and not confirm_replace:
             return render_template("invoices/new.html",
-                clients=clients,
+                projects=projects,
                 default_start=request.form["period_start"],
                 default_end=request.form["period_end"],
-                selected_client_id=client_id,
+                selected_project_id=project_id,
                 conflicting=conflicting,
             )
         # Delete confirmed conflicts before creating
@@ -809,36 +952,30 @@ def invoices_new():
             db.session.delete(old_inv)
         db.session.flush()
 
-        # Gather uninvoiced time entries
+        # Gather uninvoiced time entries for this assignment
         entries = (TimeEntry.query
-            .join(Project)
-            .filter(Project.client_id == client_id,
+            .filter(TimeEntry.project_id == project_id,
                     TimeEntry.entry_date >= period_start,
                     TimeEntry.entry_date <= period_end,
                     TimeEntry.invoiced == False)
             .order_by(TimeEntry.entry_date)
             .all())
 
-        # Gather approved billable expenses
+        # Gather approved billable expenses for this assignment
         expenses = (Expense.query
-            .join(Project, isouter=True)
             .filter(
+                Expense.project_id == project_id,
                 Expense.billable == True,
                 Expense.status == "approved",
                 Expense.invoice_id == None,
                 Expense.expense_date >= period_start,
                 Expense.expense_date <= period_end,
-                db.or_(
-                    Project.client_id == client_id,
-                    Expense.project_id == None
-                )
             ).all())
 
-        # Gather approved billable mileage entries
+        # Gather approved billable mileage entries for this assignment
         mileage = (MileageEntry.query
-            .join(Project)
             .filter(
-                Project.client_id == client_id,
+                MileageEntry.project_id == project_id,
                 MileageEntry.billable == True,
                 MileageEntry.status == "approved",
                 MileageEntry.invoice_id == None,
@@ -846,17 +983,16 @@ def invoices_new():
                 MileageEntry.entry_date <= period_end,
             ).all())
 
-        total_hours = sum(e.hours for e in entries)
         time_subtotal = round(sum(e.hours * e.effective_rate for e in entries), 2)
         expense_subtotal = round(sum(e.amount_excl_vat for e in expenses), 2)
         mileage_subtotal = round(sum(m.amount for m in mileage), 2)
         subtotal = time_subtotal + expense_subtotal + mileage_subtotal
         vat = round(subtotal * 0.25, 2)
-        total_exact = round(subtotal + vat, 2)
-        total = round(total_exact)  # round to whole kronor
+        total = round(subtotal + vat)  # whole kronor
 
         inv = Invoice(
             client_id=client_id,
+            project_id=project_id,
             period_start=period_start,
             period_end=period_end,
             issue_date=today,
@@ -870,20 +1006,14 @@ def invoices_new():
         )
         inv.generate_number(app.config["FY_START_MONTH"])
         db.session.add(inv)
-        db.session.flush()  # get inv.id
+        db.session.flush()
 
         for e in entries:
             e.invoice_id = inv.id
-            # DEBUG: locking disabled for template iteration
-            # e.invoiced = True
         for exp in expenses:
             exp.invoice_id = inv.id
-            # DEBUG: locking disabled for template iteration
-            # exp.status = "invoiced"
-
         for m in mileage:
             m.invoice_id = inv.id
-            # m.status = "invoiced"
 
         db.session.commit()
         return redirect(url_for("invoices_proforma", invoice_id=inv.id))
@@ -894,7 +1024,7 @@ def invoices_new():
     last_month_start = last_month_end.replace(day=1)
 
     return render_template("invoices/new.html",
-        clients=clients,
+        projects=projects,
         default_start=last_month_start.isoformat(),
         default_end=last_month_end.isoformat(),
     )
@@ -910,11 +1040,12 @@ def invoices_proforma(invoice_id):
 def invoices_approve(invoice_id):
     inv = Invoice.query.get_or_404(invoice_id)
     inv.status = "approved"
-    # DEBUG: locking disabled for template iteration
-    # for e in inv.time_entries:
-    #     e.invoiced = True
-    # for exp in inv.expenses:
-    #     exp.status = "invoiced"
+    for e in inv.time_entries:
+        e.invoiced = True
+    for exp in inv.expenses:
+        exp.status = "invoiced"
+    for m in inv.mileage_entries:
+        m.status = "invoiced"
     db.session.commit()
 
     # Generate PDF
@@ -1256,15 +1387,25 @@ def settings_restore():
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+def _sanitize_header(value):
+    """Strip newlines to prevent email header injection."""
+    return str(value or "").replace("\r", "").replace("\n", "")
+
 def _send_invoice_email(inv, config):
     client = inv.client
     lang = inv.language
 
-    subject_sv = f"Faktura {inv.invoice_number} – {config['COMPANY_NAME']}"
-    subject_en = f"Invoice {inv.invoice_number} – {config['COMPANY_NAME']}"
+    safe_company = _sanitize_header(config['COMPANY_NAME'])
+    safe_inv_nr  = _sanitize_header(inv.invoice_number)
+    safe_to      = _sanitize_header(client.contact_email)
+    safe_from    = _sanitize_header(config["SMTP_FROM"])
+    safe_name    = _sanitize_header(client.contact_name or client.name)
+
+    subject_sv = f"Faktura {safe_inv_nr} – {safe_company}"
+    subject_en = f"Invoice {safe_inv_nr} – {safe_company}"
     subject = subject_sv if lang == "sv" else subject_en
 
-    body_sv = f"""Hej {client.contact_name or client.name},
+    body_sv = f"""Hej {safe_name},
 
 Bifogat finner du faktura {inv.invoice_number} avseende perioden {inv.period_start} – {inv.period_end}.
 
@@ -1275,22 +1416,22 @@ Bankgiro: {config['COMPANY_BANKGIRO']}
 Med vänliga hälsningar,
 {config['COMPANY_NAME']}
 """
-    body_en = f"""Hi {client.contact_name or client.name},
+    body_en = f"""Hi {safe_name},
 
-Please find attached invoice {inv.invoice_number} for the period {inv.period_start} – {inv.period_end}.
+Please find attached invoice {safe_inv_nr} for the period {inv.period_start} – {inv.period_end}.
 
 Amount: {inv.total:,.0f} SEK incl. VAT
 Due date: {inv.due_date}
 Bankgiro: {config['COMPANY_BANKGIRO']}
 
 Best regards,
-{config['COMPANY_NAME']}
+{safe_company}
 """
     body = body_sv if lang == "sv" else body_en
 
     msg = MIMEMultipart()
-    msg["From"] = config["SMTP_FROM"]
-    msg["To"] = client.contact_email
+    msg["From"] = safe_from
+    msg["To"] = safe_to
     msg["Subject"] = subject
     msg.attach(MIMEText(body, "plain", "utf-8"))
 
@@ -1325,6 +1466,8 @@ def init_db():
             "ALTER TABLE project ADD COLUMN project_number VARCHAR(20)",
             "ALTER TABLE client ADD COLUMN km_rate REAL DEFAULT 25.0",
             "ALTER TABLE purchase_order ADD COLUMN km_rate REAL",
+            "ALTER TABLE invoice ADD COLUMN project_id INTEGER REFERENCES project(id)",
+            "ALTER TABLE project ADD COLUMN accumulated_cost REAL DEFAULT 0.0",
         ]
         for stmt in migrations:
             try:
@@ -1346,4 +1489,4 @@ def init_db():
 if __name__ == "__main__":
     init_db()
     os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    app.run(debug=app.config.get("DEBUG", False), host="0.0.0.0", port=5000)

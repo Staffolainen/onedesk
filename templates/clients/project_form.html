@@ -13,7 +13,7 @@
 <div style="max-width:480px;margin:0 auto;">
   <div class="card">
     <form method="POST" action="{{ url_for('projects_edit', project_id=project.id) if editing else url_for('projects_new', client_id=client.id) }}">
-
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="form-group">
         <label class="form-label">{{ "Uppdragsnummer" if g.lang == "sv" else "Assignment number" }}</label>
         <input type="text" name="project_number" class="form-control"
@@ -43,6 +43,16 @@
           <label class="form-label">{{ "Slutdatum" if g.lang == "sv" else "End date" }}</label>
           <input type="date" name="end_date" class="form-control"
                  value="{{ project.end_date.isoformat() if editing and project.end_date else '' }}">
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">{{ "Ackumulerad historisk kostnad (kr)" if g.lang == "sv" else "Accumulated historical cost (SEK)" }}</label>
+        <input type="number" name="accumulated_cost" class="form-control" min="0" step="1"
+               value="{{ project.accumulated_cost|int if editing and project.accumulated_cost else 0 }}"
+               placeholder="0">
+        <div style="font-size:12px;color:var(--muted);margin-top:4px;">
+          {{ "Kostnad nedlagd innan detta system började spåra tid, t.ex. tidigare faktureringssystem." if g.lang == "sv" else "Cost incurred before this system started tracking time, e.g. from a previous billing system." }}
         </div>
       </div>
 

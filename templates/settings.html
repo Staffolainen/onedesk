@@ -95,6 +95,7 @@
       </div>
       <form method="POST" action="{{ url_for('settings_restore') }}" enctype="multipart/form-data"
             onsubmit="return confirm('{{ 'All befintlig data tas bort och ersätts med backup-filens innehåll. Fortsätt?' if g.lang == 'sv' else 'All existing data will be deleted and replaced with the backup file contents. Continue?' }}')">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
           <input type="file" name="backup_file" accept=".json" class="form-control" style="flex:1;min-width:200px;" required>
           <button type="submit" class="btn btn-danger btn-sm">
@@ -109,6 +110,7 @@
   <div class="card">
     <div class="card-title">{{ "Byt lösenord" if g.lang == "sv" else "Change password" }}</div>
     <form method="POST" action="{{ url_for('change_password') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="grid-2">
         <div class="form-group">
           <label class="form-label">{{ "Nytt lösenord" if g.lang == "sv" else "New password" }}</label>
