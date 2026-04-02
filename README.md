@@ -71,14 +71,195 @@ The database and uploads are mounted as a volume so they survive container resta
 
 ## Production Deployment (Azure App Service)
 
-See **[Design & Architecture](#design--architecture)** section below for full Azure setup.
+### Prerequisites
 
-Quick steps:
-1. Push image to Azure Container Registry
-2. Create App Service (Linux, B1)
-3. Mount Azure Files share at `/app/instance` for persistent DB + uploads
-4. Set all env vars as App Settings
-5. Enable managed SSL certificate
+- Azure CLI installed and logged in (`az login`)
+- GitHub Personal Access Token with `repo` scope
+- Resource providers registered:
+
+```bash
+az provider register --namespace Microsoft.ContainerRegistry
+az provider register --namespace Microsoft.Web
+az provider register --namespace Microsoft.Storage
+# Wait until all show "Registered"
+az provider show --namespace Microsoft.ContainerRegistry --query "registrationState" -o tsv
+```
+
+---
+
+### Step 1 — Create resource group
+
+```bash
+az group create --name onedesk-rg --location swedencentral
+```
+
+---
+
+### Step 2 — Create Container Registry and build image
+
+```bash
+az acr create --name onedeskregistry --resource-group onedesk-rg --sku Basic
+
+# Enable admin access (required for App Service to pull the image)
+az acr update -n onedeskregistry --admin-enabled true
+
+# Build image directly from GitHub — no local Docker needed
+az acr build \
+  --registry onedeskregistry \
+  --image onedesk:latest \
+  --file Dockerfile \
+  --git-access-token <GITHUB_PAT> \
+  https://github.com/Staffolainen/onedesk.git
+```
+
+---
+
+### Step 3 — Create persistent storage
+
+```bash
+az storage account create --name onedeskstorage --resource-group onedesk-rg \
+  --location swedencentral --sku Standard_LRS
+
+az storage share create --name onedesk-data --account-name onedeskstorage
+```
+
+---
+
+### Step 4 — Create App Service
+
+```bash
+az appservice plan create --name onedesk-plan --resource-group onedesk-rg \
+  --is-linux --sku B1
+
+az webapp create --name onedesk-app --resource-group onedesk-rg \
+  --plan onedesk-plan \
+  --deployment-container-image-name onedeskregistry.azurecr.io/onedesk:latest
+```
+
+---
+
+### Step 5 — Allow App Service to pull from registry
+
+```bash
+# Get registry password
+az acr credential show --name onedeskregistry --query "passwords[0].value" -o tsv
+
+# Set registry credentials (paste password from above)
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg \
+  --settings DOCKER_REGISTRY_SERVER_URL="https://onedeskregistry.azurecr.io"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg \
+  --settings DOCKER_REGISTRY_SERVER_USERNAME="onedeskregistry"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg \
+  --settings DOCKER_REGISTRY_SERVER_PASSWORD="<paste-registry-password>"
+```
+
+---
+
+### Step 6 — Mount persistent storage
+
+```bash
+STORAGE_KEY=$(az storage account keys list \
+  --account-name onedeskstorage --resource-group onedesk-rg \
+  --query '[0].value' -o tsv)
+
+az webapp config storage-account add \
+  --name onedesk-app --resource-group onedesk-rg \
+  --custom-id onedesk-data \
+  --storage-type AzureFiles \
+  --share-name onedesk-data \
+  --account-name onedeskstorage \
+  --access-key "$STORAGE_KEY" \
+  --mount-path /app/instance
+```
+
+Verify the mount shows `"state": "Ok"`:
+```bash
+az webapp config storage-account list --name onedesk-app --resource-group onedesk-rg
+```
+
+---
+
+### Step 7 — Set environment variables
+
+Set each individually to avoid shell expansion issues:
+
+```bash
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings SECRET_KEY="<openssl rand -hex 32 output>"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings ADMIN_PASSWORD="<your-password>"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings FLASK_DEBUG="0"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings SESSION_COOKIE_SECURE="0"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings DATABASE_URL="sqlite:////app/instance/onedesk.db"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings COMPANY_NAME="<your company>"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings COMPANY_ORG_NR="<org nr>"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings COMPANY_BANKGIRO="<bankgiro>"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings COMPANY_VAT_NR="<vat nr>"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings COMPANY_EMAIL="<email>"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings ANTHROPIC_API_KEY="<key>"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings SMTP_HOST="smtp.gmail.com"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings SMTP_PORT="587"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings SMTP_USER="<gmail>"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings SMTP_PASSWORD="<gmail app password>"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings SMTP_FROM="<from email>"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings FY_START_MONTH="5"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings WEBSITES_PORT="5000"
+```
+
+Verify all values:
+```bash
+az webapp config appsettings list --name onedesk-app --resource-group onedesk-rg --output table
+```
+
+> Note: sensitive values like passwords show as blank in table output — this is Azure masking secrets, not a missing value.
+
+---
+
+### Step 8 — Restart and verify
+
+```bash
+az webapp restart --name onedesk-app --resource-group onedesk-rg
+az webapp log tail --name onedesk-app --resource-group onedesk-rg
+```
+
+You should see Gunicorn boot and a `200` on `/login`. Open the app:
+```
+https://onedesk-app.azurewebsites.net
+```
+
+---
+
+### Step 9 — Restore your database
+
+Log in to the app → **Settings** → use the restore function to upload your database backup.
+
+Then restart:
+```bash
+az webapp restart --name onedesk-app --resource-group onedesk-rg
+```
+
+---
+
+### Deploying updates
+
+```bash
+az acr build \
+  --registry onedeskregistry \
+  --image onedesk:latest \
+  --git-access-token <GITHUB_PAT> \
+  https://github.com/Staffolainen/onedesk.git
+
+az webapp restart --name onedesk-app --resource-group onedesk-rg
+```
+
+---
+
+### Cost estimate (swedencentral)
+
+| Resource | Cost/month |
+|---|---|
+| App Service B1 | ~130 SEK |
+| Container Registry Basic | ~50 SEK |
+| Storage Account | ~5 SEK |
+| **Total** | **~185 SEK** |
 
 ---
 
@@ -114,6 +295,87 @@ pytest
 ```
 
 Tests use an in-memory SQLite database and cover auth, model logic, time saving, invoice creation/locking, and security controls.
+
+---
+
+## Azure AD Easy Auth (Extra Security Layer)
+
+Adds a Microsoft login wall in front of the entire app before any request reaches Flask. Only accounts in your Azure AD tenant (e.g. `@edlundkonsult.io`) can pass through.
+
+### 1. Register an app in Azure AD
+
+```bash
+az ad app create \
+  --display-name "onedesk" \
+  --sign-in-audience AzureADMyOrg \
+  --web-redirect-uris "https://<your-app>.azurewebsites.net/.auth/login/aad/callback"
+```
+
+Note the `appId` from the output — this is your `CLIENT_ID`.
+
+```bash
+# Generate a client secret
+az ad app credential reset --id <CLIENT_ID> --query password -o tsv
+```
+
+Note the output — this is your `CLIENT_SECRET`.
+
+### 2. Enable ID tokens in Azure Portal
+
+1. Go to **portal.azure.com** → **Azure Active Directory** → **App registrations** → **onedesk**
+2. Click **Authentication** in the left menu
+3. Under **Implicit grant and hybrid flows** check both:
+   - **Access tokens**
+   - **ID tokens**
+4. Click **Save**
+
+This is required — without ID tokens Easy Auth cannot set the session cookie and will loop.
+
+### 3. Enable Easy Auth on the App Service
+
+```bash
+TENANT_ID=$(az account show --query tenantId -o tsv)
+
+az webapp auth-classic update \
+  --name <your-app> \
+  --resource-group <your-rg> \
+  --enabled true \
+  --action LoginWithAzureActiveDirectory \
+  --aad-client-id "<CLIENT_ID>" \
+  --aad-client-secret "<CLIENT_SECRET>" \
+  --aad-token-issuer-url "https://login.microsoftonline.com/$TENANT_ID/v2.0"
+```
+
+### 4. Verify
+
+Open an incognito window and go to your app URL. You should be redirected to `login.microsoftonline.com` before seeing anything. Only your tenant accounts can log in.
+
+### Updating the client secret
+
+Client secrets expire. To rotate:
+
+```bash
+# Generate new secret
+az ad app credential reset --id <CLIENT_ID> --query password -o tsv
+
+# Update Easy Auth with new secret
+az webapp auth-classic update \
+  --name <your-app> \
+  --resource-group <your-rg> \
+  --enabled true \
+  --action LoginWithAzureActiveDirectory \
+  --aad-client-id "<CLIENT_ID>" \
+  --aad-client-secret "<NEW_SECRET>" \
+  --aad-token-issuer-url "https://login.microsoftonline.com/<TENANT_ID>/v2.0"
+```
+
+### Result
+
+Two authentication layers:
+| Layer | Provider | What it checks |
+|---|---|---|
+| 1 | Azure AD Easy Auth | Must be signed in with `@yourdomain` Microsoft account |
+| 2 | Flask login | Must know the `ADMIN_PASSWORD` |
 
 ---
 
