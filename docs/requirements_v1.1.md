@@ -83,6 +83,9 @@ This is the largest new feature. It handles the full lifecycle of supplier invoi
 
 ### 4.1 Overview — Workflow
 
+The flow has two distinct phases: **invoice processing** (continuous, per invoice) and **payment run** (periodic, manually triggered).
+
+**Phase 1 — Invoice Processing (per invoice)**
 ```
 Upload PDF/image
       ↓
@@ -90,15 +93,24 @@ OCR & extract invoice data (Claude Vision)
       ↓
 Review & confirm extracted data
       ↓
-Add to Payment Backlog
-      ↓
 Create Bokföringsorder → Fortnox (with PDF attachment)
       ↓
-Mark as ready for payment
+Added to Payment Backlog  [status: booked]
+```
+
+**Phase 2 — Payment Run (manual, when ready to pay)**
+```
+Payment Backlog
+      ↓
+Select invoices to include
+      ↓
+Set payment date
       ↓
 Generate Payment File (Handelsbanken LB format)
       ↓
-Import to bank (manual download)
+Download file → upload to Handelsbanken
+      ↓
+Confirm upload → invoices marked as paid  [status: paid]
 ```
 
 ### 4.2 Supplier Invoice Model
@@ -130,34 +142,33 @@ Fields extracted/entered per invoice:
 - User confirms or corrects extracted data
 - Pre-fill bookkeeping account from `supplier_invoice` voucher template; allow override
 
-### 4.4 Step 2 — Payment Backlog
+### 4.4 Step 2 — Bokföringsorder to Fortnox
 
-- List view of all approved supplier invoices not yet paid
-- Shows: supplier, invoice number, due date, amount, status, days until due (red if overdue)
-- Sort by due date
-- Select one or multiple invoices to include in a payment file
-- Mark individual invoices as paid manually (for cases handled outside the system)
-
-### 4.5 Step 3 — Bokföringsorder to Fortnox
-
-- For each approved invoice, create a supplier voucher in Fortnox using the `supplier_invoice` template:
+- For each confirmed invoice, create a supplier voucher in Fortnox using the `supplier_invoice` template:
   - Debit: configured debit account (default `6540`)
   - Debit: VAT account (default `2640` Ingående moms 25%)
   - Credit: configured credit account (default `2440` Leverantörsskulder)
 - Attach the scanned PDF to the Fortnox voucher
 - Record Fortnox voucher number in onedesk
-- Status updates to `booked`
+- Invoice status updates to `booked` and appears in Payment Backlog
 
-### 4.6 Step 4 — Payment File Generation (Handelsbanken)
+### 4.5 Payment Backlog
 
-- Select one or more invoices from the payment backlog
-- Generate a payment file in **Bankgirot LB format** for **Handelsbanken**
+- Persistent list of all booked invoices not yet paid
+- Shows: supplier, invoice number, due date, amount, Fortnox voucher nr, days until due (red if overdue)
+- Sort by due date (default)
+- Mark individual invoices as paid manually (for cases paid outside the system, e.g. direct bank transfer)
+
+### 4.6 Step 3 — Payment Run (manually triggered)
+
+- User selects one or more invoices from the Payment Backlog
+- Sets a payment date (default: earliest due date among selected; min: today)
+- Generates a payment file in **Bankgirot LB format** for **Handelsbanken**
   - File format: fixed-width text, Bankgirot LB specification
   - Supports bankgiro (BG) and plusgiro (PG) payments
-  - Payment date selectable (default: due date, min: today)
-- Download file for manual import into Handelsbanken internet bank
-- Mark included invoices as `paid` after download confirmation
-- Store payment file record with timestamp and included invoice list
+- Downloads file; user manually uploads to Handelsbanken internet bank
+- After upload, user returns to onedesk and clicks "Confirm payment sent"
+- Included invoices marked as `paid`; payment file record stored with timestamp and invoice list
 
 ### 4.7 ISO 20022 / pain.001 (Future)
 - Alternative payment file format
