@@ -223,7 +223,26 @@ Replace the current single shared password with individual named user accounts. 
 
 ---
 
-## 6. Non-Functional Requirements
+## 6. Calendar — Swedish Bank Holidays
+
+### 6.1 Requirement
+- Swedish public holidays (röda dagar) displayed in grey in the time-entry calendar view
+- Weekends already visually distinct; bank holidays need the same treatment on weekdays
+
+### 6.2 Holiday Data
+- Use the `holidays` Python package (`holidays.Sweden()`) — no external API calls, works offline
+- Generate the holiday list for the displayed year on the server and pass to the template
+- Include standard Swedish public holidays: Nyårsdagen, Trettondedag jul, Långfredag, Påskdagen, Annandag påsk, Valborg (not red day — skip), Första maj, Kristi himmelsfärdsdag, Pingstdagen, Sveriges nationaldag, Midsommarafton, Midsommardagen, Allhelgonadag, Julafton, Juldagen, Annandag jul, Nyårsafton
+
+### 6.3 UI
+- Bank holiday cells: grey background (same shade as weekends or slightly lighter)
+- Tooltip on hover showing the holiday name in Swedish (e.g. "Kristi himmelsfärdsdag")
+- No change to data entry behaviour — hours can still be logged on holidays if needed
+
+---
+
+## 7. Non-Functional Requirements
+
 
 | Area | Requirement |
 |---|---|
@@ -250,6 +269,7 @@ Replace the current single shared password with individual named user accounts. 
 | 8 | Incoming invoice — Payment backlog | Medium |
 | 9 | Incoming invoice — Bokföringsorder | Medium |
 | 10 | Payment file (Handelsbanken LB) | High |
+| 11 | Calendar — Swedish bank holidays | Low |
 
 ---
 
