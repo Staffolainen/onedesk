@@ -165,56 +165,61 @@ Fields extracted/entered per invoice:
 
 ---
 
-## 5. Salary Reporting — Skatteverket AGI
+## 5. User Management & Personal Logins
 
 ### 5.1 Overview
-Generate the monthly employer tax declaration (AGI — Arbetsgivardeklaration) for upload to Skatteverket's e-tjänst.
+Replace the current single shared password with individual named user accounts. Each user maps to an Azure AD identity and has a role that controls access. This lays the groundwork for multi-user operations (e.g. a finance assistant) and the future salary module (v1.2).
 
-### 5.2 Salary Model
+### 5.2 User Model
 
-Fields per salary payment:
-- `employee_name` — name (Staffan Edlund)
-- `personal_nr` — personnummer
-- `period` — YYYYMM (reporting month)
-- `gross_salary` — bruttolön (fixed monthly amount, configured in settings)
-- `employer_contribution` — arbetsgivaravgift (calculated, 31.42% standard rate)
-- `tax_withheld` — A-skatt (calculated from tax table 34)
-- `net_salary` — nettolön
-- `benefit_car` — förmånsvärde tjänstebil (monthly amount, configured in settings)
-- `benefit_bicycle_1` — förmånsvärde cykel 1 (configured; taxable if value > 3 000 SEK/year)
-- `benefit_bicycle_2` — förmånsvärde cykel 2 (configured; same rule)
-
-### 5.3 A-skatt Calculation
-
-- Tax table: **Table 34**
-- Skatteverket publishes machine-readable tax tables via API
-- On first use (and annually on January 1), fetch and cache table 34 from Skatteverket API
-- Apply table lookup: gross salary + taxable benefits → tax withheld per month
-
-### 5.4 Benefits Handling
-
-| Benefit | Treatment |
+| Field | Description |
 |---|---|
-| Company car (tjänstebil) | Taxable benefit added to gross for tax calculation; reported on KU10 as `FormansvardeBil` |
-| Bicycle 1 & 2 | If annual förmånsvärde ≤ 3 000 SEK: tax-free (no reporting). If > 3 000 SEK: excess is taxable; reported on KU10 |
-| Bicycle threshold | Configured per bicycle; system auto-calculates taxable portion |
+| `id` | Primary key |
+| `display_name` | Full name (e.g. "Staffan Edlund") |
+| `email` | Primary identifier; must match AD account email |
+| `ad_oid` | Azure AD Object ID — populated on first login, used for reliable matching |
+| `role` | `admin` / `employee` / `viewer` |
+| `active` | Boolean — inactive users cannot log in |
+| `created_at` | Timestamp |
+| `last_login_at` | Timestamp — updated on each successful login |
 
-### 5.5 AGI File Generation
-- Generate XML file in Skatteverket AGI format (INK2 / KU10 schema)
-- Elements: `Avsandare`, `Blankettgemensamt` (AG), `Blankett` (KU10 per employee)
-- KU10 fields: personnummer, period, lön, förmåner, A-skatt, arbetsgivaravgiftsunderlag
-- Download XML for upload to **Skatteverket e-tjänst** (not via accounting firm)
-- Store submitted declarations per period; prevent duplicate submission for same period
+### 5.3 Roles
 
-### 5.6 Settings for Salary Module
+| Role | Access |
+|---|---|
+| `admin` | Full access — all features, settings, user management |
+| `employee` | Standard access — time, expenses, mileage, invoices (own data) — **also appears in payroll in v1.2** |
+| `viewer` | Read-only — can view dashboards and reports, no write access |
 
-Configurable in Settings → Lön:
-- Fixed monthly gross salary (SEK)
-- Company car monthly benefit value (SEK)
-- Bicycle 1 annual benefit value (SEK)
-- Bicycle 2 annual benefit value (SEK)
-- Employer org number (used in AGI XML)
-- Tax table number (default: 34)
+### 5.4 Login Flow with Azure AD
+
+1. User hits any protected page → redirected to Azure AD Easy Auth
+2. AD token arrives; Flask reads `X-MS-CLIENT-PRINCIPAL` header (already in place)
+3. Look up user by `ad_oid` (preferred) or `email` from token
+4. If found and active: establish Flask session with user id + role
+5. If not found: show "Access not provisioned" page (not a 403 — friendly message with contact info)
+6. If found but inactive: show "Account disabled" message
+7. Flask password login (existing) remains as emergency backdoor for the admin account only
+
+### 5.5 User Management UI (Admin only)
+
+- **Settings → Användare** — list of all users with name, email, role, active status, last login
+- **Add user**: enter email + display name + role; `ad_oid` populated automatically on first login
+- **Edit user**: change role or deactivate/reactivate
+- **Delete user**: soft-delete (sets `active=False`); never hard-delete to preserve audit trail
+- Admin cannot deactivate themselves
+
+### 5.6 Migration from Single Password
+
+- On first startup after upgrade: existing `User` row becomes the `admin` account
+- `email` set to `ADMIN_EMAIL` env var (new required config); `ad_oid` populated on first AD login
+- `ADMIN_PASSWORD` env var continues to work for emergency Flask login
+- No data migration needed for business data — only the user table changes
+
+### 5.7 Future (v1.2) — Salary Integration
+- Any user with role `employee` appears automatically in the payroll module
+- Per-employee salary settings (gross salary, benefits, tax table, personnummer) stored on the user record
+- Enables running payroll for multiple employees (e.g. Staffan + spouse in finance role)
 
 ---
 
@@ -236,19 +241,28 @@ Configurable in Settings → Lön:
 | Priority | Feature | Effort |
 |---|---|---|
 | 1 | Custom domain | Low |
-| 2 | Azure AD as primary login | Medium |
-| 3 | Automated backups | Low |
-| 4 | Bookkeeping settings / voucher templates | Medium |
-| 5 | Fortnox live integration | Medium |
-| 6 | Incoming invoice — Upload & OCR | Medium |
-| 7 | Incoming invoice — Payment backlog | Medium |
-| 8 | Incoming invoice — Bokföringsorder | Medium |
-| 9 | Payment file (Handelsbanken LB) | High |
-| 10 | Salary / AGI reporting | High |
+| 2 | **User management & personal logins** | Medium |
+| 3 | Azure AD as primary login (tied to user accounts) | Medium |
+| 4 | Automated backups | Low |
+| 5 | Bookkeeping settings / voucher templates | Medium |
+| 6 | Fortnox live integration | Medium |
+| 7 | Incoming invoice — Upload & OCR | Medium |
+| 8 | Incoming invoice — Payment backlog | Medium |
+| 9 | Incoming invoice — Bokföringsorder | Medium |
+| 10 | Payment file (Handelsbanken LB) | High |
 
 ---
 
-## 8. Resolved Questions
+## 8. Deferred to v1.2
+
+| Feature | Notes |
+|---|---|
+| Salary / AGI reporting | Deferred; `employee` role in user model is the prerequisite. Salary settings will be stored per user. Bicycle 2 förmånsvärde is > 3 000 SEK/year → taxable excess must be handled. Tax table 34 fetched from Skatteverket API annually. |
+| ISO 20022 / pain.001 payment format | Only needed if Handelsbanken LB support is dropped |
+
+---
+
+## 9. Resolved Questions
 
 | # | Question | Answer |
 |---|---|---|
@@ -256,4 +270,5 @@ Configurable in Settings → Lön:
 | 2 | A-skatt tax table | **Table 34** — fetch annually from Skatteverket API |
 | 3 | Bas-kontoplan account codes | Replaced by configurable **voucher templates per transaction type** (see section 3) |
 | 4 | Salary — fixed or variable | **Fixed monthly**, with company car benefit and two company bicycles with special tax treatment |
-| 5 | AGI submission channel | **Skatteverket e-tjänst** — generate XML file for manual upload |
+| 5 | AGI submission channel | **Skatteverket e-tjänst** — generate XML file for manual upload (deferred to v1.2) |
+| 6 | Salary scope | Deferred to v1.2; `employee` role on user record is the prerequisite. Bike 2 is above 3 000 SEK threshold — taxable excess handling required. |
