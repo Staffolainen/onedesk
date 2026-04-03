@@ -11,6 +11,32 @@ import os
 from datetime import date
 
 
+SUPPLIER_INVOICE_PROMPT = """You are analyzing a supplier invoice (PDF or image). Extract the following information and return ONLY a JSON object with no other text:
+
+{
+  "supplier_name": "company name of the sender/supplier",
+  "supplier_org_nr": "Swedish org number like 556123-4567, or null",
+  "invoice_number": "invoice number/fakturanummer, or null",
+  "invoice_date": "YYYY-MM-DD format, or null",
+  "due_date": "YYYY-MM-DD payment due date/förfallodatum, or null",
+  "amount_excl_vat": 1000.00,
+  "vat_amount": 250.00,
+  "amount_incl_vat": 1250.00,
+  "currency": "SEK",
+  "payment_ref": "OCR number or payment reference, digits only, or null",
+  "bankgiro": "BG number like 1234-5678, or null",
+  "plusgiro": "PG number, or null",
+  "iban": "IBAN number if present, or null"
+}
+
+Rules:
+- amount_incl_vat is the total to pay including VAT (look for 'Totalt att betala', 'Total', 'Att betala')
+- payment_ref is the OCR/reference number to use when paying (often labeled 'OCR', 'Referensnummer', 'Betalningsreferens')
+- bankgiro format: keep hyphens (e.g. '1234-5678')
+- If a field cannot be determined, use null
+- All amounts as numbers, not strings
+"""
+
 PROMPT = """You are analyzing a receipt or invoice image. Extract the following information and return ONLY a JSON object with no other text:
 
 {
@@ -143,4 +169,65 @@ def _empty_result(error=None):
         "description": None,
         "raw": None,
         "error": error,
+    }
+
+
+def _extract_supplier_invoice_anthropic(file_path: str, api_key: str) -> dict:
+    """Extract supplier invoice data using Claude Vision. Handles both images and PDFs."""
+    import anthropic
+
+    ext = file_path.rsplit(".", 1)[-1].lower()
+    is_pdf = ext == "pdf"
+
+    with open(file_path, "rb") as f:
+        file_data = base64.standard_b64encode(f.read()).decode("utf-8")
+
+    if is_pdf:
+        source = {
+            "type": "base64",
+            "media_type": "application/pdf",
+            "data": file_data,
+        }
+        content_block = {"type": "document", "source": source}
+    else:
+        media_type = {
+            "jpg": "image/jpeg", "jpeg": "image/jpeg",
+            "png": "image/png", "gif": "image/gif", "webp": "image/webp",
+        }.get(ext, "image/jpeg")
+        source = {"type": "base64", "media_type": media_type, "data": file_data}
+        content_block = {"type": "image", "source": source}
+
+    client = anthropic.Anthropic(api_key=api_key)
+    message = client.messages.create(
+        model="claude-opus-4-20250514",
+        max_tokens=800,
+        messages=[{
+            "role": "user",
+            "content": [
+                content_block,
+                {"type": "text", "text": SUPPLIER_INVOICE_PROMPT},
+            ],
+        }],
+    )
+    raw = message.content[0].text
+    data = _parse_json(raw)
+    data["raw"] = raw
+    return data
+
+
+def extract_supplier_invoice_data(file_path: str, api_key: str) -> dict:
+    """Extract structured data from a supplier invoice PDF or image."""
+    if api_key:
+        try:
+            return _extract_supplier_invoice_anthropic(file_path, api_key)
+        except Exception as e:
+            print(f"Supplier invoice OCR error: {e}")
+
+    return {
+        "supplier_name": None, "supplier_org_nr": None,
+        "invoice_number": None, "invoice_date": None, "due_date": None,
+        "amount_excl_vat": None, "vat_amount": None, "amount_incl_vat": None,
+        "currency": "SEK", "payment_ref": None,
+        "bankgiro": None, "plusgiro": None, "iban": None,
+        "raw": None, "error": "OCR not available",
     }

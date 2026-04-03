@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}{{ "Ladda upp faktura" }}{% endblock %}
+{% block page_title %}{{ "Ladda upp leverantörsfaktura / Upload supplier invoice" }}{% endblock %}
+
+{% block topbar_actions %}
+  <a href="{{ url_for('supplier_invoices_index') }}" class="btn btn-ghost btn-sm">← {{ g.t.back }}</a>
+{% endblock %}
+
+{% block content %}
+<div style="max-width:520px;margin:0 auto;">
+  <div class="card">
+    <div style="font-size:13px;color:var(--muted);margin-bottom:20px;">
+      {{ "Ladda upp en PDF eller bild av fakturan. Claude Vision extraherar leverantörsuppgifter, belopp och betalningsinformation automatiskt." if g.lang == "sv" else "Upload a PDF or image of the invoice. Claude Vision will automatically extract supplier details, amounts, and payment information." }}
+    </div>
+
+    <form method="POST" enctype="multipart/form-data">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+      <div class="form-group">
+        <label class="form-label">{{ "Fakturafil (PDF eller bild) / Invoice file (PDF or image)" }}</label>
+        <input type="file" name="invoice_file" class="form-control"
+               accept=".pdf,.jpg,.jpeg,.png,.webp" required>
+      </div>
+
+      <button type="submit" class="btn btn-primary" style="width:100%;margin-top:10px;">
+        {{ "Ladda upp och analysera / Upload & analyse" }}
+      </button>
+    </form>
+  </div>
+</div>
+{% endblock %}

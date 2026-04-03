@@ -179,7 +179,7 @@ class FortnoxClient:
         # Send from Fortnox too (triggers their email/e-invoice flow)
         self._request("PUT", f"/invoices/{fortnox_nr}/externalprint")
 
-        return fortnox_nr
+        return result
 
     # ── Expenses / Vouchers ───────────────────────────────────────────────────
 
@@ -222,6 +222,48 @@ class FortnoxClient:
         expense.fortnox_voucher_nr = str(voucher_nr) if voucher_nr else None
         db.session.commit()
         return voucher_nr
+
+    def create_supplier_voucher(self, voucher_rows, description, voucher_date, series="L", pdf_path=None):
+        """Create a supplier voucher (bokföringsorder) in Fortnox."""
+        fy_id = self.get_financial_year_id(voucher_date)
+        rows = []
+        for r in voucher_rows:
+            row = {
+                "Account": str(r["Account"]),
+                "Debit": str(r.get("Debit", 0)),
+                "Credit": str(r.get("Credit", 0)),
+            }
+            rows.append(row)
+
+        voucher_data = {
+            "Description": description,
+            "VoucherDate": voucher_date.isoformat(),
+            "VoucherSeries": series,
+            "VoucherRows": rows,
+        }
+        if fy_id:
+            voucher_data["FinancialYear"] = fy_id
+
+        result = self._request("POST", "/vouchers", json={"Voucher": voucher_data})
+        voucher_nr = result.get("Voucher", {}).get("VoucherNumber")
+
+        if pdf_path and voucher_nr and os.path.exists(pdf_path):
+            try:
+                ext = pdf_path.rsplit(".", 1)[-1].lower()
+                mime = "application/pdf" if ext == "pdf" else f"image/{ext}"
+                with open(pdf_path, "rb") as f:
+                    requests.post(
+                        f"{self.BASE_URL}/vouchers/{voucher_nr}/attachments",
+                        headers={
+                            "Authorization": f"Bearer {self._get_token()}",
+                            "Content-Type": mime,
+                        },
+                        data=f.read(),
+                    )
+            except Exception:
+                pass  # attachment failure is non-fatal
+
+        return result
 
     def _upload_attachment(self, voucher_nr, expense):
         """Attach receipt image to a Fortnox voucher."""

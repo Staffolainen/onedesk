@@ -74,6 +74,103 @@
     </div>
   </div>
 
+  <!-- Users (admin only) -->
+  {% if current_user.is_admin %}
+  <div id="users" class="card" style="margin-bottom:16px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+      <div class="card-title" style="margin-bottom:0;">{{ "Användare / Users" }}</div>
+      <a href="{{ url_for('user_new') }}" class="btn btn-secondary btn-sm">+ {{ "Ny användare / New user" }}</a>
+    </div>
+    {% if users %}
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead>
+        <tr>
+          {% for h in ["Namn/Name","E-post/Email","Roll/Role","Status","Senast inloggad",""] %}
+          <th style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);padding:8px 10px;text-align:left;border-bottom:1px solid var(--border);">{{ h }}</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+      {% for u in users %}
+      <tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:8px 10px;font-weight:600;">{{ u.display_name or u.username or '—' }}</td>
+        <td style="padding:8px 10px;color:var(--muted);font-size:12px;">{{ u.email or '—' }}</td>
+        <td style="padding:8px 10px;">
+          <span style="font-size:10px;padding:2px 7px;border-radius:4px;
+            {% if u.role == 'admin' %}background:rgba(78,119,150,0.15);color:var(--accent);
+            {% elif u.role == 'employee' %}background:rgba(74,222,128,0.1);color:var(--success);
+            {% else %}background:var(--surface2);color:var(--muted);{% endif %}">
+            {{ u.role }}
+          </span>
+        </td>
+        <td style="padding:8px 10px;">
+          {% if u.active %}
+          <span style="color:var(--success);font-size:11px;">✓</span>
+          {% else %}
+          <span style="color:var(--danger);font-size:11px;">✗ {{ "Inaktiv" if g.lang == "sv" else "Inactive" }}</span>
+          {% endif %}
+        </td>
+        <td style="padding:8px 10px;color:var(--muted);font-size:12px;">
+          {{ u.last_login_at.strftime('%Y-%m-%d') if u.last_login_at else '—' }}
+        </td>
+        <td style="padding:6px 8px;">
+          <a href="{{ url_for('user_edit', user_id=u.id) }}" class="btn btn-ghost btn-sm">{{ g.t.edit }}</a>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div style="color:var(--muted);font-size:13px;">{{ "Inga ytterligare användare." if g.lang == "sv" else "No additional users." }}</div>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <!-- Voucher templates (bokföring) -->
+  <div id="bokforing" class="card" style="margin-bottom:16px;">
+    <div class="card-title">{{ "Bokföringsmallar / Voucher templates" }}</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:16px;">
+      {{ "Standardkonton per transaktionstyp för Fortnox-integration." if g.lang == "sv" else "Default account codes per transaction type for Fortnox integration." }}
+    </div>
+    {% set tx_labels = {
+      'supplier_invoice': 'Leverantörsfaktura / Supplier invoice',
+      'expense_internal': 'Utlägg – företagskort / Expense – company card',
+      'expense_external': 'Utlägg – privatkort / Expense – personal card',
+      'mileage': 'Milersättning / Mileage',
+      'salary': 'Lön / Salary',
+    } %}
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead>
+        <tr>
+          {% for h in ["Typ/Type","Debet","Moms","Kredit","Serie",""] %}
+          <th style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);padding:8px 10px;text-align:left;border-bottom:1px solid var(--border);">{{ h }}</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+      {% for tx_type, label in tx_labels.items() %}
+      {% set t = voucher_templates.get(tx_type) %}
+      <tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:8px 10px;">{{ label }}</td>
+        <td style="padding:8px 10px;font-family:var(--mono);font-size:12px;">
+          {{ t.debit_account if t and t.debit_account else '—' }}
+          {% if t and t.debit_account_label %}<span style="color:var(--muted);"> {{ t.debit_account_label }}</span>{% endif %}
+        </td>
+        <td style="padding:8px 10px;font-family:var(--mono);font-size:12px;">
+          {{ t.vat_account if t and t.vat_account else '—' }}
+          {% if t and t.vat_rate %}<span style="color:var(--muted);"> {{ t.vat_rate|int }}%</span>{% endif %}
+        </td>
+        <td style="padding:8px 10px;font-family:var(--mono);font-size:12px;">{{ t.credit_account if t and t.credit_account else '—' }}</td>
+        <td style="padding:8px 10px;font-family:var(--mono);font-size:12px;">{{ t.voucher_series if t and t.voucher_series else '—' }}</td>
+        <td style="padding:6px 8px;">
+          <a href="{{ url_for('voucher_template_edit', tx_type=tx_type) }}" class="btn btn-ghost btn-sm">{{ g.t.edit }}</a>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
   <!-- Backup & Restore -->
   <div class="card" style="margin-bottom:16px;">
     <div class="card-title">{{ "Säkerhetskopiering" if g.lang == "sv" else "Backup & Restore" }}</div>

@@ -18,6 +18,7 @@ class Config:
     PERMANENT_SESSION_LIFETIME = 86400 * 14  # 14 days for remembered sessions
 
     ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin")
+    ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "")
 
     # Company
     COMPANY_NAME = os.getenv("COMPANY_NAME", "My Company AB")

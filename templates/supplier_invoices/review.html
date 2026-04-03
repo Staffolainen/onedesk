@@ -1,0 +1,157 @@
+{% extends "base.html" %}
+{% block title %}{{ "Granska faktura" }}{% endblock %}
+{% block page_title %}{{ "Granska och bekräfta / Review & confirm" }}{% endblock %}
+
+{% block topbar_actions %}
+  <a href="{{ url_for('supplier_invoices_index') }}" class="btn btn-ghost btn-sm">← {{ g.t.back }}</a>
+{% endblock %}
+
+{% block content %}
+<div style="max-width:720px;margin:0 auto;">
+  <form method="POST">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+    <div class="card" style="margin-bottom:16px;">
+      <div class="card-title">{{ "Leverantör / Supplier" }}</div>
+      <div class="grid-2">
+        <div class="form-group">
+          <label class="form-label">{{ "Leverantörsnamn / Supplier name" }}</label>
+          <input type="text" name="supplier_name" class="form-control"
+                 value="{{ inv.supplier_name or '' }}" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Org.nr</label>
+          <input type="text" name="supplier_org_nr" class="form-control"
+                 value="{{ inv.supplier_org_nr or '' }}">
+        </div>
+      </div>
+      <div class="grid-2">
+        <div class="form-group">
+          <label class="form-label">{{ "Fakturanummer / Invoice number" }}</label>
+          <input type="text" name="invoice_number" class="form-control"
+                 value="{{ inv.invoice_number or '' }}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">{{ "Valuta / Currency" }}</label>
+          <input type="text" name="currency" class="form-control"
+                 value="{{ inv.currency or 'SEK' }}" maxlength="3">
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px;">
+      <div class="card-title">{{ "Datum / Dates" }}</div>
+      <div class="grid-2">
+        <div class="form-group">
+          <label class="form-label">{{ "Fakturadatum / Invoice date" }}</label>
+          <input type="date" name="invoice_date" class="form-control"
+                 value="{{ inv.invoice_date.isoformat() if inv.invoice_date else '' }}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">{{ "Förfallodatum / Due date" }}</label>
+          <input type="date" name="due_date" class="form-control"
+                 value="{{ inv.due_date.isoformat() if inv.due_date else '' }}">
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px;">
+      <div class="card-title">{{ "Belopp / Amounts" }}</div>
+      <div class="grid-2">
+        <div class="form-group">
+          <label class="form-label">{{ "Exkl. moms / Excl. VAT" }}</label>
+          <input type="number" name="amount_excl_vat" class="form-control"
+                 value="{{ inv.amount_excl_vat or '' }}" step="0.01" min="0">
+        </div>
+        <div class="form-group">
+          <label class="form-label">{{ "Moms / VAT" }}</label>
+          <input type="number" name="vat_amount" class="form-control"
+                 value="{{ inv.vat_amount or '' }}" step="0.01" min="0">
+        </div>
+        <div class="form-group">
+          <label class="form-label">{{ "Inkl. moms / Incl. VAT" }}</label>
+          <input type="number" name="amount_incl_vat" class="form-control"
+                 value="{{ inv.amount_incl_vat or '' }}" step="0.01" min="0" required>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px;">
+      <div class="card-title">{{ "Betalning / Payment" }}</div>
+      <div class="grid-2">
+        <div class="form-group">
+          <label class="form-label">OCR / {{ "Referens / Reference" }}</label>
+          <input type="text" name="payment_ref" class="form-control"
+                 value="{{ inv.payment_ref or '' }}">
+        </div>
+      </div>
+      <div class="grid-2">
+        <div class="form-group">
+          <label class="form-label">Bankgiro</label>
+          <input type="text" name="bankgiro" class="form-control"
+                 value="{{ inv.bankgiro or '' }}" placeholder="1234-5678">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Plusgiro</label>
+          <input type="text" name="plusgiro" class="form-control"
+                 value="{{ inv.plusgiro or '' }}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">IBAN</label>
+          <input type="text" name="iban" class="form-control"
+                 value="{{ inv.iban or '' }}">
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px;">
+      <div class="card-title">{{ "Bokföring / Bookkeeping" }}</div>
+      <div class="grid-2">
+        <div class="form-group">
+          <label class="form-label">{{ "Konto / Account (Bas)" }}</label>
+          <input type="text" name="account_code" class="form-control"
+                 value="{{ inv.account_code or (tmpl.debit_account if tmpl else '') }}"
+                 placeholder="{{ tmpl.debit_account if tmpl else '6540' }}">
+          {% if tmpl and tmpl.debit_account_label %}
+          <div style="font-size:11px;color:var(--muted);margin-top:3px;">
+            {{ "Standardmall:" if g.lang == "sv" else "Default template:" }}
+            {{ tmpl.debit_account }} {{ tmpl.debit_account_label }}
+          </div>
+          {% endif %}
+        </div>
+        <div class="form-group">
+          <label class="form-label">{{ "Uppdrag / Project (optional)" }}</label>
+          <select name="project_id" class="form-control">
+            <option value="">—</option>
+            {% for p in projects %}
+            <option value="{{ p.id }}" {% if inv.project_id == p.id %}selected{% endif %}>
+              {{ p.client.name }} / {{ p.name }}
+            </option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+    </div>
+
+    {% if inv.pdf_filename %}
+    <div class="card" style="margin-bottom:16px;">
+      <div class="card-title">{{ "Uppladdad fil / Uploaded file" }}</div>
+      <a href="{{ url_for('supplier_invoice_file', filename=inv.pdf_filename) }}"
+         target="_blank" class="btn btn-ghost btn-sm">
+        {{ "Visa fil / View file" }}
+      </a>
+    </div>
+    {% endif %}
+
+    <div style="display:flex;gap:10px;">
+      <button type="submit" name="action" value="save" class="btn btn-primary">
+        {{ "Spara och bokför / Save & book" }}
+      </button>
+      <button type="submit" name="action" value="discard" class="btn btn-danger"
+              onclick="return confirm('{{ 'Ta bort fakturan?' if g.lang == 'sv' else 'Discard invoice?' }}')">
+        {{ "Kasta / Discard" }}
+      </button>
+    </div>
+  </form>
+</div>
+{% endblock %}

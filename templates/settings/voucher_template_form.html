@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}{{ "Bokföringsmall" }}{% endblock %}
+{% block page_title %}{{ tx_label }}{% endblock %}
+
+{% block topbar_actions %}
+  <a href="{{ url_for('settings') }}#bokforing" class="btn btn-ghost btn-sm">← {{ g.t.back }}</a>
+{% endblock %}
+
+{% block content %}
+<div style="max-width:560px;margin:0 auto;">
+  <div class="card">
+    <form method="POST">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+      <div class="grid-2">
+        <div class="form-group">
+          <label class="form-label">{{ "Debetkonto / Debit account" }}</label>
+          <input type="text" name="debit_account" class="form-control" value="{{ tmpl.debit_account or '' }}" placeholder="6540">
+        </div>
+        <div class="form-group">
+          <label class="form-label">{{ "Kontonamn / Account label" }}</label>
+          <input type="text" name="debit_account_label" class="form-control" value="{{ tmpl.debit_account_label or '' }}" placeholder="IT-tjänster">
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="form-group">
+          <label class="form-label">{{ "Momskonto / VAT account" }}</label>
+          <input type="text" name="vat_account" class="form-control" value="{{ tmpl.vat_account or '' }}" placeholder="2640">
+        </div>
+        <div class="form-group">
+          <label class="form-label">{{ "Momssats % / VAT rate %" }}</label>
+          <input type="number" name="vat_rate" class="form-control" value="{{ tmpl.vat_rate or 25 }}" step="1" min="0" max="100">
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="form-group">
+          <label class="form-label">{{ "Kreditkonto / Credit account" }}</label>
+          <input type="text" name="credit_account" class="form-control" value="{{ tmpl.credit_account or '' }}" placeholder="2440">
+        </div>
+        <div class="form-group">
+          <label class="form-label">{{ "Verifikatserie / Voucher series" }}</label>
+          <input type="text" name="voucher_series" class="form-control" value="{{ tmpl.voucher_series or '' }}" placeholder="L" maxlength="5">
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">{{ "Kostnadsställe / Cost center" }}</label>
+        <input type="text" name="cost_center" class="form-control" value="{{ tmpl.cost_center or '' }}">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">{{ "Verifikattext / Description template" }}</label>
+        <input type="text" name="description_template" class="form-control" value="{{ tmpl.description_template or '' }}" placeholder="{supplier} {invoice_nr}">
+        <div style="font-size:11px;color:var(--muted);margin-top:4px;">
+          {{ "Variabler: {supplier}, {invoice_nr}, {date}, {merchant}, {period}" if g.lang == "sv" else "Variables: {supplier}, {invoice_nr}, {date}, {merchant}, {period}" }}
+        </div>
+      </div>
+
+      <div style="display:flex;gap:10px;margin-top:20px;">
+        <button type="submit" class="btn btn-primary">{{ g.t.save }}</button>
+        <a href="{{ url_for('settings') }}#bokforing" class="btn btn-ghost">{{ g.t.cancel }}</a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
