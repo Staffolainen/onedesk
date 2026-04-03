@@ -1170,23 +1170,56 @@ def invoices_send(invoice_id):
     except Exception as e:
         flash(f"E-postfel / Email error: {e}", "error")
 
-    # Fortnox live sync (only if connected)
-    if Settings.get("fortnox_access_token"):
-        try:
-            fortnox = FortnoxClient(app.config)
-            result = fortnox.create_invoice(inv)
-            if result and result.get("Invoice", {}).get("DocumentNumber"):
-                inv.fortnox_invoice_nr = result["Invoice"]["DocumentNumber"]
-                db.session.commit()
-                flash(
-                    f"Fortnox faktura skapad: {inv.fortnox_invoice_nr} / "
-                    f"Fortnox invoice created: {inv.fortnox_invoice_nr}",
-                    "success",
-                )
-        except Exception as e:
-            flash(f"Fortnox-fel / Fortnox error: {e}", "warning")
+    # ── Fortnox live sync commented out — dry-run preview instead ──
+    # if Settings.get("fortnox_access_token"):
+    #     try:
+    #         fortnox = FortnoxClient(app.config)
+    #         result = fortnox.create_invoice(inv)
+    #         if result and result.get("Invoice", {}).get("DocumentNumber"):
+    #             inv.fortnox_invoice_nr = result["Invoice"]["DocumentNumber"]
+    #             db.session.commit()
+    #             flash(...)
+    #     except Exception as e:
+    #         flash(f"Fortnox-fel / Fortnox error: {e}", "warning")
 
-    return redirect(url_for("invoices_proforma", invoice_id=invoice_id))
+    # Build the payload that would have been sent and show it in a preview window
+    rows = []
+    if inv.time_entries:
+        total_hours = sum(e.hours for e in inv.time_entries)
+        rows.append({
+            "ArticleNumber": "TID",
+            "Description": f"Konsulttjänster {inv.period_start} – {inv.period_end}",
+            "DeliveredQuantity": str(total_hours),
+            "Price": str(inv.client.hourly_rate),
+            "VAT": "25",
+            "Unit": "tim",
+        })
+    for exp in inv.expenses:
+        rows.append({
+            "Description": exp.description or exp.merchant or "Utlägg",
+            "DeliveredQuantity": "1",
+            "Price": str(exp.amount_excl_vat),
+            "VAT": str(int(exp.vat_rate)),
+        })
+    preview_payload = {
+        "_endpoint": "POST /invoices",
+        "_note": "Fortnox live sync disabled — dry-run preview",
+        "Invoice": {
+            "CustomerNumber": inv.client.fortnox_customer_nr or "(to be created)",
+            "InvoiceDate": inv.issue_date.isoformat() if inv.issue_date else None,
+            "DueDate": inv.due_date.isoformat() if inv.due_date else None,
+            "Currency": inv.currency,
+            "Language": "SV" if inv.language == "sv" else "EN",
+            "InvoiceRows": rows,
+            "Remarks": inv.notes or "",
+        },
+    }
+    session["fortnox_preview"] = {
+        "payload": preview_payload,
+        "back_url": url_for("invoices_proforma", invoice_id=invoice_id),
+        "back_label": f"← Faktura {inv.invoice_number}",
+    }
+    return redirect(url_for("fortnox_preview"))
 
 @app.route("/invoices/<int:invoice_id>/download")
 @login_required
@@ -1635,17 +1668,12 @@ def supplier_invoices_review(invoice_id):
         inv.status = "approved"
         db.session.commit()
 
-        # Immediately book to Fortnox if connected
-        if Settings.get("fortnox_access_token"):
-            try:
-                _book_supplier_invoice_fortnox(inv)
-                flash("Sparad och bokförd i Fortnox / Saved and booked in Fortnox", "success")
-            except Exception as e:
-                flash(f"Sparad men Fortnox misslyckades / Saved but Fortnox failed: {e}", "warning")
-        else:
-            flash("Faktura sparad / Invoice saved", "success")
-
-        return redirect(url_for("supplier_invoices_index"))
+        flash("Faktura sparad / Invoice saved", "success")
+        # Show Fortnox dry-run preview (live booking commented out)
+        session["fortnox_preview"] = _build_supplier_voucher_preview(inv)
+        session["fortnox_preview"]["back_url"] = url_for("supplier_invoices_index")
+        session["fortnox_preview"]["back_label"] = "← Leverantörsfakturor / Supplier invoices"
+        return redirect(url_for("fortnox_preview"))
 
     return render_template("supplier_invoices/review.html",
         inv=inv, projects=projects, tmpl=tmpl)
@@ -1658,12 +1686,16 @@ def supplier_invoices_book(invoice_id):
     if inv.status not in ("approved", "pending"):
         flash("Fakturan är redan bokförd / Invoice already booked", "error")
         return redirect(url_for("supplier_invoices_index"))
-    try:
-        _book_supplier_invoice_fortnox(inv)
-        flash("Bokförd i Fortnox / Booked in Fortnox", "success")
-    except Exception as e:
-        flash(f"Fortnox-fel / Fortnox error: {e}", "error")
-    return redirect(url_for("supplier_invoices_index"))
+    # Live booking commented out — show dry-run preview instead
+    # try:
+    #     _book_supplier_invoice_fortnox(inv)
+    #     flash("Bokförd i Fortnox / Booked in Fortnox", "success")
+    # except Exception as e:
+    #     flash(f"Fortnox-fel / Fortnox error: {e}", "error")
+    session["fortnox_preview"] = _build_supplier_voucher_preview(inv)
+    session["fortnox_preview"]["back_url"] = url_for("supplier_invoices_index")
+    session["fortnox_preview"]["back_label"] = "← Leverantörsfakturor / Supplier invoices"
+    return redirect(url_for("fortnox_preview"))
 
 @app.route("/supplier-invoices/<int:invoice_id>/mark-paid", methods=["POST"])
 @login_required
@@ -1773,41 +1805,52 @@ def payment_file_download(pf_id):
         mimetype="application/octet-stream",
     )
 
-def _book_supplier_invoice_fortnox(inv: SupplierInvoice):
-    """Create a supplier voucher in Fortnox and update invoice status to 'booked'."""
-    fortnox = FortnoxClient(app.config)
+def _build_supplier_voucher_preview(inv: SupplierInvoice) -> dict:
+    """Build the Fortnox voucher payload that would be sent (for dry-run preview)."""
     tmpl = VoucherTemplate.query.filter_by(transaction_type="supplier_invoice").first()
     debit_acc = (tmpl.debit_account if tmpl else None) or inv.account_code or "6540"
-    vat_acc = (tmpl.vat_account if tmpl else None) or "2640"
+    vat_acc   = (tmpl.vat_account if tmpl else None) or "2640"
     credit_acc = (tmpl.credit_account if tmpl else None) or "2440"
-    vat_rate = (tmpl.vat_rate if tmpl else 25.0)
     series = (tmpl.voucher_series if tmpl else None) or "L"
-
-    excl = inv.amount_excl_vat
-    vat = inv.vat_amount
-    incl = inv.amount_incl_vat
-
-    # Attach PDF
-    pdf_path = os.path.join(_supplier_upload_folder(), inv.pdf_filename) if inv.pdf_filename else None
-
-    voucher_rows = [
-        {"Account": debit_acc, "Debit": excl, "Credit": 0},
-        {"Account": vat_acc, "Debit": vat, "Credit": 0},
-        {"Account": credit_acc, "Debit": 0, "Credit": incl},
-    ]
-
     description = f"{inv.supplier_name or 'Leverantör'} {inv.invoice_number or ''}"
-    result = fortnox.create_supplier_voucher(
-        voucher_rows=voucher_rows,
-        description=description,
-        voucher_date=inv.invoice_date or date.today(),
-        series=series,
-        pdf_path=pdf_path,
+    payload = {
+        "_endpoint": "POST /vouchers",
+        "_note": "Fortnox live booking disabled — dry-run preview",
+        "_pdf_attachment": inv.pdf_filename or "(none)",
+        "Voucher": {
+            "Description": description,
+            "VoucherDate": (inv.invoice_date or date.today()).isoformat(),
+            "VoucherSeries": series,
+            "VoucherRows": [
+                {"Account": debit_acc, "Debit": inv.amount_excl_vat, "Credit": 0,
+                 "_label": "Kostnadskonto / Expense account"},
+                {"Account": vat_acc, "Debit": inv.vat_amount, "Credit": 0,
+                 "_label": "Ingående moms / Input VAT"},
+                {"Account": credit_acc, "Debit": 0, "Credit": inv.amount_incl_vat,
+                 "_label": "Leverantörsskuld / Accounts payable"},
+            ],
+        },
+    }
+    return {"payload": payload}
+
+# def _book_supplier_invoice_fortnox(inv: SupplierInvoice):
+#     """Create a supplier voucher in Fortnox and update invoice status to 'booked'."""
+#     fortnox = FortnoxClient(app.config)
+#     ... (commented out — enable when ready for live Fortnox sync)
+
+# ── Fortnox dry-run preview ───────────────────────────────────────────────────
+
+@app.route("/fortnox/preview")
+@login_required
+def fortnox_preview():
+    preview = session.pop("fortnox_preview", None)
+    if not preview:
+        return redirect(url_for("dashboard"))
+    return render_template("fortnox/preview.html",
+        payload_json=json.dumps(preview.get("payload", {}), indent=2, ensure_ascii=False),
+        back_url=preview.get("back_url", url_for("dashboard")),
+        back_label=preview.get("back_label", "← Back"),
     )
-    if result:
-        inv.fortnox_voucher_nr = result.get("Voucher", {}).get("VoucherNumber")
-    inv.status = "booked"
-    db.session.commit()
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
