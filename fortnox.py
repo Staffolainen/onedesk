@@ -81,7 +81,7 @@ class FortnoxClient:
         params = {
             "client_id": self.client_id,
             "redirect_uri": self.redirect_uri,
-            "scope": "bookkeeping companyinformation archive",
+            "scope": "bookkeeping companyinformation archive connectfile",
             "state": "onedesk",
             "response_type": "code",
             "access_type": "offline",
@@ -202,20 +202,6 @@ class FortnoxClient:
             "VoucherRows": rows,
         }
 
-        # Upload PDF to archive first so we can include it in the voucher POST
-        if invoice.pdf_filename:
-            import os as _os
-            pdf_path = _os.path.join(
-                _os.path.dirname(__file__), "static", "uploads", invoice.pdf_filename
-            )
-            if _os.path.exists(pdf_path):
-                archive_id = self.upload_to_archive(pdf_path, invoice.pdf_filename)
-                if archive_id:
-                    voucher_data["AttachedFiles"] = [{"ArchiveFileId": archive_id}]
-                    logger.info("Fortnox — PDF queued for attachment: %s", archive_id)
-            else:
-                logger.warning("Fortnox PDF not found on disk: %s", pdf_path)
-
         result = self._request("POST", "/vouchers", json={"Voucher": voucher_data},
                                params={"financialyear": fy_id})
         voucher = result.get("Voucher", {})
@@ -223,6 +209,19 @@ class FortnoxClient:
         voucher_series = voucher.get("VoucherSeries", "B")
         voucher_ref = f"{voucher_series}{voucher_nr}" if voucher_nr else None
         logger.info("Fortnox voucher created — ref=%s", voucher_ref)
+
+        # Upload PDF to archive then link via /voucherfileconnections
+        if voucher_nr and invoice.pdf_filename:
+            import os as _os
+            pdf_path = _os.path.join(
+                _os.path.dirname(__file__), "static", "uploads", invoice.pdf_filename
+            )
+            if _os.path.exists(pdf_path):
+                file_id = self.upload_to_archive(pdf_path, invoice.pdf_filename)
+                if file_id:
+                    self.connect_file_to_voucher(file_id, voucher_series, voucher_nr)
+            else:
+                logger.warning("Fortnox PDF not found on disk: %s", pdf_path)
 
         return result
 
@@ -359,7 +358,7 @@ class FortnoxClient:
         return result
 
     def upload_to_archive(self, file_path, filename):
-        """Upload a file to the Fortnox archive root. Returns ArchiveFileId or None."""
+        """Upload a file to the Fortnox archive. Returns the File Id (used for voucherfileconnections)."""
         ext = filename.rsplit(".", 1)[-1].lower()
         mime = "application/pdf" if ext == "pdf" else f"image/{ext}"
         with open(file_path, "rb") as f:
@@ -372,6 +371,31 @@ class FortnoxClient:
         )
         logger.info("Fortnox archive upload — status=%s body=%s", resp.status_code, resp.text)
         if resp.status_code == 201:
-            return resp.json().get("File", {}).get("ArchiveFileId")
+            # Use Id (not ArchiveFileId) for voucherfileconnections
+            return resp.json().get("File", {}).get("Id")
         return None
+
+    def connect_file_to_voucher(self, file_id, voucher_series, voucher_nr):
+        """Link an archive file to a voucher via /voucherfileconnections."""
+        payload = {
+            "VoucherFileConnection": {
+                "FileId": file_id,
+                "VoucherNumber": str(voucher_nr),
+                "VoucherSeries": voucher_series,
+            }
+        }
+        logger.info("Fortnox voucherfileconnections — FileId=%s voucher=%s%s",
+                    file_id, voucher_series, voucher_nr)
+        resp = requests.post(
+            f"{self.BASE_URL}/voucherfileconnections",
+            headers={
+                "Authorization": f"Bearer {self._get_token()}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            json=payload,
+        )
+        logger.info("Fortnox voucherfileconnections — status=%s body=%s",
+                    resp.status_code, resp.text)
+        return resp.status_code in (200, 201)
 
