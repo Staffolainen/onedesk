@@ -68,7 +68,7 @@ class FortnoxClient:
         params = {
             "client_id": self.client_id,
             "redirect_uri": self.redirect_uri,
-            "scope": "invoice bookkeeping companyinformation",
+            "scope": "bookkeeping",
             "state": "onedesk",
             "response_type": "code",
             "access_type": "offline",
