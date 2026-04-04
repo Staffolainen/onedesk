@@ -1170,21 +1170,26 @@ def invoices_send(invoice_id):
     except Exception as e:
         flash(f"E-postfel / Email error: {e}", "error")
 
-    # ── Fortnox live sync commented out — dry-run preview instead ──
-    # Uncomment to enable; make sure PDF is generated first (inv.pdf_filename must be set)
-    # if Settings.get("fortnox_access_token"):
-    #     try:
-    #         fortnox = FortnoxClient(app.config)
-    #         result = fortnox.create_outgoing_invoice_voucher(inv)
-    #         voucher_nr = result.get("Voucher", {}).get("VoucherNumber")
-    #         if voucher_nr:
-    #             inv.fortnox_invoice_nr = str(voucher_nr)
-    #             db.session.commit()
-    #             flash(f"Fortnox verifikat skapat: {voucher_nr} / Voucher created: {voucher_nr}", "success")
-    #     except Exception as e:
-    #         flash(f"Fortnox-fel / Fortnox error: {e}", "warning")
+    # ── Fortnox live sync ──
+    if Settings.get("fortnox_access_token"):
+        try:
+            # Ensure PDF exists before posting (it's attached to the voucher)
+            if not inv.pdf_filename:
+                pdf_path = generate_invoice_pdf(inv, app.config)
+                inv.pdf_filename = os.path.basename(pdf_path)
+                db.session.commit()
+            fortnox = FortnoxClient(app.config)
+            result = fortnox.create_outgoing_invoice_voucher(inv)
+            voucher_nr = result.get("Voucher", {}).get("VoucherNumber")
+            if voucher_nr:
+                inv.fortnox_invoice_nr = str(voucher_nr)
+                db.session.commit()
+                flash(f"Fortnox verifikat skapat: {voucher_nr} / Voucher created: {voucher_nr}", "success")
+        except Exception as e:
+            flash(f"Fortnox-fel / Fortnox error: {e}", "warning")
+        return redirect(url_for("invoices_proforma", invoice_id=invoice_id))
 
-    # Build voucher preview (live sync commented out above)
+    # Fortnox not connected — show dry-run payload preview instead
     session["fortnox_preview"] = _build_outgoing_invoice_voucher_preview(inv)
     session["fortnox_preview"]["back_url"] = url_for("invoices_proforma", invoice_id=invoice_id)
     session["fortnox_preview"]["back_label"] = f"← Faktura {inv.invoice_number}"
