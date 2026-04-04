@@ -348,10 +348,10 @@ class FortnoxClient:
 
         return result
 
-    def upload_to_archive(self, file_path, filename, doc_type="LGR_IO"):
+    def upload_to_archive(self, file_path, filename, folder_path=None):
         """
         Upload a file to the Fortnox archive.
-        doc_type: e.g. LGR_IO (löpande räkenskaper inkommande/outgående)
+        folder_path: archive path, e.g. '/Verifikat/B/11' (optional)
         Returns full response dict for inspection.
         """
         ext = filename.rsplit(".", 1)[-1].lower()
@@ -360,17 +360,31 @@ class FortnoxClient:
         with open(file_path, "rb") as f:
             file_bytes = f.read()
 
-        print(f"[FN-ARCHIVE] Uploading {filename} ({len(file_bytes)} bytes) type={doc_type}", flush=True)
+        results = {}
 
+        # Attempt 1: POST /archive with path param
+        params = {"path": folder_path} if folder_path else {}
         url = f"{self.BASE_URL}/archive"
+        print(f"[FN-ARCHIVE] Attempt 1 — POST {url} params={params} file={filename} ({len(file_bytes)}b)", flush=True)
         resp = requests.post(
             url,
-            params={"type": doc_type},
+            params=params,
             headers={"Authorization": f"Bearer {self._get_token()}"},
             files={"file": (filename, file_bytes, mime)},
         )
-        print(f"[FN-ARCHIVE] status={resp.status_code} body={resp.text}", flush=True)
-        return {"status": resp.status_code, "body": resp.text}
+        print(f"[FN-ARCHIVE] Attempt 1 — status={resp.status_code} body={resp.text}", flush=True)
+        results["attempt1_path_param"] = {"status": resp.status_code, "body": resp.text}
+
+        # Attempt 2: GET /archive to inspect root structure
+        resp2 = requests.get(
+            url,
+            headers={"Authorization": f"Bearer {self._get_token()}",
+                     "Accept": "application/json"},
+        )
+        print(f"[FN-ARCHIVE] GET /archive — status={resp2.status_code} body={resp2.text[:500]}", flush=True)
+        results["archive_root"] = {"status": resp2.status_code, "body": resp2.text[:500]}
+
+        return results
 
     def _upload_attachment(self, voucher_series, voucher_nr, expense):
         """Attach receipt image to a Fortnox voucher — TODO: implement via Archive API."""
