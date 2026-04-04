@@ -1885,6 +1885,22 @@ def _build_supplier_voucher_preview(inv: SupplierInvoice) -> dict:
 
 # ── Fortnox dry-run preview ───────────────────────────────────────────────────
 
+@app.route("/fortnox/test-archive")
+@login_required
+@admin_required
+def fortnox_test_archive():
+    """Dev route: upload the most recent invoice PDF to Fortnox archive and show raw response."""
+    from models import Invoice
+    inv = Invoice.query.filter(Invoice.pdf_filename.isnot(None)).order_by(Invoice.id.desc()).first()
+    if not inv:
+        return "No invoice with PDF found.", 404
+    pdf_path = os.path.join(app.root_path, "static", "uploads", inv.pdf_filename)
+    if not os.path.exists(pdf_path):
+        return f"PDF not found on disk: {pdf_path}", 404
+    fortnox = FortnoxClient(app.config)
+    result = fortnox.upload_to_archive(pdf_path, inv.pdf_filename)
+    return f"<pre>{json.dumps(result, indent=2, ensure_ascii=False)}</pre>"
+
 @app.route("/fortnox/preview")
 @login_required
 def fortnox_preview():

@@ -348,8 +348,36 @@ class FortnoxClient:
 
         return result
 
+    def upload_to_archive(self, file_path, filename, doc_type="LGR_IO"):
+        """
+        Upload a file to the Fortnox archive.
+        doc_type: e.g. LGR_IO (löpande räkenskaper inkommande/outgående)
+        Returns full response dict for inspection.
+        """
+        ext = filename.rsplit(".", 1)[-1].lower()
+        mime = "application/pdf" if ext == "pdf" else f"image/{ext}"
+
+        with open(file_path, "rb") as f:
+            file_bytes = f.read()
+
+        print(f"[FN-ARCHIVE] Uploading {filename} ({len(file_bytes)} bytes) type={doc_type}", flush=True)
+
+        # Try POST /archive with type parameter
+        url = f"{self.BASE_URL}/archive"
+        resp = requests.post(
+            url,
+            params={"type": doc_type},
+            headers={
+                "Authorization": f"Bearer {self._get_token()}",
+                "Content-Type": mime,
+                "Content-Disposition": f'attachment; filename="{filename}"',
+            },
+            data=file_bytes,
+        )
+        print(f"[FN-ARCHIVE] status={resp.status_code} body={resp.text}", flush=True)
+        return {"status": resp.status_code, "body": resp.text}
+
     def _upload_attachment(self, voucher_series, voucher_nr, expense):
         """Attach receipt image to a Fortnox voucher — TODO: implement via Archive API."""
-        # The /vouchers/{series}/{nr}/attachments endpoint does not exist in Fortnox API v3.
         logger.info("Fortnox attachment skipped (Archive API not yet implemented) — voucher=%s%s",
                     voucher_series, voucher_nr)
