@@ -172,8 +172,6 @@ class FortnoxClient:
         total    = round(invoice.total, 2)
         rounding = round(total - excl_vat - vat, 2)
 
-        project_nr = (invoice.project.project_number if invoice.project else None) or ""
-
         def _row(account, debit, credit, info=""):
             r = {
                 "Account": int(account),
@@ -182,8 +180,6 @@ class FortnoxClient:
             }
             if info:
                 r["TransactionInformation"] = info
-            if project_nr:
-                r["Project"] = project_nr
             return r
 
         description = f"Faktura {invoice.invoice_number} {invoice.client.name}"[:200]
