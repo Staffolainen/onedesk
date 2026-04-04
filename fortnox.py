@@ -376,8 +376,16 @@ class FortnoxClient:
         return None
 
     def connect_file_to_voucher(self, file_id, voucher_series, voucher_nr):
-        """Link an archive file to a voucher via /voucherfileconnections."""
-        payload = {
+        """Link an archive file to a voucher. Tries /voucherfileconnections then /fileconnections."""
+        token = self._get_token()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+
+        # Attempt 1: /voucherfileconnections
+        payload1 = {
             "VoucherFileConnection": {
                 "FileId": file_id,
                 "VoucherNumber": str(voucher_nr),
@@ -386,16 +394,26 @@ class FortnoxClient:
         }
         logger.info("Fortnox voucherfileconnections — FileId=%s voucher=%s%s",
                     file_id, voucher_series, voucher_nr)
-        resp = requests.post(
-            f"{self.BASE_URL}/voucherfileconnections",
-            headers={
-                "Authorization": f"Bearer {self._get_token()}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
-            json=payload,
-        )
+        resp1 = requests.post(f"{self.BASE_URL}/voucherfileconnections",
+                              headers=headers, json=payload1)
         logger.info("Fortnox voucherfileconnections — status=%s body=%s",
-                    resp.status_code, resp.text)
-        return resp.status_code in (200, 201)
+                    resp1.status_code, resp1.text)
+        if resp1.status_code in (200, 201):
+            return True
+
+        # Attempt 2: /fileconnections
+        payload2 = {
+            "FileConnection": {
+                "FileId": file_id,
+                "ObjectId": f"{voucher_series}{voucher_nr}",
+                "ObjectType": "Voucher",
+            }
+        }
+        logger.info("Fortnox fileconnections — FileId=%s ObjectId=%s%s",
+                    file_id, voucher_series, voucher_nr)
+        resp2 = requests.post(f"{self.BASE_URL}/fileconnections",
+                              headers=headers, json=payload2)
+        logger.info("Fortnox fileconnections — status=%s body=%s",
+                    resp2.status_code, resp2.text)
+        return resp2.status_code in (200, 201)
 
