@@ -1184,11 +1184,18 @@ def invoices_send(invoice_id):
                 db.session.commit()
             fortnox = FortnoxClient(app.config)
             result = fortnox.create_outgoing_invoice_voucher(inv)
-            voucher_nr = result.get("Voucher", {}).get("VoucherNumber")
-            if voucher_nr:
-                inv.fortnox_invoice_nr = str(voucher_nr)
+            voucher = result.get("Voucher", {})
+            voucher_nr = voucher.get("VoucherNumber")
+            voucher_series = voucher.get("VoucherSeries", "B")
+            voucher_ref = f"{voucher_series}{voucher_nr}" if voucher_nr else None
+            if voucher_ref:
+                inv.fortnox_invoice_nr = voucher_ref
                 db.session.commit()
-                flash(f"Fortnox verifikat skapat: {voucher_nr} / Voucher created: {voucher_nr}", "success")
+                # Email PDF to Fortnox arkivplats inbox
+                if inv.pdf_filename:
+                    pdf_path = os.path.join(app.root_path, "static", "uploads", inv.pdf_filename)
+                    _email_pdf_to_fortnox_inbox(pdf_path, inv.pdf_filename, voucher_ref, app.config)
+                flash(f"Fortnox verifikat skapat: {voucher_ref} / Voucher created: {voucher_ref}", "success")
         except Exception as e:
             flash(f"Fortnox-fel / Fortnox error: {e}", "warning")
         return redirect(url_for("invoices_proforma", invoice_id=invoice_id))
@@ -1958,6 +1965,36 @@ def fortnox_preview():
 def _sanitize_header(value):
     """Strip newlines to prevent email header injection."""
     return str(value or "").replace("\r", "").replace("\n", "")
+
+def _email_pdf_to_fortnox_inbox(pdf_path, filename, voucher_ref, config):
+    """Email a PDF to the Fortnox arkivplats inbox address."""
+    inbox = config.get("FORTNOX_INBOX_EMAIL", "")
+    if not inbox:
+        logger.info("Fortnox inbox email not configured — skipping PDF email")
+        return
+    if not os.path.exists(pdf_path):
+        logger.warning("Fortnox inbox email — PDF not found: %s", pdf_path)
+        return
+    msg = MIMEMultipart()
+    msg["From"] = _sanitize_header(config["SMTP_FROM"])
+    msg["To"] = inbox
+    msg["Subject"] = f"Verifikat {voucher_ref} — {filename}"
+    msg.attach(MIMEText(f"Verifikat {voucher_ref}", "plain", "utf-8"))
+    with open(pdf_path, "rb") as f:
+        part = MIMEBase("application", "octet-stream")
+        part.set_payload(f.read())
+        encoders.encode_base64(part)
+        part.add_header("Content-Disposition", f'attachment; filename="{filename}"')
+        msg.attach(part)
+    try:
+        with smtplib.SMTP(config["SMTP_HOST"], config["SMTP_PORT"]) as server:
+            server.starttls()
+            server.login(config["SMTP_USER"], config["SMTP_PASSWORD"])
+            server.send_message(msg)
+        logger.info("Fortnox inbox email sent — voucher=%s to=%s", voucher_ref, inbox)
+    except Exception as e:
+        logger.error("Fortnox inbox email failed: %s", e)
+
 
 def _send_invoice_email(inv, config):
     client = inv.client

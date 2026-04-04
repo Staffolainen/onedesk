@@ -36,6 +36,7 @@ class Config:
     FORTNOX_CLIENT_SECRET = os.getenv("FORTNOX_CLIENT_SECRET", "")
     FORTNOX_REDIRECT_URI = os.getenv("FORTNOX_REDIRECT_URI", "http://localhost:5000/fortnox/callback")
     FORTNOX_BASE_URL = "https://api.fortnox.se/3"
+    FORTNOX_INBOX_EMAIL = os.getenv("FORTNOX_INBOX_EMAIL", "")
 
     # Anthropic (cloud OCR)
     ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
