@@ -418,6 +418,7 @@ def projects_new(client_id):
             start_date=_safe_date(request.form.get("start_date")),
             end_date=_safe_date(request.form.get("end_date")),
             accumulated_cost=_safe_float(request.form.get("accumulated_cost"), 0),
+            invoice_cc_email=request.form.get("invoice_cc_email", "").strip() or None,
         )
         db.session.add(p)
         db.session.commit()
@@ -438,6 +439,7 @@ def projects_edit(project_id):
         p.end_date         = _safe_date(request.form.get("end_date"))
         p.active           = request.form.get("active") == "1"
         p.accumulated_cost = _safe_float(request.form.get("accumulated_cost"), 0)
+        p.invoice_cc_email = request.form.get("invoice_cc_email", "").strip() or None
         db.session.commit()
         flash("Uppdrag uppdaterat / Assignment updated", "success")
         return redirect(url_for("clients_list"))
@@ -2064,9 +2066,19 @@ Best regards,
 """
     body = body_sv if lang == "sv" else body_en
 
+    # Build CC list: project-level CC + admin email
+    cc_addresses = []
+    if inv.project and inv.project.invoice_cc_email:
+        cc_addresses.append(_sanitize_header(inv.project.invoice_cc_email))
+    admin_email = config.get("ADMIN_EMAIL", "")
+    if admin_email and admin_email != safe_to:
+        cc_addresses.append(_sanitize_header(admin_email))
+
     msg = MIMEMultipart()
     msg["From"] = safe_from
     msg["To"] = safe_to
+    if cc_addresses:
+        msg["Cc"] = ", ".join(cc_addresses)
     msg["Subject"] = subject
     msg.attach(MIMEText(body, "plain", "utf-8"))
 
@@ -2084,7 +2096,8 @@ Best regards,
     with smtplib.SMTP(config["SMTP_HOST"], config["SMTP_PORT"]) as server:
         server.starttls()
         server.login(config["SMTP_USER"], config["SMTP_PASSWORD"])
-        server.send_message(msg)
+        recipients = [safe_to] + cc_addresses
+        server.sendmail(safe_from, recipients, msg.as_string())
 
 # ── Init ──────────────────────────────────────────────────────────────────────
 
@@ -2103,6 +2116,7 @@ def init_db():
             "ALTER TABLE purchase_order ADD COLUMN km_rate REAL",
             "ALTER TABLE invoice ADD COLUMN project_id INTEGER REFERENCES project(id)",
             "ALTER TABLE project ADD COLUMN accumulated_cost REAL DEFAULT 0.0",
+            "ALTER TABLE project ADD COLUMN invoice_cc_email VARCHAR(200)",
             # v1.1 user model expansion
             "ALTER TABLE user ADD COLUMN display_name VARCHAR(200)",
             "ALTER TABLE user ADD COLUMN email VARCHAR(200)",

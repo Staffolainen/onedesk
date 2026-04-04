@@ -56,6 +56,16 @@
         </div>
       </div>
 
+      <div class="form-group">
+        <label class="form-label">{{ "CC på fakturor (t.ex. kundens PM)" if g.lang == "sv" else "CC on invoices (e.g. client PM)" }}</label>
+        <input type="email" name="invoice_cc_email" class="form-control"
+               value="{{ project.invoice_cc_email if editing and project.invoice_cc_email else '' }}"
+               placeholder="pm@kund.se">
+        <div style="font-size:12px;color:var(--muted);margin-top:4px;">
+          {{ "Läggs till som CC på alla fakturamejl för detta uppdrag." if g.lang == "sv" else "Added as CC on all invoice emails for this assignment." }}
+        </div>
+      </div>
+
       {% if editing %}
       <div class="form-group">
         <label class="form-label">{{ "Status" }}</label>

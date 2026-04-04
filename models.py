@@ -109,6 +109,7 @@ class Project(db.Model):
     end_date = db.Column(db.Date)
     active = db.Column(db.Boolean, default=True)
     accumulated_cost = db.Column(db.Float, default=0.0)  # pre-system historical cost
+    invoice_cc_email = db.Column(db.String(200))  # CC on invoice emails (e.g. client PM)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     @classmethod
