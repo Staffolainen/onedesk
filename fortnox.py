@@ -163,6 +163,9 @@ class FortnoxClient:
 
         voucher_date = invoice.issue_date or _date.today()
         fy_id = self.get_financial_year_id(voucher_date)
+        if not fy_id:
+            raise Exception(f"No financial year found in Fortnox for date {voucher_date}. "
+                            "Please create a financial year in Fortnox first.")
 
         excl_vat = round(invoice.subtotal, 2)
         vat      = round(invoice.vat_amount, 2)
@@ -173,9 +176,9 @@ class FortnoxClient:
 
         def _row(account, debit, credit, info=""):
             r = {
-                "Account": str(account),
-                "Debit":   str(round(debit, 2)),
-                "Credit":  str(round(credit, 2)),
+                "Account": int(account),
+                "Debit":   round(debit, 2),
+                "Credit":  round(credit, 2),
             }
             if info:
                 r["TransactionInformation"] = info
@@ -183,7 +186,7 @@ class FortnoxClient:
                 r["Project"] = project_nr
             return r
 
-        description = f"Faktura {invoice.invoice_number} {invoice.client.name}"
+        description = f"Faktura {invoice.invoice_number} {invoice.client.name}"[:200]
 
         rows = [
             _row(1510, total,    0,       description),
@@ -191,8 +194,6 @@ class FortnoxClient:
             _row(2610, 0,        vat,      "Utgående moms 25%"),
         ]
         if rounding != 0:
-            # 3740 is credit-normal; a positive rounding means we credit it,
-            # negative means we debit it
             rows.append(_row(3740,
                              max(-rounding, 0),
                              max(rounding, 0),
@@ -203,10 +204,9 @@ class FortnoxClient:
             "TransactionDate": voucher_date.isoformat(),
             "VoucherSeries": "B",
             "ReferenceType": "INVOICE",
+            "Year": fy_id,
             "VoucherRows": rows,
         }
-        if fy_id:
-            voucher_data["FinancialYear"] = fy_id
 
         result = self._request("POST", "/vouchers", json={"Voucher": voucher_data})
         voucher_nr = result.get("Voucher", {}).get("VoucherNumber")
@@ -290,31 +290,32 @@ class FortnoxClient:
     def create_expense_voucher(self, expense):
         """Create a supplier invoice / voucher for an expense."""
         fy_id = self.get_financial_year_id(expense.expense_date)
+        if not fy_id:
+            raise Exception(f"No financial year found in Fortnox for date {expense.expense_date}.")
         voucher_data = {
-            "Description": expense.description or expense.merchant or "Utlägg",
-            "VoucherDate": expense.expense_date.isoformat(),
-            "VoucherSeries": "UL",  # Utgifter/Leverantör
+            "Description": (expense.description or expense.merchant or "Utlägg")[:200],
+            "TransactionDate": expense.expense_date.isoformat(),
+            "VoucherSeries": "UL",
+            "Year": fy_id,
             "VoucherRows": [
                 {
-                    "Account": "6550",  # Generic expense account
-                    "Debit": str(expense.amount_excl_vat),
-                    "Credit": "0",
-                    "TransactionInformation": expense.description or "",
+                    "Account": 6550,
+                    "Debit": round(float(expense.amount_excl_vat), 2),
+                    "Credit": 0,
+                    "TransactionInformation": (expense.description or "")[:200],
                 },
                 {
-                    "Account": "2640",  # Ingående moms
-                    "Debit": str(expense.vat_amount),
-                    "Credit": "0",
+                    "Account": 2640,
+                    "Debit": round(float(expense.vat_amount), 2),
+                    "Credit": 0,
                 },
                 {
-                    "Account": "2440" if expense.paid_by == "personal" else "1930",
-                    "Debit": "0",
-                    "Credit": str(expense.amount_incl_vat),
+                    "Account": 2440 if expense.paid_by == "personal" else 1930,
+                    "Debit": 0,
+                    "Credit": round(float(expense.amount_incl_vat), 2),
                 },
             ],
         }
-        if fy_id:
-            voucher_data["FinancialYear"] = fy_id
         result = self._request("POST", "/vouchers", json={"Voucher": voucher_data})
         voucher_nr = result.get("Voucher", {}).get("VoucherNumber")
 
@@ -330,23 +331,24 @@ class FortnoxClient:
     def create_supplier_voucher(self, voucher_rows, description, voucher_date, series="L", pdf_path=None):
         """Create a supplier voucher (bokföringsorder) in Fortnox."""
         fy_id = self.get_financial_year_id(voucher_date)
+        if not fy_id:
+            raise Exception(f"No financial year found in Fortnox for date {voucher_date}.")
         rows = []
         for r in voucher_rows:
             row = {
-                "Account": str(r["Account"]),
-                "Debit": str(r.get("Debit", 0)),
-                "Credit": str(r.get("Credit", 0)),
+                "Account": int(r["Account"]),
+                "Debit": round(float(r.get("Debit", 0)), 2),
+                "Credit": round(float(r.get("Credit", 0)), 2),
             }
             rows.append(row)
 
         voucher_data = {
-            "Description": description,
-            "VoucherDate": voucher_date.isoformat(),
+            "Description": description[:200],
+            "TransactionDate": voucher_date.isoformat(),
             "VoucherSeries": series,
+            "Year": fy_id,
             "VoucherRows": rows,
         }
-        if fy_id:
-            voucher_data["FinancialYear"] = fy_id
 
         result = self._request("POST", "/vouchers", json={"Voucher": voucher_data})
         voucher_nr = result.get("Voucher", {}).get("VoucherNumber")
