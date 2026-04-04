@@ -210,38 +210,9 @@ class FortnoxClient:
         voucher_ref = f"{voucher_series}{voucher_nr}" if voucher_nr else None
         logger.info("Fortnox voucher created — ref=%s", voucher_ref)
 
-        # Attach invoice PDF to the voucher
-        print(f"[FN-ATTACH] voucher_ref={voucher_ref} pdf_filename={invoice.pdf_filename}", flush=True)
-        if not voucher_ref:
-            print("[FN-ATTACH] SKIP — no voucher_ref", flush=True)
-        elif not invoice.pdf_filename:
-            print("[FN-ATTACH] SKIP — no pdf_filename on invoice", flush=True)
-        else:
-            import os as _os
-            pdf_path = _os.path.join(
-                _os.path.dirname(__file__), "static", "uploads", invoice.pdf_filename
-            )
-            print(f"[FN-ATTACH] pdf_path={pdf_path} exists={_os.path.exists(pdf_path)}", flush=True)
-            if _os.path.exists(pdf_path):
-                attach_url = f"{self.BASE_URL}/vouchers/{voucher_series}/{voucher_nr}/attachments"
-                print(f"[FN-ATTACH] POST {attach_url}", flush=True)
-                try:
-                    with open(pdf_path, "rb") as f:
-                        pdf_bytes = f.read()
-                    print(f"[FN-ATTACH] file size={len(pdf_bytes)} bytes", flush=True)
-                    attach_resp = requests.post(
-                        attach_url,
-                        headers={
-                            "Authorization": f"Bearer {self._get_token()}",
-                            "Content-Type": "application/pdf",
-                        },
-                        data=pdf_bytes,
-                    )
-                    print(f"[FN-ATTACH] response status={attach_resp.status_code} body={attach_resp.text}", flush=True)
-                except Exception as e:
-                    print(f"[FN-ATTACH] EXCEPTION: {e}", flush=True)
-            else:
-                print(f"[FN-ATTACH] SKIP — file not found at {pdf_path}", flush=True)
+        # TODO: Attach invoice PDF to voucher via Fortnox Archive API (to be implemented)
+        # The /vouchers/{series}/{nr}/attachments endpoint does not exist in Fortnox API v3.
+        # PDF attachment requires the Archive/Inbox API — investigate separately.
 
         return result
 
@@ -373,49 +344,12 @@ class FortnoxClient:
         voucher_ref = f"{voucher_series}{voucher_nr}" if voucher_nr else None
         logger.info("Fortnox supplier voucher created — ref=%s", voucher_ref)
 
-        if pdf_path and voucher_nr and os.path.exists(pdf_path):
-            try:
-                ext = pdf_path.rsplit(".", 1)[-1].lower()
-                mime = "application/pdf" if ext == "pdf" else f"image/{ext}"
-                with open(pdf_path, "rb") as f:
-                    attach_resp = requests.post(
-                        f"{self.BASE_URL}/vouchers/{voucher_series}/{voucher_nr}/attachments",
-                        headers={
-                            "Authorization": f"Bearer {self._get_token()}",
-                            "Content-Type": mime,
-                        },
-                        data=f.read(),
-                    )
-                logger.info("Fortnox PDF attachment — status=%s body=%s",
-                            attach_resp.status_code, attach_resp.text)
-            except Exception as e:
-                logger.error("Fortnox PDF attachment failed: %s", e)
+        # TODO: attach pdf_path via Fortnox Archive API (same limitation as outgoing voucher)
 
         return result
 
     def _upload_attachment(self, voucher_series, voucher_nr, expense):
-        """Attach receipt image to a Fortnox voucher."""
-        receipt_path = os.path.join(
-            os.path.dirname(__file__), "static", "uploads", expense.receipt_filename
-        )
-        if not os.path.exists(receipt_path):
-            logger.warning("Fortnox attachment — receipt file not found: %s", receipt_path)
-            return
-
-        ext = expense.receipt_filename.rsplit(".", 1)[-1].lower()
-        mime = "application/pdf" if ext == "pdf" else f"image/{ext}"
-
-        try:
-            with open(receipt_path, "rb") as f:
-                attach_resp = requests.post(
-                    f"{self.BASE_URL}/vouchers/{voucher_series}/{voucher_nr}/attachments",
-                    headers={
-                        "Authorization": f"Bearer {self._get_token()}",
-                        "Content-Type": mime,
-                    },
-                    data=f.read(),
-                )
-            logger.info("Fortnox receipt attachment — status=%s body=%s",
-                        attach_resp.status_code, attach_resp.text)
-        except Exception as e:
-            logger.error("Fortnox receipt attachment failed: %s", e)
+        """Attach receipt image to a Fortnox voucher — TODO: implement via Archive API."""
+        # The /vouchers/{series}/{nr}/attachments endpoint does not exist in Fortnox API v3.
+        logger.info("Fortnox attachment skipped (Archive API not yet implemented) — voucher=%s%s",
+                    voucher_series, voucher_nr)
