@@ -1971,10 +1971,10 @@ def _email_pdf_to_fortnox_inbox(pdf_path, filename, voucher_ref, config):
     """Email a PDF to the Fortnox arkivplats inbox address."""
     inbox = config.get("FORTNOX_INBOX_EMAIL", "")
     if not inbox:
-        logger.info("Fortnox inbox email not configured — skipping PDF email")
+        app.logger.info("Fortnox inbox email not configured — skipping PDF email")
         return
     if not os.path.exists(pdf_path):
-        logger.warning("Fortnox inbox email — PDF not found: %s", pdf_path)
+        app.logger.warning("Fortnox inbox email — PDF not found: %s", pdf_path)
         return
     msg = MIMEMultipart()
     msg["From"] = _sanitize_header(config["SMTP_FROM"])
@@ -1992,9 +1992,9 @@ def _email_pdf_to_fortnox_inbox(pdf_path, filename, voucher_ref, config):
             server.starttls()
             server.login(config["SMTP_USER"], config["SMTP_PASSWORD"])
             server.send_message(msg)
-        logger.info("Fortnox inbox email sent — voucher=%s to=%s", voucher_ref, inbox)
+        app.logger.info("Fortnox inbox email sent — voucher=%s to=%s", voucher_ref, inbox)
     except Exception as e:
-        logger.error("Fortnox inbox email failed: %s", e)
+        app.logger.error("Fortnox inbox email failed: %s", e)
 
 
 def _send_invoice_email(inv, config):
