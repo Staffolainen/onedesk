@@ -203,7 +203,6 @@ class FortnoxClient:
             "Description": description,
             "TransactionDate": voucher_date.isoformat(),
             "VoucherSeries": "B",
-            "ReferenceType": "INVOICE",
             "Year": fy_id,
             "VoucherRows": rows,
         }
