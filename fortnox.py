@@ -211,27 +211,37 @@ class FortnoxClient:
         logger.info("Fortnox voucher created — ref=%s", voucher_ref)
 
         # Attach invoice PDF to the voucher
-        if voucher_ref and invoice.pdf_filename:
+        print(f"[FN-ATTACH] voucher_ref={voucher_ref} pdf_filename={invoice.pdf_filename}", flush=True)
+        if not voucher_ref:
+            print("[FN-ATTACH] SKIP — no voucher_ref", flush=True)
+        elif not invoice.pdf_filename:
+            print("[FN-ATTACH] SKIP — no pdf_filename on invoice", flush=True)
+        else:
             import os as _os
             pdf_path = _os.path.join(
                 _os.path.dirname(__file__), "static", "uploads", invoice.pdf_filename
             )
+            print(f"[FN-ATTACH] pdf_path={pdf_path} exists={_os.path.exists(pdf_path)}", flush=True)
             if _os.path.exists(pdf_path):
+                attach_url = f"{self.BASE_URL}/vouchers/{voucher_series}/{voucher_nr}/attachments"
+                print(f"[FN-ATTACH] POST {attach_url}", flush=True)
                 try:
+                    with open(pdf_path, "rb") as f:
+                        pdf_bytes = f.read()
+                    print(f"[FN-ATTACH] file size={len(pdf_bytes)} bytes", flush=True)
                     attach_resp = requests.post(
-                        f"{self.BASE_URL}/vouchers/{voucher_series}/{voucher_nr}/attachments",
+                        attach_url,
                         headers={
                             "Authorization": f"Bearer {self._get_token()}",
                             "Content-Type": "application/pdf",
                         },
-                        data=open(pdf_path, "rb").read(),
+                        data=pdf_bytes,
                     )
-                    logger.info("Fortnox PDF attachment — status=%s body=%s",
-                                attach_resp.status_code, attach_resp.text)
+                    print(f"[FN-ATTACH] response status={attach_resp.status_code} body={attach_resp.text}", flush=True)
                 except Exception as e:
-                    logger.error("Fortnox PDF attachment failed: %s", e)
+                    print(f"[FN-ATTACH] EXCEPTION: {e}", flush=True)
             else:
-                logger.warning("Fortnox PDF attachment — file not found: %s", pdf_path)
+                print(f"[FN-ATTACH] SKIP — file not found at {pdf_path}", flush=True)
 
         return result
 
