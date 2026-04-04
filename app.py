@@ -1286,6 +1286,35 @@ def invoices_delete(invoice_id):
 
 # ── Fortnox OAuth ─────────────────────────────────────────────────────────────
 
+@app.route("/fortnox/sync-payments", methods=["POST"])
+@login_required
+@admin_required
+def fortnox_sync_payments():
+    """Check Fortnox C-series vouchers and mark matching invoices as paid."""
+    if not Settings.get("fortnox_access_token"):
+        flash("Fortnox ej anslutet / Fortnox not connected", "error")
+        return redirect(url_for("invoices_list"))
+    try:
+        fortnox = FortnoxClient(app.config)
+        paid_nrs = fortnox.get_paid_invoice_numbers()
+        app.logger.info("Fortnox payment sync — found C-series invoice numbers: %s", paid_nrs)
+        count = 0
+        if paid_nrs:
+            from models import Invoice as Inv
+            invoices = Inv.query.filter(
+                Inv.status == "sent",
+                Inv.invoice_number.in_(paid_nrs)
+            ).all()
+            for inv in invoices:
+                inv.status = "paid"
+                count += 1
+            db.session.commit()
+        flash(f"{count} faktura(or) markerade som betalda / {count} invoice(s) marked as paid", "success")
+    except Exception as e:
+        flash(f"Fortnox sync-fel: {e}", "error")
+    return redirect(url_for("invoices_list"))
+
+
 @app.route("/fortnox/connect")
 @login_required
 def fortnox_connect():

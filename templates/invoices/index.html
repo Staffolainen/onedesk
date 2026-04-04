@@ -3,6 +3,12 @@
 {% block page_title %}{{ g.t.invoices }}{% endblock %}
 
 {% block topbar_actions %}
+  {% if current_user.is_admin %}
+  <form method="POST" action="{{ url_for('fortnox_sync_payments') }}" style="display:inline;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button type="submit" class="btn btn-ghost btn-sm">↻ {{ "Synka betalningar" if g.lang == "sv" else "Sync payments" }}</button>
+  </form>
+  {% endif %}
   <a href="{{ url_for('invoices_new') }}" class="btn btn-primary btn-sm">+ {{ "Ny faktura" if g.lang == "sv" else "New invoice" }}</a>
 {% endblock %}
 

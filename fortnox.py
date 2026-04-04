@@ -107,6 +107,37 @@ class FortnoxClient:
         resp.raise_for_status()
         return resp.json()
 
+    # ── Payment sync ─────────────────────────────────────────────────────────
+
+    def get_paid_invoice_numbers(self) -> set:
+        """
+        Return a set of invoice numbers found in Fortnox C-series vouchers.
+        C-series = Kundbetalningar (customer payments).
+        Looks at TransactionInformation on each voucher row for invoice number patterns.
+        """
+        import re
+        paid = set()
+        try:
+            data = self._request("GET", "/vouchers",
+                                 params={"filter": "lastmonth", "voucherseries": "C"})
+            vouchers = data.get("Vouchers", [])
+            # Fetch full details for each voucher to read row descriptions
+            for v in vouchers:
+                nr = v.get("VoucherNumber")
+                try:
+                    detail = self._request("GET", f"/vouchers/C/{nr}")
+                    rows = detail.get("Voucher", {}).get("VoucherRows", [])
+                    desc = detail.get("Voucher", {}).get("Description", "")
+                    text = desc + " " + " ".join(r.get("TransactionInformation", "") for r in rows)
+                    # Match invoice number pattern e.g. 2025-001 or 2025001
+                    for match in re.findall(r"\d{4}-\d{3}", text):
+                        paid.add(match)
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning("Fortnox payment sync failed: %s", e)
+        return paid
+
     # ── Financial years ───────────────────────────────────────────────────────
 
     def get_financial_year_id(self, for_date) -> int | None:
