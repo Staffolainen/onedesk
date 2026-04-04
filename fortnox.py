@@ -203,11 +203,11 @@ class FortnoxClient:
             "Description": description,
             "TransactionDate": voucher_date.isoformat(),
             "VoucherSeries": "B",
-            "Year": fy_id,
             "VoucherRows": rows,
         }
 
-        result = self._request("POST", "/vouchers", json={"Voucher": voucher_data})
+        result = self._request("POST", "/vouchers", json={"Voucher": voucher_data},
+                               params={"financialyear": fy_id})
         voucher_nr = result.get("Voucher", {}).get("VoucherNumber")
 
         # Attach invoice PDF to the voucher
@@ -295,7 +295,6 @@ class FortnoxClient:
             "Description": (expense.description or expense.merchant or "Utlägg")[:200],
             "TransactionDate": expense.expense_date.isoformat(),
             "VoucherSeries": "UL",
-            "Year": fy_id,
             "VoucherRows": [
                 {
                     "Account": 6550,
@@ -315,7 +314,8 @@ class FortnoxClient:
                 },
             ],
         }
-        result = self._request("POST", "/vouchers", json={"Voucher": voucher_data})
+        result = self._request("POST", "/vouchers", json={"Voucher": voucher_data},
+                               params={"financialyear": fy_id})
         voucher_nr = result.get("Voucher", {}).get("VoucherNumber")
 
         # Upload receipt if exists
@@ -345,11 +345,11 @@ class FortnoxClient:
             "Description": description[:200],
             "TransactionDate": voucher_date.isoformat(),
             "VoucherSeries": series,
-            "Year": fy_id,
             "VoucherRows": rows,
         }
 
-        result = self._request("POST", "/vouchers", json={"Voucher": voucher_data})
+        result = self._request("POST", "/vouchers", json={"Voucher": voucher_data},
+                               params={"financialyear": fy_id})
         voucher_nr = result.get("Voucher", {}).get("VoucherNumber")
 
         if pdf_path and voucher_nr and os.path.exists(pdf_path):
