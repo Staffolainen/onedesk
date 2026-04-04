@@ -202,16 +202,8 @@ class FortnoxClient:
             "VoucherRows": rows,
         }
 
-        result = self._request("POST", "/vouchers", json={"Voucher": voucher_data},
-                               params={"financialyear": fy_id})
-        voucher = result.get("Voucher", {})
-        voucher_nr = voucher.get("VoucherNumber")
-        voucher_series = voucher.get("VoucherSeries", "B")
-        voucher_ref = f"{voucher_series}{voucher_nr}" if voucher_nr else None
-        logger.info("Fortnox voucher created — ref=%s", voucher_ref)
-
-        # Attach invoice PDF via archive upload + voucher link
-        if voucher_nr and invoice.pdf_filename:
+        # Upload PDF to archive first so we can include it in the voucher POST
+        if invoice.pdf_filename:
             import os as _os
             pdf_path = _os.path.join(
                 _os.path.dirname(__file__), "static", "uploads", invoice.pdf_filename
@@ -219,9 +211,18 @@ class FortnoxClient:
             if _os.path.exists(pdf_path):
                 archive_id = self.upload_to_archive(pdf_path, invoice.pdf_filename)
                 if archive_id:
-                    self.attach_archive_file_to_voucher(voucher_series, voucher_nr, archive_id)
+                    voucher_data["AttachedFiles"] = [{"ArchiveFileId": archive_id}]
+                    logger.info("Fortnox — PDF queued for attachment: %s", archive_id)
             else:
                 logger.warning("Fortnox PDF not found on disk: %s", pdf_path)
+
+        result = self._request("POST", "/vouchers", json={"Voucher": voucher_data},
+                               params={"financialyear": fy_id})
+        voucher = result.get("Voucher", {})
+        voucher_nr = voucher.get("VoucherNumber")
+        voucher_series = voucher.get("VoucherSeries", "B")
+        voucher_ref = f"{voucher_series}{voucher_nr}" if voucher_nr else None
+        logger.info("Fortnox voucher created — ref=%s", voucher_ref)
 
         return result
 
@@ -374,24 +375,3 @@ class FortnoxClient:
             return resp.json().get("File", {}).get("ArchiveFileId")
         return None
 
-    def attach_archive_file_to_voucher(self, voucher_series, voucher_nr, archive_file_id):
-        """Link an uploaded archive file to a voucher via PUT."""
-        payload = {"Voucher": {"AttachedFiles": [{"ArchiveFileId": archive_file_id}]}}
-        logger.info("Fortnox archive — attaching %s to voucher %s%s",
-                    archive_file_id, voucher_series, voucher_nr)
-        resp = requests.put(
-            f"{self.BASE_URL}/vouchers/{voucher_series}/{voucher_nr}",
-            headers={
-                "Authorization": f"Bearer {self._get_token()}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
-            json=payload,
-        )
-        logger.info("Fortnox attach to voucher — status=%s body=%s", resp.status_code, resp.text)
-        return resp.status_code in (200, 201)
-
-    def _upload_attachment(self, voucher_series, voucher_nr, expense):
-        """Attach receipt image to a Fortnox voucher — TODO: implement via Archive API."""
-        logger.info("Fortnox attachment skipped (Archive API not yet implemented) — voucher=%s%s",
-                    voucher_series, voucher_nr)
