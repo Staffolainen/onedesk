@@ -200,8 +200,9 @@ class FortnoxClient:
 
         voucher_data = {
             "Description": description,
-            "VoucherDate": voucher_date.isoformat(),
+            "TransactionDate": voucher_date.isoformat(),
             "VoucherSeries": "B",
+            "ReferenceType": "INVOICE",
             "VoucherRows": rows,
         }
         if fy_id:
