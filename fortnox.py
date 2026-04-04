@@ -362,17 +362,12 @@ class FortnoxClient:
 
         print(f"[FN-ARCHIVE] Uploading {filename} ({len(file_bytes)} bytes) type={doc_type}", flush=True)
 
-        # Try POST /archive with type parameter
         url = f"{self.BASE_URL}/archive"
         resp = requests.post(
             url,
             params={"type": doc_type},
-            headers={
-                "Authorization": f"Bearer {self._get_token()}",
-                "Content-Type": mime,
-                "Content-Disposition": f'attachment; filename="{filename}"',
-            },
-            data=file_bytes,
+            headers={"Authorization": f"Bearer {self._get_token()}"},
+            files={"file": (filename, file_bytes, mime)},
         )
         print(f"[FN-ARCHIVE] status={resp.status_code} body={resp.text}", flush=True)
         return {"status": resp.status_code, "body": resp.text}
