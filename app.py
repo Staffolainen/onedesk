@@ -4,6 +4,7 @@ import json
 import logging
 import smtplib
 import secrets
+import requests
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 from datetime import datetime, date, timedelta
