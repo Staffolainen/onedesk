@@ -210,19 +210,10 @@ class FortnoxClient:
         voucher_ref = f"{voucher_series}{voucher_nr}" if voucher_nr else None
         logger.info("Fortnox voucher created — ref=%s", voucher_ref)
 
-        # Upload PDF to Fortnox archive (file lands in archive even if voucher link requires extra license)
-        if voucher_nr and invoice.pdf_filename:
-            import os as _os
-            pdf_path = _os.path.join(
-                _os.path.dirname(__file__), "static", "uploads", invoice.pdf_filename
-            )
-            if _os.path.exists(pdf_path):
-                file_id = self.upload_to_archive(pdf_path, invoice.pdf_filename)
-                if file_id:
-                    # Attempt to link to voucher — may fail silently if license is missing
-                    self.connect_file_to_voucher(file_id, voucher_series, voucher_nr)
-            else:
-                logger.warning("Fortnox PDF not found on disk: %s", pdf_path)
+        # NOTE: PDF attachment to Fortnox vouchers requires Arkiv + file connection licenses
+        # not included in the current Fortnox plan. PDF is stored in onedesk at /uploads/.
+        logger.info("Fortnox voucher %s created — PDF stored locally as %s",
+                    voucher_ref, invoice.pdf_filename)
 
         return result
 
