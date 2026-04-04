@@ -38,12 +38,6 @@ class Config:
     FORTNOX_BASE_URL = "https://api.fortnox.se/3"
     FORTNOX_INBOX_EMAIL = os.getenv("FORTNOX_INBOX_EMAIL", "")
 
-    # OneDrive upload (Microsoft Graph)
-    AZURE_TENANT_ID     = os.getenv("AZURE_TENANT_ID", "")
-    AZURE_CLIENT_ID     = os.getenv("AZURE_CLIENT_ID", "")
-    AZURE_CLIENT_SECRET = os.getenv("AZURE_CLIENT_SECRET", "")
-    ONEDRIVE_USER          = os.getenv("ONEDRIVE_USER", "")
-    ONEDRIVE_UPLOAD_FOLDER = os.getenv("ONEDRIVE_UPLOAD_FOLDER", "Office Lens")
 
     # Anthropic (cloud OCR)
     ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
