@@ -204,27 +204,34 @@ class FortnoxClient:
 
         result = self._request("POST", "/vouchers", json={"Voucher": voucher_data},
                                params={"financialyear": fy_id})
-        voucher_nr = result.get("Voucher", {}).get("VoucherNumber")
+        voucher = result.get("Voucher", {})
+        voucher_nr = voucher.get("VoucherNumber")
+        voucher_series = voucher.get("VoucherSeries", "B")
+        voucher_ref = f"{voucher_series}{voucher_nr}" if voucher_nr else None
+        logger.info("Fortnox voucher created — ref=%s", voucher_ref)
 
         # Attach invoice PDF to the voucher
-        if voucher_nr and invoice.pdf_filename:
+        if voucher_ref and invoice.pdf_filename:
             import os as _os
             pdf_path = _os.path.join(
                 _os.path.dirname(__file__), "static", "uploads", invoice.pdf_filename
             )
             if _os.path.exists(pdf_path):
                 try:
-                    with open(pdf_path, "rb") as f:
-                        requests.post(
-                            f"{self.BASE_URL}/vouchers/{voucher_nr}/attachments",
-                            headers={
-                                "Authorization": f"Bearer {self._get_token()}",
-                                "Content-Type": "application/pdf",
-                            },
-                            data=f.read(),
-                        )
-                except Exception:
-                    pass  # attachment failure is non-fatal
+                    attach_resp = requests.post(
+                        f"{self.BASE_URL}/vouchers/{voucher_series}/{voucher_nr}/attachments",
+                        headers={
+                            "Authorization": f"Bearer {self._get_token()}",
+                            "Content-Type": "application/pdf",
+                        },
+                        data=open(pdf_path, "rb").read(),
+                    )
+                    logger.info("Fortnox PDF attachment — status=%s body=%s",
+                                attach_resp.status_code, attach_resp.text)
+                except Exception as e:
+                    logger.error("Fortnox PDF attachment failed: %s", e)
+            else:
+                logger.warning("Fortnox PDF attachment — file not found: %s", pdf_path)
 
         return result
 
@@ -312,16 +319,20 @@ class FortnoxClient:
         }
         result = self._request("POST", "/vouchers", json={"Voucher": voucher_data},
                                params={"financialyear": fy_id})
-        voucher_nr = result.get("Voucher", {}).get("VoucherNumber")
+        voucher = result.get("Voucher", {})
+        voucher_nr = voucher.get("VoucherNumber")
+        voucher_series = voucher.get("VoucherSeries", "UL")
+        voucher_ref = f"{voucher_series}{voucher_nr}" if voucher_nr else None
+        logger.info("Fortnox expense voucher created — ref=%s", voucher_ref)
 
         # Upload receipt if exists
         if expense.receipt_filename and voucher_nr:
-            self._upload_attachment(voucher_nr, expense)
+            self._upload_attachment(voucher_series, voucher_nr, expense)
 
         from models import db
-        expense.fortnox_voucher_nr = str(voucher_nr) if voucher_nr else None
+        expense.fortnox_voucher_nr = voucher_ref
         db.session.commit()
-        return voucher_nr
+        return voucher_ref
 
     def create_supplier_voucher(self, voucher_rows, description, voucher_date, series="L", pdf_path=None):
         """Create a supplier voucher (bokföringsorder) in Fortnox."""
@@ -346,45 +357,55 @@ class FortnoxClient:
 
         result = self._request("POST", "/vouchers", json={"Voucher": voucher_data},
                                params={"financialyear": fy_id})
-        voucher_nr = result.get("Voucher", {}).get("VoucherNumber")
+        voucher = result.get("Voucher", {})
+        voucher_nr = voucher.get("VoucherNumber")
+        voucher_series = voucher.get("VoucherSeries", series)
+        voucher_ref = f"{voucher_series}{voucher_nr}" if voucher_nr else None
+        logger.info("Fortnox supplier voucher created — ref=%s", voucher_ref)
 
         if pdf_path and voucher_nr and os.path.exists(pdf_path):
             try:
                 ext = pdf_path.rsplit(".", 1)[-1].lower()
                 mime = "application/pdf" if ext == "pdf" else f"image/{ext}"
                 with open(pdf_path, "rb") as f:
-                    requests.post(
-                        f"{self.BASE_URL}/vouchers/{voucher_nr}/attachments",
+                    attach_resp = requests.post(
+                        f"{self.BASE_URL}/vouchers/{voucher_series}/{voucher_nr}/attachments",
                         headers={
                             "Authorization": f"Bearer {self._get_token()}",
                             "Content-Type": mime,
                         },
                         data=f.read(),
                     )
-            except Exception:
-                pass  # attachment failure is non-fatal
+                logger.info("Fortnox PDF attachment — status=%s body=%s",
+                            attach_resp.status_code, attach_resp.text)
+            except Exception as e:
+                logger.error("Fortnox PDF attachment failed: %s", e)
 
         return result
 
-    def _upload_attachment(self, voucher_nr, expense):
+    def _upload_attachment(self, voucher_series, voucher_nr, expense):
         """Attach receipt image to a Fortnox voucher."""
         receipt_path = os.path.join(
             os.path.dirname(__file__), "static", "uploads", expense.receipt_filename
         )
         if not os.path.exists(receipt_path):
+            logger.warning("Fortnox attachment — receipt file not found: %s", receipt_path)
             return
-
-        with open(receipt_path, "rb") as f:
-            data = f.read()
 
         ext = expense.receipt_filename.rsplit(".", 1)[-1].lower()
         mime = "application/pdf" if ext == "pdf" else f"image/{ext}"
 
-        requests.post(
-            f"{self.BASE_URL}/vouchers/{voucher_nr}/attachments",
-            headers={
-                "Authorization": f"Bearer {self._get_token()}",
-                "Content-Type": mime,
-            },
-            data=data,
-        )
+        try:
+            with open(receipt_path, "rb") as f:
+                attach_resp = requests.post(
+                    f"{self.BASE_URL}/vouchers/{voucher_series}/{voucher_nr}/attachments",
+                    headers={
+                        "Authorization": f"Bearer {self._get_token()}",
+                        "Content-Type": mime,
+                    },
+                    data=f.read(),
+                )
+            logger.info("Fortnox receipt attachment — status=%s body=%s",
+                        attach_resp.status_code, attach_resp.text)
+        except Exception as e:
+            logger.error("Fortnox receipt attachment failed: %s", e)
