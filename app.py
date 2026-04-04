@@ -1889,7 +1889,7 @@ def _build_supplier_voucher_preview(inv: SupplierInvoice) -> dict:
 @login_required
 @admin_required
 def fortnox_test_archive():
-    """Dev route: upload the most recent invoice PDF to Fortnox archive and show raw response."""
+    """Dev route: try multiple archive upload methods and show raw responses."""
     from models import Invoice
     inv = Invoice.query.filter(Invoice.pdf_filename.isnot(None)).order_by(Invoice.id.desc()).first()
     if not inv:
@@ -1897,9 +1897,48 @@ def fortnox_test_archive():
     pdf_path = os.path.join(app.root_path, "static", "uploads", inv.pdf_filename)
     if not os.path.exists(pdf_path):
         return f"PDF not found on disk: {pdf_path}", 404
+
     fortnox = FortnoxClient(app.config)
-    archive_id = fortnox.upload_to_archive(pdf_path, inv.pdf_filename)
-    return f"<pre>ArchiveFileId: {archive_id}</pre>"
+    token = Settings.get("fortnox_access_token")
+    base = "https://api.fortnox.se/3"
+    filename = inv.pdf_filename
+    results = {}
+
+    with open(pdf_path, "rb") as f:
+        pdf_bytes = f.read()
+
+    auth_header = {"Authorization": f"Bearer {token}"}
+
+    # 1. GET /archive to see root structure
+    r = requests.get(f"{base}/archive", headers={**auth_header, "Accept": "application/json"})
+    results["1_GET_archive_root"] = {"status": r.status_code, "body": r.text[:800]}
+
+    # 2. POST /archive — multipart, field name "file", no params
+    r = requests.post(f"{base}/archive", headers=auth_header,
+                      files={"file": (filename, pdf_bytes, "application/pdf")})
+    results["2_POST_multipart_file"] = {"status": r.status_code, "body": r.text}
+
+    # 3. POST /archive — multipart, field name "attachment"
+    r = requests.post(f"{base}/archive", headers=auth_header,
+                      files={"attachment": (filename, pdf_bytes, "application/pdf")})
+    results["3_POST_multipart_attachment"] = {"status": r.status_code, "body": r.text}
+
+    # 4. POST /archive?path=/Verifikat
+    r = requests.post(f"{base}/archive", headers=auth_header,
+                      params={"path": "/Verifikat"},
+                      files={"file": (filename, pdf_bytes, "application/pdf")})
+    results["4_POST_path_Verifikat"] = {"status": r.status_code, "body": r.text}
+
+    # 5. POST /archive/root — direct to root folder id
+    r = requests.post(f"{base}/archive/root", headers=auth_header,
+                      files={"file": (filename, pdf_bytes, "application/pdf")})
+    results["5_POST_archive_root_id"] = {"status": r.status_code, "body": r.text}
+
+    # 6. GET /inbox to see if inbox is an alternative
+    r = requests.get(f"{base}/inbox", headers={**auth_header, "Accept": "application/json"})
+    results["6_GET_inbox"] = {"status": r.status_code, "body": r.text[:400]}
+
+    return f"<pre>{json.dumps(results, indent=2, ensure_ascii=False)}</pre>"
 
 @app.route("/fortnox/preview")
 @login_required
