@@ -5,9 +5,12 @@ Docs: https://developer.fortnox.se/documentation/
 import os
 import base64
 import json
+import logging
 import requests
 from urllib.parse import urlencode
 from models import Settings
+
+logger = logging.getLogger(__name__)
 
 
 class FortnoxClient:
@@ -36,11 +39,18 @@ class FortnoxClient:
 
     def _request(self, method, path, **kwargs):
         url = f"{self.BASE_URL}{path}"
+        logger.debug("Fortnox API — %s %s kwargs=%s", method, url,
+                     {k: v for k, v in kwargs.items() if k != "json"})
+        if "json" in kwargs:
+            logger.debug("Fortnox API — request body: %s", kwargs["json"])
         resp = requests.request(method, url, headers=self._headers(), **kwargs)
+        logger.debug("Fortnox API — response status=%s body=%s", resp.status_code, resp.text)
         if resp.status_code == 401:
-            # Try refresh
+            logger.debug("Fortnox API — 401, attempting token refresh")
             self._refresh_token()
             resp = requests.request(method, url, headers=self._headers(), **kwargs)
+            logger.debug("Fortnox API — retry response status=%s body=%s",
+                         resp.status_code, resp.text)
         resp.raise_for_status()
         return resp.json() if resp.content else {}
 
@@ -51,6 +61,7 @@ class FortnoxClient:
         credentials = base64.b64encode(
             f"{self.client_id}:{self.client_secret}".encode()
         ).decode()
+        logger.debug("Fortnox refresh_token — POST %s", self.TOKEN_URL)
         resp = requests.post(self.TOKEN_URL, data={
             "grant_type": "refresh_token",
             "refresh_token": refresh_token,
@@ -58,6 +69,8 @@ class FortnoxClient:
             "Authorization": f"Basic {credentials}",
             "Content-Type": "application/x-www-form-urlencoded",
         })
+        logger.debug("Fortnox refresh_token response — status=%s body=%s",
+                     resp.status_code, resp.text)
         resp.raise_for_status()
         data = resp.json()
         Settings.set("fortnox_access_token", data["access_token"])
@@ -79,14 +92,18 @@ class FortnoxClient:
         credentials = base64.b64encode(
             f"{self.client_id}:{self.client_secret}".encode()
         ).decode()
-        resp = requests.post(self.TOKEN_URL, data={
+        payload = {
             "grant_type": "authorization_code",
             "code": code,
             "redirect_uri": self.redirect_uri,
-        }, headers={
+        }
+        logger.debug("Fortnox exchange_code — POST %s payload=%s", self.TOKEN_URL, payload)
+        resp = requests.post(self.TOKEN_URL, data=payload, headers={
             "Authorization": f"Basic {credentials}",
             "Content-Type": "application/x-www-form-urlencoded",
         })
+        logger.debug("Fortnox exchange_code response — status=%s body=%s",
+                     resp.status_code, resp.text)
         resp.raise_for_status()
         return resp.json()
 

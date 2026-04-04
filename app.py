@@ -1280,11 +1280,13 @@ def invoices_delete(invoice_id):
 def fortnox_connect():
     fortnox = FortnoxClient(app.config)
     auth_url = fortnox.get_auth_url()
+    app.logger.debug("Fortnox OAuth — redirecting to auth URL: %s", auth_url)
     return redirect(auth_url)
 
 @app.route("/fortnox/callback")
 @login_required
 def fortnox_callback():
+    app.logger.debug("Fortnox callback received — args: %s", dict(request.args))
     code = request.args.get("code")
     if not code:
         error = request.args.get("error", "no_code")
@@ -1297,10 +1299,12 @@ def fortnox_callback():
     try:
         fortnox = FortnoxClient(app.config)
         tokens = fortnox.exchange_code(code)
+        app.logger.debug("Fortnox token exchange success — keys: %s", list(tokens.keys()))
         Settings.set("fortnox_access_token", tokens["access_token"])
         Settings.set("fortnox_refresh_token", tokens.get("refresh_token", ""))
         flash("Fortnox anslutet / Fortnox connected!", "success")
     except Exception as e:
+        app.logger.error("Fortnox token exchange failed: %s", e, exc_info=True)
         flash(f"Fortnox-fel: {e}", "error")
     return redirect(url_for("settings"))
 
