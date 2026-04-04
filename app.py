@@ -1287,7 +1287,12 @@ def fortnox_connect():
 def fortnox_callback():
     code = request.args.get("code")
     if not code:
-        flash("Fortnox-anslutning misslyckades / Fortnox connection failed", "error")
+        error = request.args.get("error", "no_code")
+        error_desc = request.args.get("error_description", "")
+        app.logger.error("Fortnox callback missing code. error=%s desc=%s args=%s",
+                         error, error_desc, dict(request.args))
+        flash(f"Fortnox-anslutning misslyckades: {error} — {error_desc} / "
+              f"Connection failed: {error} — {error_desc}", "error")
         return redirect(url_for("settings"))
     try:
         fortnox = FortnoxClient(app.config)
