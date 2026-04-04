@@ -1191,9 +1191,10 @@ def invoices_send(invoice_id):
             if voucher_ref:
                 inv.fortnox_invoice_nr = voucher_ref
                 db.session.commit()
-                # Email PDF to Fortnox arkivplats inbox
+                # Upload PDF to OneDrive / email to Fortnox inbox
                 if inv.pdf_filename:
                     pdf_path = os.path.join(app.root_path, "static", "uploads", inv.pdf_filename)
+                    _upload_pdf_to_onedrive(pdf_path, inv.pdf_filename, app.config)
                     _email_pdf_to_fortnox_inbox(pdf_path, inv.pdf_filename, voucher_ref, app.config)
                 flash(f"Fortnox verifikat skapat: {voucher_ref} / Voucher created: {voucher_ref}", "success")
         except Exception as e:
@@ -1965,6 +1966,55 @@ def fortnox_preview():
 def _sanitize_header(value):
     """Strip newlines to prevent email header injection."""
     return str(value or "").replace("\r", "").replace("\n", "")
+
+def _upload_pdf_to_onedrive(pdf_path, filename, config):
+    """Upload a file to a OneDrive folder via Microsoft Graph API (app-only auth)."""
+    tenant   = config.get("AZURE_TENANT_ID", "")
+    client   = config.get("AZURE_CLIENT_ID", "")
+    secret   = config.get("AZURE_CLIENT_SECRET", "")
+    user     = config.get("ONEDRIVE_USER", "")
+    folder   = config.get("ONEDRIVE_UPLOAD_FOLDER", "Office Lens")
+
+    if not all([tenant, client, secret, user]):
+        logger.info("OneDrive upload skipped — AZURE_TENANT_ID/CLIENT_ID/CLIENT_SECRET/ONEDRIVE_USER not configured")
+        return False
+
+    # 1. Get access token via client credentials
+    token_resp = requests.post(
+        f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token",
+        data={
+            "grant_type":    "client_credentials",
+            "client_id":     client,
+            "client_secret": secret,
+            "scope":         "https://graph.microsoft.com/.default",
+        },
+    )
+    if token_resp.status_code != 200:
+        logger.error("OneDrive token request failed: %s", token_resp.text)
+        return False
+    access_token = token_resp.json().get("access_token")
+
+    # 2. Upload file — PUT creates or replaces
+    upload_url = (
+        f"https://graph.microsoft.com/v1.0/users/{user}/drive"
+        f"/root:/{folder}/{filename}:/content"
+    )
+    with open(pdf_path, "rb") as f:
+        upload_resp = requests.put(
+            upload_url,
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/pdf",
+            },
+            data=f.read(),
+        )
+    if upload_resp.status_code in (200, 201):
+        logger.info("OneDrive upload success — %s/%s", folder, filename)
+        return True
+    else:
+        logger.error("OneDrive upload failed: %s %s", upload_resp.status_code, upload_resp.text)
+        return False
+
 
 def _email_pdf_to_fortnox_inbox(pdf_path, filename, voucher_ref, config):
     """Email a PDF to the Fortnox arkivplats inbox address."""
