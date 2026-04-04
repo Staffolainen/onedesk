@@ -1171,54 +1171,23 @@ def invoices_send(invoice_id):
         flash(f"E-postfel / Email error: {e}", "error")
 
     # ── Fortnox live sync commented out — dry-run preview instead ──
+    # Uncomment to enable; make sure PDF is generated first (inv.pdf_filename must be set)
     # if Settings.get("fortnox_access_token"):
     #     try:
     #         fortnox = FortnoxClient(app.config)
-    #         result = fortnox.create_invoice(inv)
-    #         if result and result.get("Invoice", {}).get("DocumentNumber"):
-    #             inv.fortnox_invoice_nr = result["Invoice"]["DocumentNumber"]
+    #         result = fortnox.create_outgoing_invoice_voucher(inv)
+    #         voucher_nr = result.get("Voucher", {}).get("VoucherNumber")
+    #         if voucher_nr:
+    #             inv.fortnox_invoice_nr = str(voucher_nr)
     #             db.session.commit()
-    #             flash(...)
+    #             flash(f"Fortnox verifikat skapat: {voucher_nr} / Voucher created: {voucher_nr}", "success")
     #     except Exception as e:
     #         flash(f"Fortnox-fel / Fortnox error: {e}", "warning")
 
-    # Build the payload that would have been sent and show it in a preview window
-    rows = []
-    if inv.time_entries:
-        total_hours = sum(e.hours for e in inv.time_entries)
-        rows.append({
-            "ArticleNumber": "TID",
-            "Description": f"Konsulttjänster {inv.period_start} – {inv.period_end}",
-            "DeliveredQuantity": str(total_hours),
-            "Price": str(inv.client.hourly_rate),
-            "VAT": "25",
-            "Unit": "tim",
-        })
-    for exp in inv.expenses:
-        rows.append({
-            "Description": exp.description or exp.merchant or "Utlägg",
-            "DeliveredQuantity": "1",
-            "Price": str(exp.amount_excl_vat),
-            "VAT": str(int(exp.vat_rate)),
-        })
-    preview_payload = {
-        "_endpoint": "POST /invoices",
-        "_note": "Fortnox live sync disabled — dry-run preview",
-        "Invoice": {
-            "CustomerNumber": inv.client.fortnox_customer_nr or "(to be created)",
-            "InvoiceDate": inv.issue_date.isoformat() if inv.issue_date else None,
-            "DueDate": inv.due_date.isoformat() if inv.due_date else None,
-            "Currency": inv.currency,
-            "Language": "SV" if inv.language == "sv" else "EN",
-            "InvoiceRows": rows,
-            "Remarks": inv.notes or "",
-        },
-    }
-    session["fortnox_preview"] = {
-        "payload": preview_payload,
-        "back_url": url_for("invoices_proforma", invoice_id=invoice_id),
-        "back_label": f"← Faktura {inv.invoice_number}",
-    }
+    # Build voucher preview (live sync commented out above)
+    session["fortnox_preview"] = _build_outgoing_invoice_voucher_preview(inv)
+    session["fortnox_preview"]["back_url"] = url_for("invoices_proforma", invoice_id=invoice_id)
+    session["fortnox_preview"]["back_label"] = f"← Faktura {inv.invoice_number}"
     return redirect(url_for("fortnox_preview"))
 
 @app.route("/invoices/<int:invoice_id>/download")
@@ -1804,6 +1773,65 @@ def payment_file_download(pf_id):
         download_name=pf.filename,
         mimetype="application/octet-stream",
     )
+
+def _build_outgoing_invoice_voucher_preview(inv: Invoice) -> dict:
+    """
+    Build the Fortnox voucher payload for an outgoing invoice (dry-run).
+    Account structure:
+      Debit  1510  Total incl VAT   (Kundfordringar)
+      Credit 3001  Excl VAT amount  (Försäljning Sverige 25%)
+      Credit 2610  VAT amount       (Utgående moms 25%)
+      3740         Rounding         (if total != excl + vat)
+    Financial year ID is resolved at runtime from Fortnox API; shown as
+    '(looked up from /financialyears for invoice date)' in preview.
+    """
+    excl_vat = round(inv.subtotal, 2)
+    vat      = round(inv.vat_amount, 2)
+    total    = round(inv.total, 2)
+    rounding = round(total - excl_vat - vat, 2)
+    project_nr = (inv.project.project_number if inv.project else None) or ""
+    description = f"Faktura {inv.invoice_number} {inv.client.name}"
+
+    def _row(account, debit, credit, label, info=""):
+        r = {
+            "Account": str(account),
+            "_label": label,
+            "Debit": debit,
+            "Credit": credit,
+        }
+        if info:
+            r["TransactionInformation"] = info
+        if project_nr:
+            r["Project"] = project_nr
+        return r
+
+    rows = [
+        _row(1510, total,    0,       "Kundfordringar (accounts receivable)", description),
+        _row(3001, 0,        excl_vat, "Försäljning Sverige 25% moms",
+             f"Period {inv.period_start} – {inv.period_end}"),
+        _row(2610, 0,        vat,      "Utgående moms 25%", "Utgående moms 25%"),
+    ]
+    if rounding != 0:
+        rows.append(_row(3740,
+                         max(-rounding, 0),
+                         max(rounding, 0),
+                         "Öresavrundning (rounding)",
+                         "Öresavrundning"))
+
+    payload = {
+        "_endpoint": "POST /vouchers",
+        "_note": "Fortnox live sync disabled — dry-run preview",
+        "_financial_year": "(looked up from GET /financialyears for invoice date)",
+        "_pdf_attachment": inv.pdf_filename or "(not generated yet)",
+        "Voucher": {
+            "Description": description,
+            "VoucherDate": inv.issue_date.isoformat() if inv.issue_date else None,
+            "VoucherSeries": "A",
+            "FinancialYear": "(int32 — resolved at runtime)",
+            "VoucherRows": rows,
+        },
+    }
+    return {"payload": payload}
 
 def _build_supplier_voucher_preview(inv: SupplierInvoice) -> dict:
     """Build the Fortnox voucher payload that would be sent (for dry-run preview)."""

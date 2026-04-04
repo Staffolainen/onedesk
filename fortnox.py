@@ -129,7 +129,93 @@ class FortnoxClient:
         db.session.commit()
         return nr
 
-    # ── Invoices ──────────────────────────────────────────────────────────────
+    # ── Outgoing invoice voucher ──────────────────────────────────────────────
+
+    def create_outgoing_invoice_voucher(self, invoice):
+        """
+        Post a sales voucher to Fortnox for an outgoing invoice we generated ourselves.
+        Account structure (standard Swedish BAS):
+          Debit  1510  Total incl. VAT    (Kundfordringar)
+          Credit 3001  Amount excl. VAT   (Försäljning Sverige 25% moms)
+          Credit 2610  VAT amount         (Utgående moms 25%)
+          Debit/Credit 3740  Rounding     (Öresavrundning, if any)
+
+        Returns the full API response dict.
+        """
+        from datetime import date as _date
+
+        voucher_date = invoice.issue_date or _date.today()
+        fy_id = self.get_financial_year_id(voucher_date)
+
+        excl_vat = round(invoice.subtotal, 2)
+        vat      = round(invoice.vat_amount, 2)
+        total    = round(invoice.total, 2)
+        rounding = round(total - excl_vat - vat, 2)
+
+        project_nr = (invoice.project.project_number if invoice.project else None) or ""
+
+        def _row(account, debit, credit, info=""):
+            r = {
+                "Account": str(account),
+                "Debit":   str(round(debit, 2)),
+                "Credit":  str(round(credit, 2)),
+            }
+            if info:
+                r["TransactionInformation"] = info
+            if project_nr:
+                r["Project"] = project_nr
+            return r
+
+        description = f"Faktura {invoice.invoice_number} {invoice.client.name}"
+
+        rows = [
+            _row(1510, total,    0,       description),
+            _row(3001, 0,        excl_vat, f"Period {invoice.period_start} – {invoice.period_end}"),
+            _row(2610, 0,        vat,      "Utgående moms 25%"),
+        ]
+        if rounding != 0:
+            # 3740 is credit-normal; a positive rounding means we credit it,
+            # negative means we debit it
+            rows.append(_row(3740,
+                             max(-rounding, 0),
+                             max(rounding, 0),
+                             "Öresavrundning"))
+
+        voucher_data = {
+            "Description": description,
+            "VoucherDate": voucher_date.isoformat(),
+            "VoucherSeries": "A",   # standard sales series; change if needed
+            "VoucherRows": rows,
+        }
+        if fy_id:
+            voucher_data["FinancialYear"] = fy_id
+
+        result = self._request("POST", "/vouchers", json={"Voucher": voucher_data})
+        voucher_nr = result.get("Voucher", {}).get("VoucherNumber")
+
+        # Attach invoice PDF to the voucher
+        if voucher_nr and invoice.pdf_filename:
+            import os as _os
+            pdf_path = _os.path.join(
+                _os.path.dirname(__file__), "static", "uploads", invoice.pdf_filename
+            )
+            if _os.path.exists(pdf_path):
+                try:
+                    with open(pdf_path, "rb") as f:
+                        requests.post(
+                            f"{self.BASE_URL}/vouchers/{voucher_nr}/attachments",
+                            headers={
+                                "Authorization": f"Bearer {self._get_token()}",
+                                "Content-Type": "application/pdf",
+                            },
+                            data=f.read(),
+                        )
+                except Exception:
+                    pass  # attachment failure is non-fatal
+
+        return result
+
+    # ── Invoices (kept for reference — not used for live posting) ─────────────
 
     def create_invoice(self, invoice):
         """Create invoice in Fortnox and return invoice number."""
