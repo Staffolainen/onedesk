@@ -210,9 +210,18 @@ class FortnoxClient:
         voucher_ref = f"{voucher_series}{voucher_nr}" if voucher_nr else None
         logger.info("Fortnox voucher created — ref=%s", voucher_ref)
 
-        # TODO: Attach invoice PDF to voucher via Fortnox Archive API (to be implemented)
-        # The /vouchers/{series}/{nr}/attachments endpoint does not exist in Fortnox API v3.
-        # PDF attachment requires the Archive/Inbox API — investigate separately.
+        # Attach invoice PDF via archive upload + voucher link
+        if voucher_nr and invoice.pdf_filename:
+            import os as _os
+            pdf_path = _os.path.join(
+                _os.path.dirname(__file__), "static", "uploads", invoice.pdf_filename
+            )
+            if _os.path.exists(pdf_path):
+                archive_id = self.upload_to_archive(pdf_path, invoice.pdf_filename)
+                if archive_id:
+                    self.attach_archive_file_to_voucher(voucher_series, voucher_nr, archive_id)
+            else:
+                logger.warning("Fortnox PDF not found on disk: %s", pdf_path)
 
         return result
 
@@ -348,43 +357,39 @@ class FortnoxClient:
 
         return result
 
-    def upload_to_archive(self, file_path, filename, folder_path=None):
-        """
-        Upload a file to the Fortnox archive.
-        folder_path: archive path, e.g. '/Verifikat/B/11' (optional)
-        Returns full response dict for inspection.
-        """
+    def upload_to_archive(self, file_path, filename):
+        """Upload a file to the Fortnox archive root. Returns ArchiveFileId or None."""
         ext = filename.rsplit(".", 1)[-1].lower()
         mime = "application/pdf" if ext == "pdf" else f"image/{ext}"
-
         with open(file_path, "rb") as f:
             file_bytes = f.read()
-
-        results = {}
-
-        # Attempt 1: POST /archive with path param
-        params = {"path": folder_path} if folder_path else {}
-        url = f"{self.BASE_URL}/archive"
-        print(f"[FN-ARCHIVE] Attempt 1 — POST {url} params={params} file={filename} ({len(file_bytes)}b)", flush=True)
+        logger.info("Fortnox archive — uploading %s (%d bytes)", filename, len(file_bytes))
         resp = requests.post(
-            url,
-            params=params,
+            f"{self.BASE_URL}/archive",
             headers={"Authorization": f"Bearer {self._get_token()}"},
             files={"file": (filename, file_bytes, mime)},
         )
-        print(f"[FN-ARCHIVE] Attempt 1 — status={resp.status_code} body={resp.text}", flush=True)
-        results["attempt1_path_param"] = {"status": resp.status_code, "body": resp.text}
+        logger.info("Fortnox archive upload — status=%s body=%s", resp.status_code, resp.text)
+        if resp.status_code == 201:
+            return resp.json().get("File", {}).get("ArchiveFileId")
+        return None
 
-        # Attempt 2: GET /archive to inspect root structure
-        resp2 = requests.get(
-            url,
-            headers={"Authorization": f"Bearer {self._get_token()}",
-                     "Accept": "application/json"},
+    def attach_archive_file_to_voucher(self, voucher_series, voucher_nr, archive_file_id):
+        """Link an uploaded archive file to a voucher via PUT."""
+        payload = {"Voucher": {"AttachedFiles": [{"ArchiveFileId": archive_file_id}]}}
+        logger.info("Fortnox archive — attaching %s to voucher %s%s",
+                    archive_file_id, voucher_series, voucher_nr)
+        resp = requests.put(
+            f"{self.BASE_URL}/vouchers/{voucher_series}/{voucher_nr}",
+            headers={
+                "Authorization": f"Bearer {self._get_token()}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            json=payload,
         )
-        print(f"[FN-ARCHIVE] GET /archive — status={resp2.status_code} body={resp2.text[:500]}", flush=True)
-        results["archive_root"] = {"status": resp2.status_code, "body": resp2.text[:500]}
-
-        return results
+        logger.info("Fortnox attach to voucher — status=%s body=%s", resp.status_code, resp.text)
+        return resp.status_code in (200, 201)
 
     def _upload_attachment(self, voucher_series, voucher_nr, expense):
         """Attach receipt image to a Fortnox voucher — TODO: implement via Archive API."""

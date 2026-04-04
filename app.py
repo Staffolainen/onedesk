@@ -1898,8 +1898,8 @@ def fortnox_test_archive():
     if not os.path.exists(pdf_path):
         return f"PDF not found on disk: {pdf_path}", 404
     fortnox = FortnoxClient(app.config)
-    result = fortnox.upload_to_archive(pdf_path, inv.pdf_filename)
-    return f"<pre>{json.dumps(result, indent=2, ensure_ascii=False)}</pre>"
+    archive_id = fortnox.upload_to_archive(pdf_path, inv.pdf_filename)
+    return f"<pre>ArchiveFileId: {archive_id}</pre>"
 
 @app.route("/fortnox/preview")
 @login_required
