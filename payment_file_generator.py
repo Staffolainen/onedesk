@@ -1,121 +1,306 @@
 """
-Bankgirot LB (Leverantörsbetalningar) payment file generator for Handelsbanken.
+ISO 20022 pain.001.001.03 payment file generator for Handelsbanken.
 
-Format: fixed-width text, ISO-8859-1 encoded (Swedish banking standard).
-Each record is 80 characters wide.
+Used for supplier payments via "Betalningar/Löner [pain001]" in HB's internet bank.
 
-Record types:
-  TK01 – Opening record (one per file)
-  TK14 – Payment transaction (one per invoice)
-  TK65 – Closing record (one per file)
+Structure follows Handelsbanken's pain.001 specification (document 72-271582).
+BG/PG and IBAN payments are placed in separate PmtInf blocks.
+
+Config required:
+    COMPANY_NAME        — debtor name
+    COMPANY_BBAN        — debtor account clearing+account digits (e.g. 6501929223888)
+    COMPANY_IBAN        — fallback if COMPANY_BBAN unset; BBAN derived from SE-IBAN
+    COMPANY_BIC         — debtor bank BIC (HANDSESS for Handelsbanken)
+    COMPANY_ORG_NR      — used as message ID prefix
 """
-from datetime import date as _date
+import uuid
+import re as _re
+from datetime import date as _date, datetime as _datetime, timedelta as _timedelta
+import xml.etree.ElementTree as ET
+
+NS = "urn:iso:std:iso:20022:tech:xsd:pain.001.001.03"
+ET.register_namespace("", NS)
 
 
-def _pad(value: str, width: int, align: str = 'left', fill: str = ' ') -> str:
-    """Pad or truncate a string to exactly `width` characters."""
-    value = str(value or '')
-    if align == 'right':
-        return value[-width:].rjust(width, fill)
-    return value[:width].ljust(width, fill)
+def _t(tag: str) -> str:
+    return f"{{{NS}}}{tag}"
+
+
+def _sub(parent: ET.Element, tag: str, text: str | None = None) -> ET.Element:
+    el = ET.SubElement(parent, _t(tag))
+    if text is not None:
+        el.text = text
+    return el
 
 
 def _digits_only(value: str) -> str:
-    """Remove all non-digit characters (spaces, hyphens, dots)."""
-    return ''.join(c for c in str(value or '') if c.isdigit())
+    return "".join(c for c in str(value or "") if c.isdigit())
 
 
-def _amount_ore(amount_sek: float) -> str:
-    """Convert SEK float to öre integer string (e.g. 1234.50 → '123450')."""
-    return str(round(amount_sek * 100))
+def _fmt_amount(amount: float) -> str:
+    return f"{amount:.2f}"
 
 
-def generate_lb_file(
-    sender_bankgiro: str,
-    invoices: list,          # list of SupplierInvoice objects
-    payment_date: _date,
+def _valid_ocr(ref: str) -> bool:
+    """
+    Validate a Swedish OCR reference using the Luhn (modulo-10) algorithm.
+    Returns True if the last digit is the correct Luhn check digit.
+    """
+    digits = _digits_only(ref)
+    if len(digits) < 2:
+        return False
+    total = 0
+    double = False
+    for d in reversed(digits):
+        n = int(d)
+        if double:
+            n *= 2
+            if n > 9:
+                n -= 9
+        total += n
+        double = not double
+    return total % 10 == 0
+
+
+def _clean_xml(raw: str) -> bytes:
+    raw = _re.sub(r"\n[ \t]*\n", "\n", raw)
+    return raw.encode("utf-8")
+
+
+# ── Swedish bank holiday calendar ────────────────────────────────────────────
+
+def _easter(year: int) -> _date:
+    """Computus — returns Easter Sunday for a given year."""
+    a = year % 19
+    b, c = divmod(year, 100)
+    d, e = divmod(b, 4)
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = divmod(c, 4)
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month, day = divmod(114 + h + l - 7 * m, 31)
+    return _date(year, month, day + 1)
+
+
+def _swedish_bank_holidays(year: int) -> set:
+    """
+    Returns the set of Swedish bank holidays (röda dagar + bank-closed days)
+    for the given year.
+    """
+    e = _easter(year)
+    holidays = {
+        _date(year, 1, 1),   # Nyårsdagen
+        _date(year, 1, 6),   # Trettondedag jul
+        e - _timedelta(days=2),   # Långfredagen
+        e + _timedelta(days=1),   # Annandag påsk
+        _date(year, 5, 1),   # Första maj
+        e + _timedelta(days=39),  # Kristi himmelsfärdsdag
+        _date(year, 6, 6),   # Sveriges nationaldag
+        _date(year, 12, 24), # Julafton (bank closed)
+        _date(year, 12, 25), # Juldagen
+        _date(year, 12, 26), # Annandag jul
+        _date(year, 12, 31), # Nyårsafton (bank closed)
+    }
+    # Midsommarafton — Friday between Jun 19–25
+    for day in range(19, 26):
+        d = _date(year, 6, day)
+        if d.weekday() == 4:  # Friday
+            holidays.add(d)
+            break
+    # Alla helgons dag — Saturday between Oct 31–Nov 6
+    for day in range(31, 38):
+        try:
+            d = _date(year, 10 if day <= 31 else 11, day if day <= 31 else day - 31)
+        except ValueError:
+            d = _date(year, 11, day - 31)
+        if d.weekday() == 5:  # Saturday
+            holidays.add(d)
+            break
+    return holidays
+
+
+def prev_banking_day(d: _date) -> _date:
+    """
+    Return the last banking day strictly before `d`.
+    Skips weekends and Swedish bank holidays.
+    """
+    candidate = d - _timedelta(days=1)
+    holidays = _swedish_bank_holidays(candidate.year)
+    while candidate.weekday() >= 5 or candidate in holidays:
+        candidate -= _timedelta(days=1)
+        # refresh holidays if we cross a year boundary
+        if candidate.year != (candidate + _timedelta(days=1)).year:
+            holidays = _swedish_bank_holidays(candidate.year)
+    return candidate
+
+
+# ── PmtInf builder ───────────────────────────────────────────────────────────
+
+def _add_pmt_inf(
+    cstmr: ET.Element,
+    invoices: list,
+    pmt_inf_id: str,
+    company_name: str,
+    debtor_bban: str,
+    debtor_bic: str,
+    is_bg_pg: bool,
+) -> None:
+    """Append one PmtInf block. Payment date is derived per invoice from due_date."""
+    n = len(invoices)
+    ctrl = _fmt_amount(sum(float(i.amount_incl_vat or 0) for i in invoices))
+
+    # Use the earliest payment date across invoices as the block-level date
+    pay_dates = []
+    for inv in invoices:
+        due = getattr(inv, "due_date", None) or _date.today()
+        pay_dates.append(prev_banking_day(due))
+    block_pay_date = min(pay_dates).isoformat()
+
+    pmt_inf = _sub(cstmr, "PmtInf")
+    _sub(pmt_inf, "PmtInfId", pmt_inf_id)
+    _sub(pmt_inf, "PmtMtd", "TRF")
+    _sub(pmt_inf, "NbOfTxs", str(n))
+    _sub(pmt_inf, "CtrlSum", ctrl)
+
+    pmt_tp_inf = _sub(pmt_inf, "PmtTpInf")
+    _sub(_sub(pmt_tp_inf, "SvcLvl"), "Cd", "NURG")
+    _sub(_sub(pmt_tp_inf, "CtgyPurp"), "Cd", "SUPP")
+
+    _sub(pmt_inf, "ReqdExctnDt", block_pay_date)
+
+    # Debtor
+    _sub(_sub(pmt_inf, "Dbtr"), "Nm", company_name)
+
+    dbtr_acct = _sub(pmt_inf, "DbtrAcct")
+    dbtr_othr = _sub(_sub(dbtr_acct, "Id"), "Othr")
+    _sub(dbtr_othr, "Id", debtor_bban)
+    _sub(_sub(dbtr_othr, "SchmeNm"), "Cd", "BBAN")
+
+    _sub(_sub(_sub(pmt_inf, "DbtrAgt"), "FinInstnId"), "BIC", debtor_bic)
+
+    # Transactions
+    for idx, inv in enumerate(invoices, start=1):
+        amount = float(inv.amount_incl_vat or 0)
+        supplier = (inv.supplier_name or "Leverantör")[:70]
+        end_to_end = f"{pmt_inf_id}-{idx:03d}"
+
+        cdt_trf = _sub(pmt_inf, "CdtTrfTxInf")
+        _sub(_sub(cdt_trf, "PmtId"), "EndToEndId", end_to_end)
+
+        inst = _sub(_sub(cdt_trf, "Amt"), "InstdAmt", _fmt_amount(amount))
+        inst.set("Ccy", "SEK")
+
+        # Creditor agent
+        if inv.bankgiro:
+            # BG: route to Bankgirot's own clearing member ID (9900)
+            clr_sys = _sub(_sub(_sub(cdt_trf, "CdtrAgt"), "FinInstnId"), "ClrSysMmbId")
+            _sub(_sub(clr_sys, "ClrSysId"), "Cd", "SESBA")
+            _sub(clr_sys, "MmbId", "9900")
+        elif inv.plusgiro:
+            # PG: route to Plusgirot's clearing member ID (9500)
+            clr_sys = _sub(_sub(_sub(cdt_trf, "CdtrAgt"), "FinInstnId"), "ClrSysMmbId")
+            _sub(_sub(clr_sys, "ClrSysId"), "Cd", "SESBA")
+            _sub(clr_sys, "MmbId", "9500")
+
+        _sub(_sub(cdt_trf, "Cdtr"), "Nm", supplier)
+
+        # Creditor account
+        cdtr_acct_id = _sub(_sub(cdt_trf, "CdtrAcct"), "Id")
+        if inv.bankgiro:
+            cdtr_othr = _sub(cdtr_acct_id, "Othr")
+            _sub(cdtr_othr, "Id", _digits_only(inv.bankgiro))
+            _sub(_sub(cdtr_othr, "SchmeNm"), "Prtry", "BGNR")
+        elif inv.plusgiro:
+            cdtr_othr = _sub(cdtr_acct_id, "Othr")
+            _sub(cdtr_othr, "Id", _digits_only(inv.plusgiro))
+            _sub(_sub(cdtr_othr, "SchmeNm"), "Prtry", "PGNR")
+        else:
+            _sub(cdtr_acct_id, "IBAN", inv.iban.replace(" ", ""))
+
+        # Remittance info — only use structured SCOR if OCR passes Luhn check
+        ref = _digits_only(inv.payment_ref or "")
+        if ref and _valid_ocr(ref):
+            strd = _sub(_sub(cdt_trf, "RmtInf"), "Strd")
+            cdtr_ref_inf = _sub(strd, "CdtrRefInf")
+            _sub(_sub(_sub(cdtr_ref_inf, "Tp"), "CdOrPrtry"), "Cd", "SCOR")
+            _sub(cdtr_ref_inf, "Ref", ref)
+        else:
+            # Fall back to unstructured: use payment_ref if present, else invoice number
+            ustrd_text = (inv.payment_ref or inv.invoice_number or "")[:140]
+            if ustrd_text:
+                _sub(_sub(cdt_trf, "RmtInf"), "Ustrd", ustrd_text)
+
+
+# ── Public API ────────────────────────────────────────────────────────────────
+
+def generate_pain001(
+    invoices: list,
+    payment_date: _date,   # kept for API compatibility; actual dates derived from due_date
+    config: dict,
 ) -> bytes:
     """
-    Generate a Bankgirot LB file.
+    Generate an ISO 20022 pain.001.001.03 XML payment file.
 
-    invoices: list of SupplierInvoice ORM objects. Each must have:
-        bankgiro or plusgiro, payment_ref, amount_incl_vat.
+    Payment execution date per invoice = last banking day before due_date.
+    BG/PG and IBAN invoices are placed in separate PmtInf blocks.
 
-    Returns the file content as bytes (ISO-8859-1 encoded).
+    Returns UTF-8 encoded XML bytes.
     """
-    sender_bg = _digits_only(sender_bankgiro)
-    date_str = payment_date.strftime('%Y%m%d')
-    records = []
+    company_name = config.get("COMPANY_NAME", "")
+    debtor_bban  = _digits_only(config.get("COMPANY_BBAN", ""))
+    if not debtor_bban:
+        iban = config.get("COMPANY_IBAN", "").replace(" ", "").upper()
+        debtor_bban = _digits_only(iban[4:]) if iban.startswith("SE") else ""
+    debtor_bic   = config.get("COMPANY_BIC", "HANDSESS")
+    org_nr       = _digits_only(config.get("COMPANY_ORG_NR", ""))
 
-    # TK01 – Opening record
-    # Pos 1-2:   Record type "01"
-    # Pos 3-12:  Sender bankgiro (10 digits, zero-padded, right-aligned)
-    # Pos 13-20: Payment date YYYYMMDD
-    # Pos 21-30: Product code "LEVERBET" + spaces
-    # Pos 31-80: Filler
-    tk01 = (
-        '01'
-        + _pad(sender_bg, 10, 'right', '0')
-        + date_str
-        + _pad('LEVERBET', 10)
-        + _pad('', 50)
+    msg_id      = f"ONEDESK-{payment_date.strftime('%Y%m%d')}-{uuid.uuid4().hex[:8].upper()}"
+    creation_dt = _datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+
+    bg_pg_invs = [i for i in invoices if i.bankgiro or i.plusgiro]
+    iban_invs  = [i for i in invoices if i.iban and not i.bankgiro and not i.plusgiro]
+
+    n_txns   = len(bg_pg_invs) + len(iban_invs)
+    ctrl_sum = _fmt_amount(
+        sum(float(i.amount_incl_vat or 0) for i in bg_pg_invs + iban_invs)
     )
-    records.append(tk01)
 
-    total_ore = 0
-    for inv in invoices:
-        # Determine recipient account
-        if inv.bankgiro:
-            recipient = _digits_only(inv.bankgiro)
-            acc_type = 'BG'
-        elif inv.plusgiro:
-            recipient = _digits_only(inv.plusgiro)
-            acc_type = 'PG'
-        else:
-            # No bankgiro/plusgiro — skip this invoice
-            continue
+    root  = ET.Element(_t("Document"))
+    cstmr = _sub(root, "CstmrCdtTrfInitn")
 
-        ore = round(inv.amount_incl_vat * 100)
-        total_ore += ore
-        ocr = _digits_only(inv.payment_ref or '')
+    # Group Header
+    grp_hdr = _sub(cstmr, "GrpHdr")
+    _sub(grp_hdr, "MsgId",   msg_id)
+    _sub(grp_hdr, "CreDtTm", creation_dt)
+    _sub(grp_hdr, "NbOfTxs", str(n_txns))
+    _sub(grp_hdr, "CtrlSum", ctrl_sum)
+    initg_pty = _sub(grp_hdr, "InitgPty")
+    _sub(initg_pty, "Nm", company_name)
+    if org_nr:
+        _sub(_sub(_sub(_sub(initg_pty, "Id"), "OrgId"), "Othr"), "Id", org_nr)
 
-        # TK14 – Payment transaction
-        # Pos 1-2:   Record type "14"
-        # Pos 3-14:  Recipient BG/PG number (12 digits, zero-padded, right-aligned)
-        # Pos 15-39: OCR/reference (25 chars, right-aligned, zero-padded for OCR)
-        # Pos 40-51: Amount in öre (12 digits, zero-padded, right-aligned)
-        # Pos 52-59: Payment date YYYYMMDD
-        # Pos 60-61: Currency code space "  " (SEK implied)
-        # Pos 62-80: Filler
-        tk14 = (
-            '14'
-            + _pad(recipient, 12, 'right', '0')
-            + _pad(ocr, 25, 'right', '0')
-            + _pad(str(ore), 12, 'right', '0')
-            + date_str
-            + '  '
-            + _pad('', 19)
+    if bg_pg_invs:
+        _add_pmt_inf(
+            cstmr, bg_pg_invs,
+            pmt_inf_id=f"{msg_id}-BG",
+            company_name=company_name,
+            debtor_bban=debtor_bban,
+            debtor_bic=debtor_bic,
+            is_bg_pg=True,
         )
-        records.append(tk14)
 
-    num_payments = len(records) - 1  # exclude TK01
+    if iban_invs:
+        _add_pmt_inf(
+            cstmr, iban_invs,
+            pmt_inf_id=f"{msg_id}-IBAN",
+            company_name=company_name,
+            debtor_bban=debtor_bban,
+            debtor_bic=debtor_bic,
+            is_bg_pg=False,
+        )
 
-    # TK65 – Closing record
-    # Pos 1-2:   Record type "65"
-    # Pos 3-10:  Number of TK14 records (8 digits, zero-padded)
-    # Pos 11-22: Total amount in öre (12 digits, zero-padded)
-    # Pos 23-80: Filler
-    tk65 = (
-        '65'
-        + _pad(str(num_payments), 8, 'right', '0')
-        + _pad(str(total_ore), 12, 'right', '0')
-        + _pad('', 58)
-    )
-    records.append(tk65)
-
-    # Each record must be exactly 80 chars
-    for i, r in enumerate(records):
-        assert len(r) == 80, f"Record {i} is {len(r)} chars, expected 80: {r!r}"
-
-    content = '\r\n'.join(records) + '\r\n'
-    return content.encode('iso-8859-1')
+    xml_str = ET.tostring(root, encoding="unicode", xml_declaration=False)
+    decl    = '<?xml version="1.0" encoding="UTF-8"?>\n'
+    return _clean_xml(decl + xml_str)

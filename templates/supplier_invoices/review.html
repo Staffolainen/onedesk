@@ -1,6 +1,6 @@
 {% extends "base.html" %}
-{% block title %}{{ "Granska faktura" }}{% endblock %}
-{% block page_title %}{{ "Granska och bekräfta / Review & confirm" }}{% endblock %}
+{% block title %}{{ g.t.sup_review_title }}{% endblock %}
+{% block page_title %}{{ g.t.sup_review_title }}{% endblock %}
 
 {% block topbar_actions %}
   <a href="{{ url_for('supplier_invoices_index') }}" class="btn btn-ghost btn-sm">← {{ g.t.back }}</a>
@@ -8,14 +8,25 @@
 
 {% block content %}
 <div style="max-width:720px;margin:0 auto;">
+
+  {% if ocr.error %}
+  <div class="flash warning" style="margin-bottom:16px;">
+    {{ g.t.sup_ocr_fail }}: {{ ocr.error }}
+  </div>
+  {% elif ocr.supplier_name %}
+  <div class="flash success" style="margin-bottom:16px;">
+    ✓ {{ g.t.sup_ocr_ok }}
+  </div>
+  {% endif %}
+
   <form method="POST">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
     <div class="card" style="margin-bottom:16px;">
-      <div class="card-title">{{ "Leverantör / Supplier" }}</div>
+      <div class="card-title">{{ g.t.sup_supplier }}</div>
       <div class="grid-2">
         <div class="form-group">
-          <label class="form-label">{{ "Leverantörsnamn / Supplier name" }}</label>
+          <label class="form-label">{{ g.t.sup_supplier_name }}</label>
           <input type="text" name="supplier_name" class="form-control"
                  value="{{ inv.supplier_name or '' }}" required>
         </div>
@@ -27,12 +38,12 @@
       </div>
       <div class="grid-2">
         <div class="form-group">
-          <label class="form-label">{{ "Fakturanummer / Invoice number" }}</label>
+          <label class="form-label">{{ g.t.sup_invoice_number }}</label>
           <input type="text" name="invoice_number" class="form-control"
                  value="{{ inv.invoice_number or '' }}">
         </div>
         <div class="form-group">
-          <label class="form-label">{{ "Valuta / Currency" }}</label>
+          <label class="form-label">{{ g.t.sup_currency }}</label>
           <input type="text" name="currency" class="form-control"
                  value="{{ inv.currency or 'SEK' }}" maxlength="3">
         </div>
@@ -40,15 +51,15 @@
     </div>
 
     <div class="card" style="margin-bottom:16px;">
-      <div class="card-title">{{ "Datum / Dates" }}</div>
+      <div class="card-title">{{ g.t.sup_dates }}</div>
       <div class="grid-2">
         <div class="form-group">
-          <label class="form-label">{{ "Fakturadatum / Invoice date" }}</label>
+          <label class="form-label">{{ g.t.sup_invoice_date }}</label>
           <input type="date" name="invoice_date" class="form-control"
                  value="{{ inv.invoice_date.isoformat() if inv.invoice_date else '' }}">
         </div>
         <div class="form-group">
-          <label class="form-label">{{ "Förfallodatum / Due date" }}</label>
+          <label class="form-label">{{ g.t.sup_due_date }}</label>
           <input type="date" name="due_date" class="form-control"
                  value="{{ inv.due_date.isoformat() if inv.due_date else '' }}">
         </div>
@@ -56,20 +67,27 @@
     </div>
 
     <div class="card" style="margin-bottom:16px;">
-      <div class="card-title">{{ "Belopp / Amounts" }}</div>
+      <div class="card-title">{{ g.t.sup_amounts }}</div>
       <div class="grid-2">
         <div class="form-group">
-          <label class="form-label">{{ "Exkl. moms / Excl. VAT" }}</label>
+          <label class="form-label">{{ g.t.sup_excl_vat }}</label>
           <input type="number" name="amount_excl_vat" class="form-control"
                  value="{{ inv.amount_excl_vat or '' }}" step="0.01" min="0">
         </div>
         <div class="form-group">
-          <label class="form-label">{{ "Moms / VAT" }}</label>
-          <input type="number" name="vat_amount" class="form-control"
-                 value="{{ inv.vat_amount or '' }}" step="0.01" min="0">
+          <label class="form-label">{{ g.t.sup_vat }}</label>
+          <input type="number" name="vat_amount" id="sup_vat_amount" class="form-control"
+                 value="{{ inv.vat_amount or '' }}" step="0.01" min="0" placeholder="0.00"
+                 style="margin-bottom:6px;">
+          <div style="display:flex;gap:6px;">
+            <button type="button" class="btn btn-ghost btn-sm" onclick="calcSupVat(25)">25%</button>
+            <button type="button" class="btn btn-ghost btn-sm" onclick="calcSupVat(12.5)">12,5%</button>
+            <button type="button" class="btn btn-ghost btn-sm" onclick="calcSupVat(0)">0%</button>
+          </div>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px;">→ 2641 Debiterad ingående moms</div>
         </div>
         <div class="form-group">
-          <label class="form-label">{{ "Inkl. moms / Incl. VAT" }}</label>
+          <label class="form-label">{{ g.t.sup_incl_vat }}</label>
           <input type="number" name="amount_incl_vat" class="form-control"
                  value="{{ inv.amount_incl_vat or '' }}" step="0.01" min="0" required>
         </div>
@@ -77,12 +95,12 @@
     </div>
 
     <div class="card" style="margin-bottom:16px;">
-      <div class="card-title">{{ "Betalning / Payment" }}</div>
+      <div class="card-title">{{ g.t.sup_payment }}</div>
       <div class="grid-2">
         <div class="form-group">
-          <label class="form-label">OCR / {{ "Referens / Reference" }}</label>
+          <label class="form-label">{{ g.t.sup_ocr }}</label>
           <input type="text" name="payment_ref" class="form-control"
-                 value="{{ inv.payment_ref or '' }}">
+                 value="{{ inv.payment_ref or inv.invoice_number or '' }}">
         </div>
       </div>
       <div class="grid-2">
@@ -105,53 +123,71 @@
     </div>
 
     <div class="card" style="margin-bottom:16px;">
-      <div class="card-title">{{ "Bokföring / Bookkeeping" }}</div>
+      <div class="card-title">{{ g.t.sup_bookkeeping }}</div>
       <div class="grid-2">
         <div class="form-group">
-          <label class="form-label">{{ "Konto / Account (Bas)" }}</label>
-          <input type="text" name="account_code" class="form-control"
-                 value="{{ inv.account_code or (tmpl.debit_account if tmpl else '') }}"
-                 placeholder="{{ tmpl.debit_account if tmpl else '6540' }}">
-          {% if tmpl and tmpl.debit_account_label %}
-          <div style="font-size:11px;color:var(--muted);margin-top:3px;">
-            {{ "Standardmall:" if g.lang == "sv" else "Default template:" }}
-            {{ tmpl.debit_account }} {{ tmpl.debit_account_label }}
-          </div>
-          {% endif %}
-        </div>
-        <div class="form-group">
-          <label class="form-label">{{ "Uppdrag / Project (optional)" }}</label>
-          <select name="project_id" class="form-control">
-            <option value="">—</option>
-            {% for p in projects %}
-            <option value="{{ p.id }}" {% if inv.project_id == p.id %}selected{% endif %}>
-              {{ p.client.name }} / {{ p.name }}
+          <label class="form-label">{{ g.t.sup_category }}</label>
+          <select name="supplier_category_id" class="form-control">
+            <option value="">— {{ g.t.sup_category }} —</option>
+            {% for cat in categories %}
+            <option value="{{ cat.id }}" {% if inv.supplier_category_id == cat.id %}selected{% endif %}>
+              {{ cat.debit_account }} — {{ cat.name }}
             </option>
             {% endfor %}
           </select>
+          <div style="font-size:11px;color:var(--muted);margin-top:3px;">{{ g.t.sup_credit_hint }}</div>
         </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">{{ g.t.sup_assignment }}</label>
+        <select name="project_id" class="form-control">
+          <option value="">—</option>
+          {% for p in projects %}
+          <option value="{{ p.id }}" {% if inv.project_id == p.id %}selected{% endif %}>
+            {{ p.client.name }} / {{ p.name }}
+          </option>
+          {% endfor %}
+        </select>
       </div>
     </div>
 
     {% if inv.pdf_filename %}
     <div class="card" style="margin-bottom:16px;">
-      <div class="card-title">{{ "Uppladdad fil / Uploaded file" }}</div>
+      <div class="card-title">{{ g.t.sup_file }}</div>
       <a href="{{ url_for('supplier_invoice_file', filename=inv.pdf_filename) }}"
          target="_blank" class="btn btn-ghost btn-sm">
-        {{ "Visa fil / View file" }}
+        {{ g.t.sup_view_file }}
       </a>
     </div>
     {% endif %}
 
     <div style="display:flex;gap:10px;">
-      <button type="submit" name="action" value="save" class="btn btn-primary">
-        {{ "Spara och bokför / Save & book" }}
+      <button type="submit" name="action" value="save" id="reviewSaveBtn" class="btn btn-primary">
+        {{ g.t.sup_save_book }}
       </button>
       <button type="submit" name="action" value="discard" class="btn btn-danger"
-              onclick="return confirm('{{ 'Ta bort fakturan?' if g.lang == 'sv' else 'Discard invoice?' }}')">
-        {{ "Kasta / Discard" }}
+              onclick="return confirm('{{ g.t.sup_discard_confirm }}')">
+        {{ g.t.sup_discard }}
       </button>
     </div>
   </form>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function calcSupVat(rate) {
+  const total = parseFloat(document.querySelector('[name=amount_incl_vat]').value) || 0;
+  const vat = rate > 0 ? Math.round(total * rate / (100 + rate) * 100) / 100 : 0;
+  document.getElementById('sup_vat_amount').value = vat.toFixed(2);
+}
+
+document.querySelector('form').addEventListener('submit', function(e) {
+  const clicked = document.activeElement;
+  if (clicked && clicked.name === 'action' && clicked.value === 'discard') return;
+  const btn = document.getElementById('reviewSaveBtn');
+  btn.disabled = true;
+  btn.textContent = '{{ "Sparar..." if g.lang == "sv" else "Saving..." }}';
+});
+</script>
 {% endblock %}

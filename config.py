@@ -15,7 +15,7 @@ class Config:
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = "Lax"
     SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "0") == "1"
-    PERMANENT_SESSION_LIFETIME = 86400 * 14  # 14 days for remembered sessions
+    PERMANENT_SESSION_LIFETIME = 3600 * 8  # 8 hours
 
     ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin")
     ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "")
@@ -27,6 +27,9 @@ class Config:
     COMPANY_EMAIL = os.getenv("COMPANY_EMAIL", "")
     COMPANY_PHONE = os.getenv("COMPANY_PHONE", "")
     COMPANY_BANKGIRO = os.getenv("COMPANY_BANKGIRO", "")
+    COMPANY_IBAN     = os.getenv("COMPANY_IBAN", "")       # Debtor IBAN (optional, not used by HB pain.001)
+    COMPANY_BBAN     = os.getenv("COMPANY_BBAN", "")       # Debtor clearing+account for pain.001, e.g. 60001234567890
+    COMPANY_BIC      = os.getenv("COMPANY_BIC", "HANDSESS")  # Handelsbanken default
     COMPANY_VAT_NR = os.getenv("COMPANY_VAT_NR", "")
     COMPANY_LOGO_PATH = os.getenv("COMPANY_LOGO_PATH", "static/img/logo.png")
     COMPANY_REFERENCE = os.getenv("COMPANY_REFERENCE", "")  # "Vår referens" on invoices

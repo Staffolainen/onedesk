@@ -51,7 +51,15 @@ class FortnoxClient:
             resp = requests.request(method, url, headers=self._headers(), **kwargs)
             logger.info("Fortnox API — retry response status=%s body=%s",
                          resp.status_code, resp.text)
-        resp.raise_for_status()
+        if not resp.ok:
+            # Extract Fortnox error message from JSON body if available
+            detail = ""
+            try:
+                err = resp.json()
+                detail = err.get("ErrorInformation", {}).get("Message", "") or str(err)
+            except Exception:
+                detail = resp.text[:300]
+            raise Exception(f"Fortnox {resp.status_code}: {detail}")
         return resp.json() if resp.content else {}
 
     def _refresh_token(self):
@@ -307,44 +315,169 @@ class FortnoxClient:
         fy_id = self.get_financial_year_id(expense.expense_date)
         if not fy_id:
             raise Exception(f"No financial year found in Fortnox for date {expense.expense_date}.")
+
+        # Debit account: from category if set, else fallback to 5410 Diverse inköp
+        debit_account = 5410
+        if expense.expense_category and expense.expense_category.debit_account:
+            debit_account = int(expense.expense_category.debit_account)
+
+        # Credit account: 1930 company card, 2893 personal card
+        credit_account = 2893 if expense.paid_by == "personal" else 1930
+
+        rows = [
+            {
+                "Account": debit_account,
+                "Debit": round(float(expense.amount_excl_vat), 2),
+                "Credit": 0,
+                "TransactionInformation": (expense.description or "")[:200],
+            },
+        ]
+        if float(expense.vat_amount or 0) > 0:
+            rows.append({
+                "Account": vat_account,
+                "Debit": round(float(expense.vat_amount), 2),
+                "Credit": 0,
+            })
+        rows.append({
+            "Account": credit_account,
+            "Debit": 0,
+            "Credit": round(float(expense.amount_incl_vat), 2),
+        })
+
         voucher_data = {
             "Description": (expense.description or expense.merchant or "Utlägg")[:200],
             "TransactionDate": expense.expense_date.isoformat(),
-            "VoucherSeries": "UL",
-            "VoucherRows": [
-                {
-                    "Account": 6550,
-                    "Debit": round(float(expense.amount_excl_vat), 2),
-                    "Credit": 0,
-                    "TransactionInformation": (expense.description or "")[:200],
-                },
-                {
-                    "Account": 2640,
-                    "Debit": round(float(expense.vat_amount), 2),
-                    "Credit": 0,
-                },
-                {
-                    "Account": 2440 if expense.paid_by == "personal" else 1930,
-                    "Debit": 0,
-                    "Credit": round(float(expense.amount_incl_vat), 2),
-                },
-            ],
+            "VoucherSeries": "A",
+            "VoucherRows": rows,
         }
         result = self._request("POST", "/vouchers", json={"Voucher": voucher_data},
                                params={"financialyear": fy_id})
         voucher = result.get("Voucher", {})
         voucher_nr = voucher.get("VoucherNumber")
-        voucher_series = voucher.get("VoucherSeries", "UL")
+        voucher_series = voucher.get("VoucherSeries", "A")
         voucher_ref = f"{voucher_series}{voucher_nr}" if voucher_nr else None
         logger.info("Fortnox expense voucher created — ref=%s", voucher_ref)
-
-        # Upload receipt if exists
-        if expense.receipt_filename and voucher_nr:
-            self._upload_attachment(voucher_series, voucher_nr, expense)
 
         from models import db
         expense.fortnox_voucher_nr = voucher_ref
         db.session.commit()
+        return voucher_ref
+
+    def create_supplier_invoice_voucher(self, inv):
+        """Book a supplier invoice: debit=category, VAT=2641, credit=1930."""
+        voucher_date = inv.invoice_date or inv.due_date
+        if not voucher_date:
+            from datetime import date as _date
+            voucher_date = _date.today()
+        fy_id = self.get_financial_year_id(voucher_date)
+        if not fy_id:
+            raise Exception(f"No financial year found in Fortnox for date {voucher_date}.")
+
+        debit_account = 6540  # fallback
+        if inv.supplier_category and inv.supplier_category.debit_account:
+            debit_account = int(inv.supplier_category.debit_account)
+        elif inv.account_code:
+            debit_account = int(inv.account_code)
+
+        rows = [
+            {
+                "Account": debit_account,
+                "Debit": round(float(inv.amount_excl_vat or 0), 2),
+                "Credit": 0,
+                "TransactionInformation": (inv.supplier_name or "")[:200],
+            },
+        ]
+        if float(inv.vat_amount or 0) > 0:
+            rows.append({
+                "Account": 2641,
+                "Debit": round(float(inv.vat_amount), 2),
+                "Credit": 0,
+            })
+        rows.append({
+            "Account": 2440,  # Leverantörsskulder — cleared when payment is made
+            "Debit": 0,
+            "Credit": round(float(inv.amount_incl_vat or 0), 2),
+        })
+
+        description = f"{inv.supplier_name or 'Leverantör'} {inv.invoice_number or ''}".strip()
+        voucher_data = {
+            "Description": description[:200],
+            "TransactionDate": voucher_date.isoformat(),
+            "VoucherSeries": "A",
+            "VoucherRows": rows,
+        }
+        result = self._request("POST", "/vouchers", json={"Voucher": voucher_data},
+                               params={"financialyear": fy_id})
+        voucher = result.get("Voucher", {})
+        voucher_nr = voucher.get("VoucherNumber")
+        voucher_series = voucher.get("VoucherSeries", "A")
+        voucher_ref = f"{voucher_series}{voucher_nr}" if voucher_nr else None
+        logger.info("Fortnox supplier invoice voucher created — ref=%s", voucher_ref)
+
+        from models import db
+        inv.fortnox_voucher_nr = voucher_ref
+        inv.status = "booked"
+        db.session.commit()
+        return voucher_ref
+
+    def create_payment_voucher(self, invoice_ids, payment_date):
+        """Post payment: debit 2440 (Leverantörsskulder) → credit 1930 (Bank) per invoice.
+        Called when a payment file is confirmed uploaded to the bank.
+        Accepts a list of invoice IDs (not ORM objects) to avoid stale session data.
+        """
+        from datetime import date as _date
+        from models import db, SupplierInvoice
+        if not payment_date:
+            payment_date = _date.today()
+        fy_id = self.get_financial_year_id(payment_date)
+        if not fy_id:
+            raise Exception(f"No financial year found in Fortnox for date {payment_date}.")
+
+        # Re-query invoices fresh to avoid stale SQLAlchemy data
+        invoices = db.session.query(SupplierInvoice).filter(
+            SupplierInvoice.id.in_(invoice_ids)
+        ).all()
+
+        rows = []
+        total = 0.0
+        descriptions = []
+        for inv in invoices:
+            amount = round(float(inv.amount_incl_vat or 0), 2)
+            if amount <= 0:
+                continue
+            rows.append({
+                "Account": 2440,
+                "Debit": amount,
+                "Credit": 0,
+                "TransactionInformation": f"{inv.supplier_name or ''} {inv.invoice_number or ''}".strip()[:200],
+            })
+            total += amount
+            descriptions.append(inv.supplier_name or inv.invoice_number or "")
+
+        if not rows:
+            raise Exception("Inga fakturor med belopp att bokföra / No invoices with amount to post.")
+
+        rows.append({
+            "Account": 1930,
+            "Debit": 0,
+            "Credit": round(total, 2),
+            "TransactionInformation": "Betalning leverantörsfakturor",
+        })
+
+        description = f"Bet. {', '.join(descriptions[:3])}{'...' if len(descriptions) > 3 else ''}"
+        voucher_data = {
+            "Description": description[:200],
+            "TransactionDate": payment_date.isoformat(),
+            "VoucherSeries": "A",
+            "VoucherRows": rows,
+        }
+        result = self._request("POST", "/vouchers", json={"Voucher": voucher_data},
+                               params={"financialyear": fy_id})
+        voucher = result.get("Voucher", {})
+        voucher_nr = voucher.get("VoucherNumber")
+        voucher_series = voucher.get("VoucherSeries", "A")
+        voucher_ref = f"{voucher_series}{voucher_nr}" if voucher_nr else None
+        logger.info("Fortnox payment voucher created — ref=%s total=%.2f", voucher_ref, total)
         return voucher_ref
 
     def create_supplier_voucher(self, voucher_rows, description, voucher_date, series="L", pdf_path=None):

@@ -85,14 +85,27 @@
                  step="0.01" min="0" required>
         </div>
         <div class="form-group">
-          <label class="form-label">{{ "Momssats" if g.lang == "sv" else "VAT rate" }}</label>
-          <select name="vat_rate" class="form-control">
-            <option value="25" {% if not ocr.vat_rate or ocr.vat_rate == 25 %}selected{% endif %}>25%</option>
-            <option value="12" {% if ocr.vat_rate == 12 %}selected{% endif %}>12%</option>
-            <option value="6" {% if ocr.vat_rate == 6 %}selected{% endif %}>6%</option>
-            <option value="0" {% if ocr.vat_rate == 0 %}selected{% endif %}>0%</option>
-          </select>
+          <label class="form-label">{{ "Momsbelopp (SEK)" if g.lang == "sv" else "VAT amount (SEK)" }}</label>
+          <input type="number" name="vat_amount" id="exp_vat_amount" class="form-control"
+                 value="{{ '%.2f'|format(ocr.vat_amount) if ocr.vat_amount else '' }}"
+                 step="0.01" min="0" placeholder="0.00" style="margin-bottom:6px;">
+          <div style="display:flex;gap:6px;">
+            <button type="button" class="btn btn-ghost btn-sm" onclick="calcExpVat(25)">25%</button>
+            <button type="button" class="btn btn-ghost btn-sm" onclick="calcExpVat(12.5)">12,5%</button>
+            <button type="button" class="btn btn-ghost btn-sm" onclick="calcExpVat(0)">0%</button>
+          </div>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px;">→ 2641 Debiterad ingående moms</div>
         </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">{{ "Utgiftskategori / Expense category" }}</label>
+        <select name="expense_category_id" id="expense_category_id" class="form-control">
+          <option value="">— {{ "Välj kategori" if g.lang == "sv" else "Select category" }} —</option>
+          {% for cat in categories %}
+          <option value="{{ cat.id }}" data-account="{{ cat.debit_account }}">{{ cat.debit_account }} — {{ cat.name }}</option>
+          {% endfor %}
+        </select>
       </div>
 
       <div class="grid-2">
@@ -118,18 +131,18 @@
         <label class="form-label">{{ "Debiterbart till kund" if g.lang == "sv" else "Billable to client" }}</label>
         <div style="display:flex;gap:12px;">
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px;">
-            <input type="radio" name="billable" value="1" checked style="accent-color:var(--accent);">
+            <input type="radio" name="billable" value="1" id="billable_yes" style="accent-color:var(--accent);">
             {{ "Ja, fakturera kunden" if g.lang == "sv" else "Yes, bill to client" }}
           </label>
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px;">
-            <input type="radio" name="billable" value="0" style="accent-color:var(--accent);">
+            <input type="radio" name="billable" value="0" id="billable_no" checked style="accent-color:var(--accent);">
             {{ "Nej, internt" if g.lang == "sv" else "No, internal cost" }}
           </label>
         </div>
       </div>
 
       <div style="display:flex;gap:10px;margin-top:8px;">
-        <button type="submit" name="action" value="approve" class="btn btn-success" style="flex:1;padding:14px;font-size:15px;">
+        <button type="submit" name="action" value="approve" id="expApproveBtn" class="btn btn-success" style="flex:1;padding:14px;font-size:15px;">
           ✓ {{ "Godkänn & spara" if g.lang == "sv" else "Approve & save" }}
         </button>
         <button type="submit" name="action" value="discard" class="btn btn-danger" onclick="return confirm('{{ 'Kassera utlägget?' if g.lang == 'sv' else 'Discard this expense?' }}')">
@@ -139,4 +152,57 @@
     </form>
   </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.querySelector('form').addEventListener('submit', function(e) {
+  const clicked = document.activeElement;
+  if (clicked && clicked.name === 'action' && clicked.value === 'discard') return;
+  const btn = document.getElementById('expApproveBtn');
+  if (btn.disabled) { e.preventDefault(); return; }
+  btn.disabled = true;
+  btn.textContent = '{{ "Sparar..." if g.lang == "sv" else "Saving..." }}';
+});
+
+function calcExpVat(rate) {
+  const total = parseFloat(document.querySelector('[name=amount_incl_vat]').value) || 0;
+  const vat = rate > 0 ? Math.round(total * rate / (100 + rate) * 100) / 100 : 0;
+  document.getElementById('exp_vat_amount').value = vat.toFixed(2);
+}
+
+(function() {
+  const select = document.getElementById('expense_category_id');
+  const billableYes = document.getElementById('billable_yes');
+  const billableNo  = document.getElementById('billable_no');
+  const allOptions  = Array.from(select.options);
+
+  function filterCategories() {
+    const billable = billableYes.checked;
+    const current  = select.value;
+    select.innerHTML = '';
+    allOptions.forEach(opt => {
+      if (!opt.value) { select.appendChild(opt.cloneNode(true)); return; }
+      const acc = opt.dataset.account || '';
+      const is4000 = acc.startsWith('4');
+      // billable to client → only 4000-series; internal cost → exclude 4000-series
+      if (billable ? is4000 : !is4000) {
+        select.appendChild(opt.cloneNode(true));
+      }
+    });
+    // Restore previous selection if still valid, otherwise reset
+    if ([...select.options].some(o => o.value === current)) {
+      select.value = current;
+    } else {
+      select.value = '';
+    }
+  }
+
+  billableYes.addEventListener('change', filterCategories);
+  billableNo.addEventListener('change', filterCategories);
+
+  // Apply on load to match default (internal)
+  filterCategories();
+})();
+</script>
 {% endblock %}

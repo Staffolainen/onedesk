@@ -126,49 +126,70 @@
   </div>
   {% endif %}
 
-  <!-- Voucher templates (bokföring) -->
-  <div id="bokforing" class="card" style="margin-bottom:16px;">
-    <div class="card-title">{{ "Bokföringsmallar / Voucher templates" }}</div>
-    <div style="font-size:12px;color:var(--muted);margin-bottom:16px;">
-      {{ "Standardkonton per transaktionstyp för Fortnox-integration." if g.lang == "sv" else "Default account codes per transaction type for Fortnox integration." }}
+  <!-- Expense categories -->
+  <div id="expense-categories" class="card" style="margin-bottom:16px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+      <div class="card-title" style="margin-bottom:0;">{{ "Utgiftskategorier / Expense categories" }}</div>
+      {% if current_user.is_admin %}
+      <a href="{{ url_for('expense_categories') }}" class="btn btn-ghost btn-sm">{{ g.t.edit }}</a>
+      {% endif %}
     </div>
-    {% set tx_labels = {
-      'supplier_invoice': 'Leverantörsfaktura / Supplier invoice',
-      'expense_internal': 'Utlägg – företagskort / Expense – company card',
-      'expense_external': 'Utlägg – privatkort / Expense – personal card',
-      'mileage': 'Milersättning / Mileage',
-      'salary': 'Lön / Salary',
-    } %}
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px;">
+      {{ "Debetkontorouting per utläggstyp för Fortnox-bokföring." if g.lang == "sv" else "Debit account routing per expense type for Fortnox posting." }}
+    </div>
+    {% if expense_categories %}
     <table style="width:100%;border-collapse:collapse;font-size:13px;">
       <thead>
         <tr>
-          {% for h in ["Typ/Type","Debet","Moms","Kredit","Serie",""] %}
-          <th style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);padding:8px 10px;text-align:left;border-bottom:1px solid var(--border);">{{ h }}</th>
-          {% endfor %}
+          <th style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);padding:6px 10px;text-align:left;border-bottom:1px solid var(--border);">{{ "Kategori" if g.lang == "sv" else "Category" }}</th>
+          <th style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);padding:6px 10px;text-align:left;border-bottom:1px solid var(--border);">{{ "Debet" }}</th>
         </tr>
       </thead>
       <tbody>
-      {% for tx_type, label in tx_labels.items() %}
-      {% set t = voucher_templates.get(tx_type) %}
+      {% for cat in expense_categories %}
       <tr style="border-bottom:1px solid var(--border);">
-        <td style="padding:8px 10px;">{{ label }}</td>
-        <td style="padding:8px 10px;font-family:var(--mono);font-size:12px;">
-          {{ t.debit_account if t and t.debit_account else '—' }}
-          {% if t and t.debit_account_label %}<span style="color:var(--muted);"> {{ t.debit_account_label }}</span>{% endif %}
-        </td>
-        <td style="padding:8px 10px;font-family:var(--mono);font-size:12px;">
-          {{ t.vat_account if t and t.vat_account else '—' }}
-          {% if t and t.vat_rate %}<span style="color:var(--muted);"> {{ t.vat_rate|int }}%</span>{% endif %}
-        </td>
-        <td style="padding:8px 10px;font-family:var(--mono);font-size:12px;">{{ t.credit_account if t and t.credit_account else '—' }}</td>
-        <td style="padding:8px 10px;font-family:var(--mono);font-size:12px;">{{ t.voucher_series if t and t.voucher_series else '—' }}</td>
-        <td style="padding:6px 8px;">
-          <a href="{{ url_for('voucher_template_edit', tx_type=tx_type) }}" class="btn btn-ghost btn-sm">{{ g.t.edit }}</a>
-        </td>
+        <td style="padding:6px 10px;">{{ cat.name }}</td>
+        <td style="padding:6px 10px;font-family:var(--mono);font-size:12px;">{{ cat.debit_account }}</td>
       </tr>
       {% endfor %}
       </tbody>
     </table>
+    {% else %}
+    <p style="color:var(--muted);font-size:13px;">{{ "Inga kategorier konfigurerade." if g.lang == "sv" else "No categories configured." }}</p>
+    {% endif %}
+  </div>
+
+  <!-- Supplier categories -->
+  <div id="supplier-categories" class="card" style="margin-bottom:16px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+      <div class="card-title" style="margin-bottom:0;">{{ "Leverantörskategorier / Supplier categories" }}</div>
+      {% if current_user.is_admin %}
+      <a href="{{ url_for('supplier_categories') }}" class="btn btn-ghost btn-sm">{{ g.t.edit }}</a>
+      {% endif %}
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px;">
+      {{ "Debetkontorouting per leverantörstyp för Fortnox-bokföring." if g.lang == "sv" else "Debit account routing per supplier type for Fortnox posting." }}
+    </div>
+    {% if supplier_categories %}
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead>
+        <tr>
+          <th style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);padding:6px 10px;text-align:left;border-bottom:1px solid var(--border);">{{ "Kategori" if g.lang == "sv" else "Category" }}</th>
+          <th style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);padding:6px 10px;text-align:left;border-bottom:1px solid var(--border);">{{ "Debet" }}</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for cat in supplier_categories %}
+      <tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:6px 10px;">{{ cat.name }}</td>
+        <td style="padding:6px 10px;font-family:var(--mono);font-size:12px;">{{ cat.debit_account }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p style="color:var(--muted);font-size:13px;">{{ "Inga kategorier konfigurerade." if g.lang == "sv" else "No categories configured." }}</p>
+    {% endif %}
   </div>
 
   <!-- Backup & Restore -->

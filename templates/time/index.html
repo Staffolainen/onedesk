@@ -359,7 +359,7 @@ document.querySelectorAll('form').forEach(function(f) {
   }
 });
 
-const hourTypesByProject = {{ hour_types_map_json | safe }};
+const hourTypesByProject = {{ hour_types_map | tojson }};
 const INTERNAL_TYPES = [
   { key: "it_Sjuk",     name: "Sjuk" },
   { key: "it_Semester", name: "Semester" },

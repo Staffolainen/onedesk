@@ -79,6 +79,26 @@ class VoucherTemplate(db.Model):
     description_template = db.Column(db.String(200))
 
 
+class ExpenseCategory(db.Model):
+    """Configurable expense categories with debit account routing."""
+    __tablename__ = "expense_category"
+    id           = db.Column(db.Integer, primary_key=True)
+    name         = db.Column(db.String(200), nullable=False)
+    debit_account = db.Column(db.String(10), nullable=False)
+    sort_order   = db.Column(db.Integer, default=0)
+    active       = db.Column(db.Boolean, default=True)
+
+
+class SupplierCategory(db.Model):
+    """Configurable supplier invoice categories with debit account routing."""
+    __tablename__ = "supplier_category"
+    id            = db.Column(db.Integer, primary_key=True)
+    name          = db.Column(db.String(200), nullable=False)
+    debit_account = db.Column(db.String(10), nullable=False)
+    sort_order    = db.Column(db.Integer, default=0)
+    active        = db.Column(db.Boolean, default=True)
+
+
 class Client(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(200), nullable=False)
@@ -251,6 +271,8 @@ class Expense(db.Model):
     billable = db.Column(db.Boolean, default=True)
     paid_by = db.Column(db.String(20), default="personal")  # personal or company
     receipt_filename = db.Column(db.String(300))
+    expense_category_id = db.Column(db.Integer, db.ForeignKey("expense_category.id"), nullable=True)
+    expense_category = db.relationship("ExpenseCategory", lazy=True)
     status = db.Column(db.String(20), default="pending")  # pending, approved, invoiced
     fortnox_voucher_nr = db.Column(db.String(50))
     invoice_id = db.Column(db.Integer, db.ForeignKey("invoice.id"), nullable=True)
@@ -286,12 +308,28 @@ class Invoice(db.Model):
     mileage_entries = db.relationship("MileageEntry", backref="invoice", lazy=True, foreign_keys="MileageEntry.invoice_id")
 
     def generate_number(self, fy_start_month=5):
+        """Assign the next sequential invoice number for the fiscal year.
+
+        Uses MAX() on existing numbers so the sequence stays correct even if
+        invoices are deleted. The unique constraint on invoice_number is the
+        final guard against races — callers should catch IntegrityError and retry.
+        """
         d = self.issue_date or date.today()
         fy = fiscal_year(d, fy_start_month)
-        count = Invoice.query.filter(
+        from sqlalchemy import func
+        max_num = db.session.query(
+            func.max(Invoice.invoice_number)
+        ).filter(
             Invoice.invoice_number.like(f"{fy}-%")
-        ).count() + 1
-        self.invoice_number = f"{fy}-{count:03d}"
+        ).scalar()
+        if max_num:
+            try:
+                seq = int(max_num.split("-", 1)[1]) + 1
+            except (IndexError, ValueError):
+                seq = 1
+        else:
+            seq = 1
+        self.invoice_number = f"{fy}-{seq:03d}"
 
     def line_groups(self):
         groups = {}
@@ -383,6 +421,9 @@ class SupplierInvoice(db.Model):
     plusgiro = db.Column(db.String(20))
     iban = db.Column(db.String(50))
     account_code = db.Column(db.String(10))
+    supplier_category_id = db.Column(db.Integer, db.ForeignKey('supplier_category.id'), nullable=True)
+    supplier_category = db.relationship('SupplierCategory', lazy=True)
+    vat_rate = db.Column(db.Float, default=25.0)
     project_id = db.Column(db.Integer, db.ForeignKey('project.id'), nullable=True)
     pdf_filename = db.Column(db.String(300))
     status = db.Column(db.String(20), default='pending')  # pending, approved, booked, paid
