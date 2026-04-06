@@ -60,8 +60,10 @@ def set_security_headers(response):
 import logging as _logging
 _audit_logger = _logging.getLogger("onedesk.audit")
 _audit_logger.setLevel(_logging.INFO)
+_instance_dir = os.path.join(os.path.dirname(__file__), "instance")
+os.makedirs(_instance_dir, exist_ok=True)
 _audit_handler = _logging.FileHandler(
-    os.path.join(os.path.dirname(__file__), "instance", "audit.log"),
+    os.path.join(_instance_dir, "audit.log"),
     encoding="utf-8"
 )
 _audit_handler.setFormatter(_logging.Formatter("%(asctime)s\t%(message)s"))
@@ -2399,6 +2401,9 @@ def init_db():
             "ALTER TABLE user ADD COLUMN active BOOLEAN DEFAULT 1",
             "ALTER TABLE user ADD COLUMN created_at DATETIME",
             "ALTER TABLE user ADD COLUMN last_login_at DATETIME",
+            # backfill NULL role/active for users created before the column was added
+            "UPDATE \"user\" SET role='admin' WHERE role IS NULL",
+            "UPDATE \"user\" SET active=1 WHERE active IS NULL",
             # v1.1 expense categories
             "ALTER TABLE expense ADD COLUMN expense_category_id INTEGER REFERENCES expense_category(id)",
             # v1.1 supplier categories
