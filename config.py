@@ -42,6 +42,7 @@ class Config:
     COMPANY_VAT_NR = os.getenv("COMPANY_VAT_NR", "")
     COMPANY_LOGO_PATH = os.getenv("COMPANY_LOGO_PATH", "static/img/logo.png")
     COMPANY_REFERENCE = os.getenv("COMPANY_REFERENCE", "")  # "Vår referens" on invoices
+    COMPANY_CC_MAIL_ON_INVOICING = os.getenv("COMPANY_CC_MAIL_ON_INVOICING", "")
 
     # Fortnox
     FORTNOX_CLIENT_ID = os.getenv("FORTNOX_CLIENT_ID", "")

@@ -2499,12 +2499,17 @@ Best regards,
 """
     body = body_sv if lang == "sv" else body_en
 
-    # Build CC list: project-level CC + admin email
+    # Build CC list: always-CC + project-level CC + admin email
     cc_addresses = []
+    always_cc = config.get("COMPANY_CC_MAIL_ON_INVOICING", "")
+    if always_cc and always_cc != safe_to:
+        cc_addresses.append(_sanitize_header(always_cc))
     if inv.project and inv.project.invoice_cc_email:
-        cc_addresses.append(_sanitize_header(inv.project.invoice_cc_email))
+        proj_cc = _sanitize_header(inv.project.invoice_cc_email)
+        if proj_cc not in cc_addresses:
+            cc_addresses.append(proj_cc)
     admin_email = config.get("ADMIN_EMAIL", "")
-    if admin_email and admin_email != safe_to:
+    if admin_email and admin_email != safe_to and _sanitize_header(admin_email) not in cc_addresses:
         cc_addresses.append(_sanitize_header(admin_email))
 
     msg = MIMEMultipart()
