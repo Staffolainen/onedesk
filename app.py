@@ -52,7 +52,7 @@ from sqlalchemy.orm import selectinload, joinedload
 from fortnox import FortnoxClient
 from receipt_ocr import extract_receipt_data, extract_supplier_invoice_data
 from pdf_generator import generate_invoice_pdf, render_invoice_html
-from payment_file_generator import generate_pain001
+from payment_file_generator import generate_pain001, get_execution_date
 
 app = Flask(__name__)
 app.config.from_object(Config)
@@ -2187,12 +2187,13 @@ def payment_run():
             flash(f"Kunde inte generera betalningsfil / Could not generate payment file: {e}", "error")
             return redirect(url_for("payment_run"))
 
-        # Save file record
+        # Save file record — use the actual ReqdExctnDt from the pain.001 as payment_date
+        execution_date = get_execution_date(selected)
         total = sum(i.amount_incl_vat for i in selected)
-        filename = f"betalning_{payment_date.isoformat()}_{secrets.token_hex(4)}.xml"
+        filename = f"betalning_{execution_date.isoformat()}_{secrets.token_hex(4)}.xml"
         pf = PaymentFile(
             filename=filename,
-            payment_date=payment_date,
+            payment_date=execution_date,
             total_amount=total,
             invoice_count=len(selected),
             status="generated",

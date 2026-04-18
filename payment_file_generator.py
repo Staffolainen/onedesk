@@ -146,11 +146,17 @@ def _add_pmt_inf(
     debtor_bban: str,
     debtor_bic: str,
     is_bg_pg: bool,
-    payment_date: _date,
 ) -> None:
-    """Append one PmtInf block. ReqdExctnDt is the explicitly chosen payment_date."""
+    """Append one PmtInf block. Payment date is derived per invoice from due_date."""
     n = len(invoices)
     ctrl = _fmt_amount(sum(float(i.amount_incl_vat or 0) for i in invoices))
+
+    # Use the earliest payment date across invoices as the block-level date
+    pay_dates = []
+    for inv in invoices:
+        due = getattr(inv, "due_date", None) or _date.today()
+        pay_dates.append(prev_banking_day(due))
+    block_pay_date = min(pay_dates).isoformat()
 
     pmt_inf = _sub(cstmr, "PmtInf")
     _sub(pmt_inf, "PmtInfId", pmt_inf_id)
@@ -162,7 +168,7 @@ def _add_pmt_inf(
     _sub(_sub(pmt_tp_inf, "SvcLvl"), "Cd", "NURG")
     _sub(_sub(pmt_tp_inf, "CtgyPurp"), "Cd", "SUPP")
 
-    _sub(pmt_inf, "ReqdExctnDt", payment_date.isoformat())
+    _sub(pmt_inf, "ReqdExctnDt", block_pay_date)
 
     # Debtor
     _sub(_sub(pmt_inf, "Dbtr"), "Nm", company_name)
@@ -230,16 +236,30 @@ def _add_pmt_inf(
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+def get_execution_date(invoices: list) -> _date:
+    """
+    Return the earliest ReqdExctnDt across all invoices — the same date the
+    pain.001 will use for the earliest PmtInf block. Use this to store on
+    PaymentFile so the Fortnox voucher gets the correct date.
+    """
+    dates = []
+    for inv in invoices:
+        due = getattr(inv, "due_date", None) or _date.today()
+        dates.append(prev_banking_day(due))
+    return min(dates) if dates else _date.today()
+
+
 def generate_pain001(
     invoices: list,
-    payment_date: _date,
+    payment_date: _date,   # used only for message ID; actual dates derived from due_date
     config: dict,
 ) -> bytes:
     """
     Generate an ISO 20022 pain.001.001.03 XML payment file.
 
-    ReqdExctnDt is set to payment_date for all PmtInf blocks, so the XML,
-    the PaymentFile record, and the Fortnox voucher all share the same date.
+    ReqdExctnDt per PmtInf block = last banking day before the earliest due_date
+    in that block. Use get_execution_date(invoices) to get the overall earliest
+    date for storing on PaymentFile / Fortnox voucher.
     BG/PG and IBAN invoices are placed in separate PmtInf blocks.
 
     Returns UTF-8 encoded XML bytes.
@@ -285,7 +305,6 @@ def generate_pain001(
             debtor_bban=debtor_bban,
             debtor_bic=debtor_bic,
             is_bg_pg=True,
-            payment_date=payment_date,
         )
 
     if iban_invs:
@@ -296,7 +315,6 @@ def generate_pain001(
             debtor_bban=debtor_bban,
             debtor_bic=debtor_bic,
             is_bg_pg=False,
-            payment_date=payment_date,
         )
 
     xml_str = ET.tostring(root, encoding="unicode", xml_declaration=False)
