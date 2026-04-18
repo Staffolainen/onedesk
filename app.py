@@ -2671,32 +2671,44 @@ def init_db():
                 db.session.add(VoucherTemplate(**d))
         db.session.commit()
 
-        # Seed default expense categories if none exist
+        # Seed default expense categories — upsert by name so existing DBs get the full list
         from models import ExpenseCategory, SupplierCategory
-        if not ExpenseCategory.query.first():
-            default_cats = [
-                ExpenseCategory(name="Resekostnader att vidarefakturera", debit_account="4010", sort_order=1),
-                ExpenseCategory(name="Personalrepresentation ej avdragsgill", debit_account="7632", sort_order=2),
-                ExpenseCategory(name="Diverse inköp", debit_account="5410", sort_order=3),
-                ExpenseCategory(name="Reparation och underhåll av personbilar", debit_account="5613", sort_order=4),
-            ]
-            for cat in default_cats:
-                db.session.add(cat)
-            db.session.commit()
+        _default_expense_cats = [
+            ("Resekostnader att vidarefakturera",           "4010",  1),
+            ("IT tjänster",                                  "6540",  2),
+            ("Bankkostnader",                                "6570",  3),
+            ("Reparation och underhåll av personbilar",      "5613",  4),
+            ("Programvaror",                                 "5420",  5),
+            ("Förbrukningsinventarier",                      "5410",  6),
+            ("Förvaltnings- och kreditförsäkringsavgifter",  "7470",  7),
+            ("Övriga personalkostnader",                     "7690",  8),
+            ("Extern representation",                        "6071",  9),
+            ("Personalrepresentation ej avdragsgill",        "7632", 10),
+            ("Kontorsmaterial och trycksaker",               "6110", 11),
+            ("Böcker, tidskrifter och kurser",               "6420", 12),
+        ]
+        for name, account, order in _default_expense_cats:
+            if not ExpenseCategory.query.filter_by(name=name).first():
+                db.session.add(ExpenseCategory(name=name, debit_account=account, sort_order=order))
+        db.session.commit()
 
-        # Seed default supplier categories if none exist
-        if not SupplierCategory.query.first():
-            default_sup_cats = [
-                SupplierCategory(name="IT-tjänster och programvaror", debit_account="6540", sort_order=1),
-                SupplierCategory(name="Underkonsulter", debit_account="4010", sort_order=2),
-                SupplierCategory(name="Lokalhyra", debit_account="5010", sort_order=3),
-                SupplierCategory(name="Telekommunikation", debit_account="6250", sort_order=4),
-                SupplierCategory(name="Kontorsmaterial och trycksaker", debit_account="6110", sort_order=5),
-                SupplierCategory(name="Böcker, tidskrifter och kurser", debit_account="6420", sort_order=6),
-            ]
-            for cat in default_sup_cats:
-                db.session.add(cat)
-            db.session.commit()
+        # Seed default supplier categories — upsert by name so existing DBs get the full list
+        _default_supplier_cats = [
+            ("Resekostnader att vidarefakturera",           "4010",  1),
+            ("Leasing av personbilar",                       "5615",  2),
+            ("Försäkring och skatt för personbilar",         "5612",  3),
+            ("Programvaror",                                 "5420",  4),
+            ("IT tjänster",                                  "6540",  5),
+            ("Telekommunikation",                            "6210",  6),
+            ("Företagsförsäkringar",                         "6310",  7),
+            ("Förvaltnings- och kreditförsäkringsavgifter",  "7470",  8),
+            ("Kontorsmaterial och trycksaker",               "6110",  9),
+            ("Böcker, tidskrifter och kurser",               "6420", 10),
+        ]
+        for name, account, order in _default_supplier_cats:
+            if not SupplierCategory.query.filter_by(name=name).first():
+                db.session.add(SupplierCategory(name=name, debit_account=account, sort_order=order))
+        db.session.commit()
 
 if __name__ == "__main__":
     init_db()
