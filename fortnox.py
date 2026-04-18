@@ -424,7 +424,7 @@ class FortnoxClient:
         from datetime import date as _date
         from models import db, SupplierInvoice
         if not payment_date:
-            payment_date = _date.today()
+            raise Exception("Inget betalningsdatum på betalnngsfilen / Payment file has no payment date.")
         fy_id = self.get_financial_year_id(payment_date)
         if not fy_id:
             raise Exception(f"No financial year found in Fortnox for date {payment_date}.")

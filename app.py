@@ -2225,6 +2225,11 @@ def payment_file_confirm(pf_id):
     _audit("payment_file_confirmed", f"pf_id={pf_id} file={pf.filename} invoices={pf.invoice_count} total={pf.total_amount}")
 
     # Post payment voucher: 2440 → 1930 for all invoices in this payment file
+    # Voucher must be dated on the bank execution date, not the confirmation date.
+    if not pf.payment_date:
+        flash("Betalningsfilen saknar betalningsdatum — Fortnox-bokföring hoppades över / "
+              "Payment file has no payment date — Fortnox posting skipped", "warning")
+        return redirect(url_for("supplier_invoices_index"))
     try:
         fortnox = FortnoxClient(app.config)
         invoice_ids = [inv.id for inv in pf.supplier_invoices]
