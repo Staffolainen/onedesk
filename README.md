@@ -30,19 +30,78 @@ cp .env.example .env
 
 Edit `.env`:
 
+**App**
+
 | Variable | Description |
 |---|---|
-| `SECRET_KEY` | Long random string for Flask sessions |
-| `ADMIN_PASSWORD` | Your login password |
-| `COMPANY_NAME` | Your company name (appears on invoices) |
-| `COMPANY_ORG_NR` | Swedish org number |
-| `COMPANY_BANKGIRO` | Bankgiro for payment info |
-| `COMPANY_VAT_NR` | VAT number (Momsreg.nr) |
-| `ANTHROPIC_API_KEY` | From console.anthropic.com (for receipt OCR) |
-| `SMTP_HOST` / `SMTP_USER` / `SMTP_PASSWORD` | For sending invoices by email |
-| `FY_START_MONTH` | Fiscal year start month (default: 5 = May) |
+| `SECRET_KEY` | Long random string for Flask sessions (min 32 chars) |
+| `ADMIN_PASSWORD` | Local admin login password |
+| `ADMIN_EMAIL` | Optional email for the admin account |
 | `FLASK_DEBUG` | Set to `1` for development only |
 | `SESSION_COOKIE_SECURE` | Set to `1` when running behind HTTPS |
+| `DATABASE_URL` | SQLite path (default: `sqlite:///onedesk.db`) |
+
+**Company**
+
+| Variable | Description |
+|---|---|
+| `COMPANY_NAME` | Company name (appears on invoices) |
+| `COMPANY_ORG_NR` | Swedish org number |
+| `COMPANY_ADDRESS` | Street address (invoices) |
+| `COMPANY_EMAIL` | Company email (invoices) |
+| `COMPANY_PHONE` | Company phone (invoices) |
+| `COMPANY_BANKGIRO` | Bankgiro for payment info on invoices |
+| `COMPANY_BBAN` | Clearing+account digits for pain.001, e.g. `6501929223888` |
+| `COMPANY_IBAN` | Optional IBAN fallback |
+| `COMPANY_BIC` | Bank BIC (default: `HANDSESS` for Handelsbanken) |
+| `COMPANY_VAT_NR` | VAT number (Momsreg.nr) |
+| `COMPANY_LOGO_PATH` | Path to logo (default: `static/img/logo.png`) |
+| `COMPANY_REFERENCE` | "Vår referens" on invoices |
+| `COMPANY_CC_MAIL_ON_INVOICING` | Email always CC'd on outgoing invoice emails |
+
+**Access control**
+
+| Variable | Description |
+|---|---|
+| `ALLOWED_EMAIL_DOMAINS` | Comma-separated domains allowed for Azure AD auto-login (empty = allow all) |
+
+**Fortnox**
+
+| Variable | Description |
+|---|---|
+| `FORTNOX_CLIENT_ID` | OAuth app client ID from Fortnox developer portal |
+| `FORTNOX_CLIENT_SECRET` | OAuth app client secret |
+| `FORTNOX_REDIRECT_URI` | OAuth callback URL (must match Fortnox app config) |
+| `FORTNOX_INBOX_EMAIL` | Fortnox e-archive inbox address for PDF delivery |
+
+> OAuth tokens are stored encrypted in the database after the OAuth flow — not set here.
+
+**OCR**
+
+| Variable | Description |
+|---|---|
+| `ANTHROPIC_API_KEY` | From console.anthropic.com (for receipt OCR via Claude Vision) |
+| `OLLAMA_MODEL` | Local model name, e.g. `llama3.2-vision` (leave blank to use Anthropic) |
+| `OLLAMA_BASE_URL` | Ollama base URL (default: `http://localhost:11434/v1`) |
+
+**Email (SMTP)**
+
+| Variable | Description |
+|---|---|
+| `SMTP_HOST` | SMTP server hostname |
+| `SMTP_PORT` | SMTP port (default: `587`) |
+| `SMTP_USER` | SMTP login username |
+| `SMTP_PASSWORD` | SMTP login password |
+| `SMTP_FROM` | From address on sent emails |
+
+**Invoice settings**
+
+| Variable | Description |
+|---|---|
+| `INVOICE_PAYMENT_DAYS` | Default payment terms in days (default: `30`) |
+| `DEFAULT_HOURLY_RATE` | Fallback hourly rate (default: `1500`) |
+| `DEFAULT_CURRENCY` | Invoice currency (default: `SEK`) |
+| `FY_START_MONTH` | Fiscal year start month (default: `5` = May) |
 
 ### 3. Add your logo
 
@@ -186,19 +245,31 @@ Set each individually to avoid shell expansion issues:
 ```bash
 az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings SECRET_KEY="<openssl rand -hex 32 output>"
 az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings ADMIN_PASSWORD="<your-password>"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings ADMIN_EMAIL="<admin-email>"
 az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings FLASK_DEBUG="0"
-az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings SESSION_COOKIE_SECURE="0"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings SESSION_COOKIE_SECURE="1"
 az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings DATABASE_URL="sqlite:////app/instance/onedesk.db"
 az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings COMPANY_NAME="<your company>"
 az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings COMPANY_ORG_NR="<org nr>"
-az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings COMPANY_BANKGIRO="<bankgiro>"
-az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings COMPANY_VAT_NR="<vat nr>"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings COMPANY_ADDRESS="<address>"
 az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings COMPANY_EMAIL="<email>"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings COMPANY_PHONE="<phone>"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings COMPANY_BANKGIRO="<bankgiro>"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings COMPANY_BBAN="<clearing+account>"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings COMPANY_BIC="HANDSESS"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings COMPANY_VAT_NR="<vat nr>"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings COMPANY_REFERENCE="<name>"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings COMPANY_CC_MAIL_ON_INVOICING="<email>"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings ALLOWED_EMAIL_DOMAINS="<domain.com>"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings FORTNOX_CLIENT_ID="<client id>"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings FORTNOX_CLIENT_SECRET="<client secret>"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings FORTNOX_REDIRECT_URI="https://onedesk-app.azurewebsites.net/fortnox/callback"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings FORTNOX_INBOX_EMAIL="<fortnox inbox email>"
 az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings ANTHROPIC_API_KEY="<key>"
-az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings SMTP_HOST="smtp.gmail.com"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings SMTP_HOST="<smtp host>"
 az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings SMTP_PORT="587"
-az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings SMTP_USER="<gmail>"
-az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings SMTP_PASSWORD="<gmail app password>"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings SMTP_USER="<smtp user>"
+az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings SMTP_PASSWORD="<smtp password>"
 az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings SMTP_FROM="<from email>"
 az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings FY_START_MONTH="5"
 az webapp config appsettings set --name onedesk-app --resource-group onedesk-rg --settings WEBSITES_PORT="5000"
@@ -538,20 +609,56 @@ Resource Group: onedesk-rg (swedencentral)
 ### Environment variables (App Settings)
 
 ```
-SECRET_KEY                (generated, min 32 chars)
-ADMIN_PASSWORD            (strong password)
-FLASK_DEBUG               0
-SESSION_COOKIE_SECURE     1
-DATABASE_URL              sqlite:////app/instance/onedesk.db
+# App
+SECRET_KEY                        (generated, min 32 chars)
+ADMIN_PASSWORD                    (strong password)
+ADMIN_EMAIL
+FLASK_DEBUG                       0
+SESSION_COOKIE_SECURE             1
+DATABASE_URL                      sqlite:////app/instance/onedesk.db
+WEBSITES_PORT                     5000
+
+# Company
 COMPANY_NAME
 COMPANY_ORG_NR
-COMPANY_BANKGIRO
-COMPANY_VAT_NR
+COMPANY_ADDRESS
 COMPANY_EMAIL
+COMPANY_PHONE
+COMPANY_BANKGIRO
+COMPANY_BBAN                      (clearing+account for pain.001)
+COMPANY_IBAN
+COMPANY_BIC                       HANDSESS
+COMPANY_VAT_NR
+COMPANY_LOGO_PATH                 static/img/logo.png
+COMPANY_REFERENCE
+COMPANY_CC_MAIL_ON_INVOICING      (always-CC on invoice emails)
+
+# Access control
+ALLOWED_EMAIL_DOMAINS             (comma-separated, empty = allow all)
+
+# Fortnox
+FORTNOX_CLIENT_ID
+FORTNOX_CLIENT_SECRET
+FORTNOX_REDIRECT_URI              https://<your-app>.azurewebsites.net/fortnox/callback
+FORTNOX_INBOX_EMAIL
+
+# OCR
 ANTHROPIC_API_KEY
-SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASSWORD / SMTP_FROM
-FY_START_MONTH            5
-WEBSITES_PORT             5000
+OLLAMA_MODEL                      (leave blank to use Anthropic)
+OLLAMA_BASE_URL                   http://localhost:11434/v1
+
+# Email
+SMTP_HOST
+SMTP_PORT                         587
+SMTP_USER
+SMTP_PASSWORD
+SMTP_FROM
+
+# Invoice settings
+INVOICE_PAYMENT_DAYS              30
+DEFAULT_HOURLY_RATE               1500
+DEFAULT_CURRENCY                  SEK
+FY_START_MONTH                    5
 ```
 
 ### Deploy update
