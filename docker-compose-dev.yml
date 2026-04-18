@@ -1,10 +1,13 @@
 services:
-  onedesk:
-    build: .
+  onedesk-dev:
+    build:
+      context: .
+      args:
+        BUILD_TIME: ${BUILD_TIME:-unknown}
     ports:
-      - "5000:5000"
+      - "5002:5000"
     env_file:
-      - .env
+      - .env.dev
     volumes:
       - db_data:/app/instance
       - uploads:/app/static/uploads

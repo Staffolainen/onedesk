@@ -1,6 +1,26 @@
+import os
+import base64
+import hashlib
 from datetime import datetime, date
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import UserMixin
+
+def _fernet():
+    from cryptography.fernet import Fernet
+    secret = os.environ.get("SECRET_KEY", "dev-secret-change-me")
+    key = base64.urlsafe_b64encode(hashlib.sha256(secret.encode()).digest())
+    return Fernet(key)
+
+_ENCRYPTED_KEYS = {"fortnox_access_token", "fortnox_refresh_token"}
+
+def _encrypt(value: str) -> str:
+    return _fernet().encrypt(value.encode()).decode()
+
+def _decrypt(value: str) -> str:
+    try:
+        return _fernet().decrypt(value.encode()).decode()
+    except Exception:
+        return value
 
 
 def fiscal_year(d, start_month=5):
@@ -51,10 +71,16 @@ class Settings(db.Model):
     @classmethod
     def get(cls, key, default=None):
         row = cls.query.filter_by(key=key).first()
-        return row.value if row else default
+        if row is None:
+            return default
+        if key in _ENCRYPTED_KEYS and row.value:
+            return _decrypt(row.value)
+        return row.value
 
     @classmethod
     def set(cls, key, value):
+        if key in _ENCRYPTED_KEYS and value:
+            value = _encrypt(value)
         row = cls.query.filter_by(key=key).first()
         if row:
             row.value = value
@@ -130,6 +156,7 @@ class Project(db.Model):
     active = db.Column(db.Boolean, default=True)
     accumulated_cost = db.Column(db.Float, default=0.0)  # pre-system historical cost
     invoice_cc_email = db.Column(db.String(200))  # CC on invoice emails (e.g. client PM)
+    expense_markup_pct = db.Column(db.Float, default=10.0)  # markup on vidarefakturerade kostnader
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     @classmethod
@@ -409,17 +436,15 @@ class SupplierInvoice(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     supplier_name = db.Column(db.String(200))
     supplier_org_nr = db.Column(db.String(20))
-    invoice_number = db.Column(db.String(100))
     invoice_date = db.Column(db.Date)
     due_date = db.Column(db.Date)
     amount_excl_vat = db.Column(db.Float, default=0.0)
     vat_amount = db.Column(db.Float, default=0.0)
     amount_incl_vat = db.Column(db.Float, default=0.0)
     currency = db.Column(db.String(10), default='SEK')
-    payment_ref = db.Column(db.String(100))   # OCR/reference number
-    bankgiro = db.Column(db.String(20))
-    plusgiro = db.Column(db.String(20))
-    iban = db.Column(db.String(50))
+    payment_ref          = db.Column(db.String(100))  # OCR/reference number
+    payment_account      = db.Column(db.String(100))  # BG/PG/IBAN account number
+    payment_account_type = db.Column(db.String(10))   # 'bg', 'pg', 'iban'
     account_code = db.Column(db.String(10))
     supplier_category_id = db.Column(db.Integer, db.ForeignKey('supplier_category.id'), nullable=True)
     supplier_category = db.relationship('SupplierCategory', lazy=True)
@@ -440,11 +465,7 @@ class SupplierInvoice(db.Model):
 
     @property
     def payment_destination(self):
-        """Return the primary payment destination (BG > PG > IBAN)."""
-        if self.bankgiro:
-            return f"BG {self.bankgiro}"
-        if self.plusgiro:
-            return f"PG {self.plusgiro}"
-        if self.iban:
-            return f"IBAN {self.iban}"
+        if self.payment_account and self.payment_account_type:
+            label = {"bg": "BG", "pg": "PG", "iban": "IBAN"}.get(self.payment_account_type, "")
+            return f"{label} {self.payment_account}".strip()
         return "—"

@@ -39,20 +39,15 @@ class FortnoxClient:
 
     def _request(self, method, path, **kwargs):
         url = f"{self.BASE_URL}{path}"
-        logger.info("Fortnox API — %s %s kwargs=%s", method, url,
-                     {k: v for k, v in kwargs.items() if k != "json"})
-        if "json" in kwargs:
-            logger.info("Fortnox API — request body: %s", kwargs["json"])
+        logger.debug("Fortnox API — %s %s", method, url)
         resp = requests.request(method, url, headers=self._headers(), **kwargs)
-        logger.info("Fortnox API — response status=%s body=%s", resp.status_code, resp.text)
+        logger.debug("Fortnox API — %s %s → %s", method, url, resp.status_code)
         if resp.status_code == 401:
             logger.info("Fortnox API — 401, attempting token refresh")
             self._refresh_token()
             resp = requests.request(method, url, headers=self._headers(), **kwargs)
-            logger.info("Fortnox API — retry response status=%s body=%s",
-                         resp.status_code, resp.text)
+            logger.debug("Fortnox API — retry %s %s → %s", method, url, resp.status_code)
         if not resp.ok:
-            # Extract Fortnox error message from JSON body if available
             detail = ""
             try:
                 err = resp.json()
@@ -77,8 +72,7 @@ class FortnoxClient:
             "Authorization": f"Basic {credentials}",
             "Content-Type": "application/x-www-form-urlencoded",
         })
-        logger.info("Fortnox refresh_token response — status=%s body=%s",
-                     resp.status_code, resp.text)
+        logger.debug("Fortnox refresh_token — status=%s", resp.status_code)
         resp.raise_for_status()
         data = resp.json()
         Settings.set("fortnox_access_token", data["access_token"])
@@ -246,7 +240,7 @@ class FortnoxClient:
         voucher = result.get("Voucher", {})
         voucher_nr = voucher.get("VoucherNumber")
         voucher_series = voucher.get("VoucherSeries", "B")
-        voucher_ref = f"{voucher_series}{voucher_nr}" if voucher_nr else None
+        voucher_ref = f"{voucher_date.year}-{voucher_series}{voucher_nr}" if voucher_nr else None
         logger.info("Fortnox voucher created — ref=%s", voucher_ref)
 
         # NOTE: PDF attachment to Fortnox vouchers requires Arkiv + file connection licenses
@@ -277,13 +271,17 @@ class FortnoxClient:
                 "Unit": "tim",
             })
 
-        # Expense rows
+        # Expense rows — apply project markup and always bill at 25% VAT
+        exp_markup_pct = (invoice.project.expense_markup_pct or 10.0) if invoice.project else 10.0
+        markup_factor = 1 + exp_markup_pct / 100
         for exp in invoice.expenses:
+            marked_up = round(float(exp.amount_excl_vat) * markup_factor, 2)
+            detail = exp.description or exp.merchant or "Utlägg"
             rows.append({
-                "Description": exp.description or exp.merchant or "Utlägg",
+                "Description": f"Utlägg (+{int(exp_markup_pct)}%) – {detail}",
                 "DeliveredQuantity": "1",
-                "Price": str(exp.amount_excl_vat),
-                "VAT": str(int(exp.vat_rate)),
+                "Price": str(marked_up),
+                "VAT": "25",
             })
 
         fy_id = self.get_financial_year_id(invoice.issue_date)
@@ -303,9 +301,6 @@ class FortnoxClient:
         result = self._request("POST", "/invoices", json=payload)
         fortnox_nr = result["Invoice"]["DocumentNumber"]
 
-        # Send from Fortnox too (triggers their email/e-invoice flow)
-        self._request("PUT", f"/invoices/{fortnox_nr}/externalprint")
-
         return result
 
     # ── Expenses / Vouchers ───────────────────────────────────────────────────
@@ -323,6 +318,7 @@ class FortnoxClient:
 
         # Credit account: 1930 company card, 2893 personal card
         credit_account = 2893 if expense.paid_by == "personal" else 1930
+        vat_account = 2641  # Debiterad ingående moms
 
         rows = [
             {
@@ -355,7 +351,7 @@ class FortnoxClient:
         voucher = result.get("Voucher", {})
         voucher_nr = voucher.get("VoucherNumber")
         voucher_series = voucher.get("VoucherSeries", "A")
-        voucher_ref = f"{voucher_series}{voucher_nr}" if voucher_nr else None
+        voucher_ref = f"{expense.expense_date.year}-{voucher_series}{voucher_nr}" if voucher_nr else None
         logger.info("Fortnox expense voucher created — ref=%s", voucher_ref)
 
         from models import db
@@ -399,7 +395,7 @@ class FortnoxClient:
             "Credit": round(float(inv.amount_incl_vat or 0), 2),
         })
 
-        description = f"{inv.supplier_name or 'Leverantör'} {inv.invoice_number or ''}".strip()
+        description = f"{inv.supplier_name or 'Leverantör'} {inv.payment_ref or ''}".strip()
         voucher_data = {
             "Description": description[:200],
             "TransactionDate": voucher_date.isoformat(),
@@ -411,7 +407,7 @@ class FortnoxClient:
         voucher = result.get("Voucher", {})
         voucher_nr = voucher.get("VoucherNumber")
         voucher_series = voucher.get("VoucherSeries", "A")
-        voucher_ref = f"{voucher_series}{voucher_nr}" if voucher_nr else None
+        voucher_ref = f"{voucher_date.year}-{voucher_series}{voucher_nr}" if voucher_nr else None
         logger.info("Fortnox supplier invoice voucher created — ref=%s", voucher_ref)
 
         from models import db
@@ -449,10 +445,10 @@ class FortnoxClient:
                 "Account": 2440,
                 "Debit": amount,
                 "Credit": 0,
-                "TransactionInformation": f"{inv.supplier_name or ''} {inv.invoice_number or ''}".strip()[:200],
+                "TransactionInformation": f"{inv.supplier_name or ''} {inv.payment_ref or ''}".strip()[:200],
             })
             total += amount
-            descriptions.append(inv.supplier_name or inv.invoice_number or "")
+            descriptions.append(inv.supplier_name or inv.payment_ref or "")
 
         if not rows:
             raise Exception("Inga fakturor med belopp att bokföra / No invoices with amount to post.")
@@ -476,7 +472,7 @@ class FortnoxClient:
         voucher = result.get("Voucher", {})
         voucher_nr = voucher.get("VoucherNumber")
         voucher_series = voucher.get("VoucherSeries", "A")
-        voucher_ref = f"{voucher_series}{voucher_nr}" if voucher_nr else None
+        voucher_ref = f"{payment_date.year}-{voucher_series}{voucher_nr}" if voucher_nr else None
         logger.info("Fortnox payment voucher created — ref=%s total=%.2f", voucher_ref, total)
         return voucher_ref
 
@@ -506,7 +502,7 @@ class FortnoxClient:
         voucher = result.get("Voucher", {})
         voucher_nr = voucher.get("VoucherNumber")
         voucher_series = voucher.get("VoucherSeries", series)
-        voucher_ref = f"{voucher_series}{voucher_nr}" if voucher_nr else None
+        voucher_ref = f"{voucher_date.year}-{voucher_series}{voucher_nr}" if voucher_nr else None
         logger.info("Fortnox supplier voucher created — ref=%s", voucher_ref)
 
         # TODO: attach pdf_path via Fortnox Archive API (same limitation as outgoing voucher)

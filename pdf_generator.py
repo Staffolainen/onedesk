@@ -316,13 +316,17 @@ def _build_invoice_story(invoice, ctx, s):
 
     if invoice.expenses:
         expense_sec_rows.append(len(rows))
-        rows.append([tdb("Utlägg" if sv else "Expenses"), "", "", "", "", "", ""])
+        exp_markup_pct = (invoice.project.expense_markup_pct or 10.0) if invoice.project else 10.0
+        exp_markup = 1 + exp_markup_pct / 100
+        markup_label = f"Utlägg (+{int(exp_markup_pct)}%)" if sv else f"Expenses (+{int(exp_markup_pct)}%)"
+        rows.append([tdb(markup_label), "", "", "", "", "", ""])
         for exp in invoice.expenses:
-            vat_kr = exp.amount_excl_vat * (exp.vat_rate / 100)
+            price  = round(exp.amount_excl_vat * exp_markup, 2)
+            vat_kr = round(price * 0.25, 2)
             desc   = str(exp.expense_date) + "   " + (exp.description or exp.merchant or "Utlägg")
             rows.append([td(desc), td("1"), td("st" if sv else "pcs"),
-                         td(sek(exp.amount_excl_vat)), td(f"{int(exp.vat_rate)}%"),
-                         td(sek(vat_kr)), td(sek(exp.amount_excl_vat))])
+                         td(sek(price)), td("25%"),
+                         td(sek(vat_kr)), td(sek(price))])
 
     if invoice.mileage_entries:
         expense_sec_rows.append(len(rows))
@@ -339,7 +343,7 @@ def _build_invoice_story(invoice, ctx, s):
             mile_groups[key]["km"] += m.km
         for key in sorted(mile_groups.keys()):
             g2 = mile_groups[key]
-            desc   = f"{g2['year']} {month_names[g2['month'] - 1]}  {g2['project_name']}"
+            desc   = f"{g2['year']} {mnames[g2['month'] - 1]}  {g2['project_name']}"
             amount = g2["km"] * g2["km_rate"]
             vat_kr = amount * 0.25
             rows.append([td(desc), td(f"{g2['km']:.0f}"), td("km"),

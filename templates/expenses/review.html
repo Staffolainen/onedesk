@@ -52,6 +52,34 @@
     </div>
   </div>
 
+  {# ── OCR debug panel (always visible for troubleshooting) ── #}
+  <details open style="margin-bottom:16px;">
+    <summary style="cursor:pointer;font-size:12px;color:var(--muted);padding:6px 0;user-select:none;">
+      🔍 {{ "OCR-debug" if g.lang == "sv" else "OCR debug" }}
+    </summary>
+    <div style="margin-top:8px;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:12px;">
+      <div style="font-size:10px;font-family:var(--mono);text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin-bottom:8px;">
+        {{ "Extraherade fält" if g.lang == "sv" else "Extracted fields" }}
+      </div>
+      <div style="display:grid;grid-template-columns:max-content 1fr;gap:4px 16px;font-size:12px;margin-bottom:12px;">
+        {% for key, val in ocr.items() if key != "raw" %}
+        <span style="color:var(--muted);font-family:var(--mono);font-size:11px;">{{ key }}</span>
+        <span style="color:{% if val is none %}var(--muted){% elif key == 'error' and val %}var(--accent){% else %}var(--text){% endif %};">
+          {{ val if val is not none else "null" }}
+        </span>
+        {% endfor %}
+      </div>
+      {% if ocr.raw %}
+      <div style="font-size:10px;font-family:var(--mono);text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin-bottom:6px;">
+        {{ "Råtext (pypdf)" if g.lang == "sv" else "Raw text (pypdf)" }}
+      </div>
+      <pre style="font-size:11px;white-space:pre-wrap;word-break:break-word;color:var(--text);margin:0;max-height:500px;overflow-y:auto;line-height:1.5;">{{ ocr.raw }}</pre>
+      {% else %}
+      <div style="font-size:11px;color:var(--muted);font-family:var(--mono);">{{ "Ingen råtext tillgänglig" if g.lang == "sv" else "No raw text available" }}</div>
+      {% endif %}
+    </div>
+  </details>
+
   <!-- Approval form -->
   <div class="card">
     <div class="card-title">{{ "Bekräfta detaljer" if g.lang == "sv" else "Confirm Details" }}</div>
@@ -60,7 +88,7 @@
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="grid-2">
         <div class="form-group">
-          <label class="form-label">{{ "Butik / Leverantör" if g.lang == "sv" else "Merchant / Supplier" }}</label>
+          <label class="form-label">{{ "Leverantör / Butik" if g.lang == "sv" else "Supplier / Merchant" }}</label>
           <input type="text" name="merchant" class="form-control" value="{{ ocr.merchant or '' }}">
         </div>
         <div class="form-group">
@@ -70,10 +98,12 @@
         </div>
       </div>
 
+      {% set _fname = pending.receipt_filename or '' %}
+      {% set _basename = _fname.split('_', 1)[1] if '_' in _fname else _fname %}
       <div class="form-group">
         <label class="form-label">{{ "Beskrivning" if g.lang == "sv" else "Description" }}</label>
         <input type="text" name="description" class="form-control"
-               value="{{ ocr.description or '' }}"
+               value="{{ ocr.description or _basename }}"
                placeholder="{{ 'Vad köptes?' if g.lang == 'sv' else 'What was purchased?' }}">
       </div>
 

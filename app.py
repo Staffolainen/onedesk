@@ -1,12 +1,32 @@
 import io
 import os
+import re
+import ssl
 import json
 import logging
 import smtplib
 import secrets
 import requests
+from logging.handlers import TimedRotatingFileHandler
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+# ── File logging (weekly rotation, 4-week retention) ─────────────────────────
+def _setup_file_logging():
+    log_dir = os.path.join(os.path.dirname(__file__), "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, "onedesk.log")
+    handler = TimedRotatingFileHandler(
+        log_file, when="W0", interval=1, backupCount=4, encoding="utf-8"
+    )
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    ))
+    handler.setLevel(logging.INFO)
+    logging.getLogger().addHandler(handler)
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+                    datefmt="%Y-%m-%d %H:%M:%S")
+_setup_file_logging()
 from datetime import datetime, date, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -49,14 +69,6 @@ login_manager.login_message = ""
 def load_user(user_id):
     return User.query.get(int(user_id))
 
-@app.after_request
-def set_security_headers(response):
-    # HSTS: tell browsers to use HTTPS for 1 year (only meaningful when served over HTTPS)
-    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "SAMEORIGIN"
-    return response
-
 import logging as _logging
 _audit_logger = _logging.getLogger("onedesk.audit")
 _audit_logger.setLevel(_logging.INFO)
@@ -70,7 +82,13 @@ _audit_handler.setFormatter(_logging.Formatter("%(asctime)s\t%(message)s"))
 _audit_logger.addHandler(_audit_handler)
 
 def _audit(action: str, detail: str = ""):
-    user = getattr(current_user, "username", "—") if current_user.is_authenticated else "anon"
+    if current_user.is_authenticated:
+        user = (getattr(current_user, "display_name", None)
+                or getattr(current_user, "email", None)
+                or getattr(current_user, "username", None)
+                or "—")
+    else:
+        user = "anon"
     _audit_logger.info(f"{user}\t{action}\t{detail}")
 
 def admin_required(f):
@@ -110,14 +128,14 @@ TRANSLATIONS = {
         "sup_dates": "Datum",
         "sup_invoice_date": "Fakturadatum",
         "sup_due_date": "Förfallodatum",
-        "sup_amounts": "Belopp",
+        "sup_amounts": "Fakturadetaljer",
         "sup_excl_vat": "Exkl. moms",
         "sup_vat": "Moms (SEK)",
-        "sup_incl_vat": "Inkl. moms",
+        "sup_incl_vat": "Att betala (inkl. moms)",
         "sup_payment": "Betalning",
         "sup_ocr": "OCR eller fakturanummer",
         "sup_bookkeeping": "Bokföring",
-        "sup_category": "Leverantörskategori",
+        "sup_category": "Motkonto bokföring",
         "sup_credit_hint": "Kredit: 2440 Leverantörsskulder",
         "sup_assignment": "Uppdrag (valfritt)",
         "sup_file": "Uppladdad fil",
@@ -126,12 +144,12 @@ TRANSLATIONS = {
         "sup_discard": "Kasta faktura",
         "sup_discard_confirm": "Ta bort fakturan?",
         "sup_pending": "Väntar på granskning",
-        "sup_backlog": "Betalningsbacklog",
+        "sup_backlog": "Kommande, ej utförda betalningar",
         "sup_payment_files": "Betalningsfiler",
-        "sup_recently_paid": "Senast betalda",
+        "sup_recently_paid": "Senast bokförda betalningar",
         "sup_review_btn": "Granska",
-        "sup_mark_paid": "Markera betald manuellt",
-        "sup_paid_btn": "Betald",
+        "sup_mark_paid": "Markera bokförd manuellt",
+        "sup_paid_btn": "Bokförd",
         "sup_overdue": "försenad",
         "sup_payment_run": "Betalkörning",
         "sup_select_invoices": "Välj fakturor att betala",
@@ -171,14 +189,14 @@ TRANSLATIONS = {
         "sup_dates": "Dates",
         "sup_invoice_date": "Invoice date",
         "sup_due_date": "Due date",
-        "sup_amounts": "Amounts",
+        "sup_amounts": "Invoice details",
         "sup_excl_vat": "Excl. VAT",
         "sup_vat": "VAT (SEK)",
-        "sup_incl_vat": "Incl. VAT",
+        "sup_incl_vat": "Amount to pay (incl. VAT)",
         "sup_payment": "Payment",
         "sup_ocr": "OCR or invoice number",
         "sup_bookkeeping": "Bookkeeping",
-        "sup_category": "Supplier category",
+        "sup_category": "Contra account",
         "sup_credit_hint": "Credit: 2440 Accounts payable",
         "sup_assignment": "Assignment (optional)",
         "sup_file": "Uploaded file",
@@ -187,12 +205,12 @@ TRANSLATIONS = {
         "sup_discard": "Discard invoice",
         "sup_discard_confirm": "Delete this invoice?",
         "sup_pending": "Pending review",
-        "sup_backlog": "Payment backlog",
+        "sup_backlog": "Upcoming, unpaid invoices",
         "sup_payment_files": "Payment files",
-        "sup_recently_paid": "Recently paid",
+        "sup_recently_paid": "Recently booked payments",
         "sup_review_btn": "Review",
-        "sup_mark_paid": "Mark paid manually",
-        "sup_paid_btn": "Paid",
+        "sup_mark_paid": "Mark as booked manually",
+        "sup_paid_btn": "Booked",
         "sup_overdue": "overdue",
         "sup_payment_run": "Payment run",
         "sup_select_invoices": "Select invoices to pay",
@@ -218,6 +236,7 @@ def set_language():
     g.lang = session.get("lang", "sv")
     g.t = TRANSLATIONS.get(g.lang, TRANSLATIONS["sv"])
     g.config = app.config
+    g.build_time = os.getenv("BUILD_TIME", "dev")
 
 @app.before_request
 def ad_auto_login():
@@ -247,7 +266,16 @@ def ad_auto_login():
         )
         if email:
             email = email.lower()
+    except Exception as e:
+        app.logger.warning("AD auto-login failed to parse principal: %s", e)
+        return
 
+    allowed_domains = [d.strip() for d in app.config.get("ALLOWED_EMAIL_DOMAINS", "").split(",") if d.strip()]
+    if allowed_domains and email and email.split("@")[-1] not in allowed_domains:
+        app.logger.warning("AD auto-login rejected domain: %s", email)
+        abort(403)
+
+    try:
         user = None
         if ad_oid:
             user = User.query.filter_by(ad_oid=ad_oid).first()
@@ -279,6 +307,7 @@ def set_lang(lang):
 
 @app.after_request
 def set_security_headers(response):
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-XSS-Protection"] = "1; mode=block"
@@ -288,7 +317,8 @@ def set_security_headers(response):
         "script-src 'self' 'unsafe-inline'; "
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data:; "
-        "font-src 'self';"
+        "font-src 'self'; "
+        "frame-ancestors 'none';"
     )
     return response
 
@@ -315,6 +345,25 @@ def _safe_date(value):
         return datetime.strptime(value, "%Y-%m-%d").date() if value and value.strip() else None
     except (ValueError, TypeError):
         return None
+
+
+_PAYMENT_PATTERNS = {
+    "bg":   re.compile(r"^\d{3,4}-\d{4}$"),
+    "pg":   re.compile(r"^\d{1,7}-\d$"),
+    "iban": re.compile(r"^[A-Z]{2}\d{2}[A-Z0-9]{4,30}$"),
+}
+
+def _validate_payment_account(account_type, account):
+    pat = _PAYMENT_PATTERNS.get(account_type)
+    return pat and bool(pat.match(account.upper().replace(" ", "")))
+
+def _ocr_payment_account(ocr):
+    """Map OCR bankgiro/plusgiro/iban keys to the unified model fields."""
+    for key, typ in [("bankgiro", "bg"), ("plusgiro", "pg"), ("iban", "iban")]:
+        val = (ocr.get(key) or "").strip()
+        if val:
+            return {"payment_account": val, "payment_account_type": typ}
+    return {"payment_account": None, "payment_account_type": None}
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
@@ -548,6 +597,7 @@ def projects_new(client_id):
             end_date=_safe_date(request.form.get("end_date")),
             accumulated_cost=_safe_float(request.form.get("accumulated_cost"), 0),
             invoice_cc_email=request.form.get("invoice_cc_email", "").strip() or None,
+            expense_markup_pct=_safe_float(request.form.get("expense_markup_pct"), 10.0),
         )
         db.session.add(p)
         db.session.commit()
@@ -569,6 +619,7 @@ def projects_edit(project_id):
         p.active           = request.form.get("active") == "1"
         p.accumulated_cost = _safe_float(request.form.get("accumulated_cost"), 0)
         p.invoice_cc_email = request.form.get("invoice_cc_email", "").strip() or None
+        p.expense_markup_pct = _safe_float(request.form.get("expense_markup_pct"), 10.0)
         db.session.commit()
         flash("Uppdrag uppdaterat / Assignment updated", "success")
         return redirect(url_for("clients_list"))
@@ -967,6 +1018,7 @@ def expenses_index():
     return render_template("expenses/index.html", expenses=expenses, projects=projects, status_filter=status_filter)
 
 @app.route("/expenses/capture", methods=["GET", "POST"])
+@limiter.limit("10 per minute")
 @login_required
 def expenses_capture():
     """Mobile receipt capture page"""
@@ -1142,6 +1194,7 @@ def invoices_list():
     return render_template("invoices/index.html", invoices=invoices, today=date.today())
 
 @app.route("/invoices/new", methods=["GET", "POST"])
+@limiter.limit("20 per hour")
 @login_required
 def invoices_new():
     projects = (Project.query
@@ -1219,8 +1272,9 @@ def invoices_new():
                 MileageEntry.entry_date <= period_end,
             ).all())
 
+        markup_factor = 1 + (project.expense_markup_pct or 10.0) / 100
         time_subtotal = round(sum(e.hours * e.effective_rate for e in entries), 2)
-        expense_subtotal = round(sum(e.amount_excl_vat for e in expenses), 2)
+        expense_subtotal = round(sum(e.amount_excl_vat * markup_factor for e in expenses), 2)
         mileage_subtotal = round(sum(m.amount for m in mileage), 2)
         subtotal = time_subtotal + expense_subtotal + mileage_subtotal
         vat = round(subtotal * 0.25, 2)
@@ -1345,14 +1399,14 @@ def invoices_send(invoice_id):
             voucher = result.get("Voucher", {})
             voucher_nr = voucher.get("VoucherNumber")
             voucher_series = voucher.get("VoucherSeries", "B")
-            voucher_ref = f"{voucher_series}{voucher_nr}" if voucher_nr else None
+            fy_year = (inv.issue_date or date.today()).year
+            voucher_ref = f"{fy_year}-{voucher_series}{voucher_nr}" if voucher_nr else None
             if voucher_ref:
                 inv.fortnox_invoice_nr = voucher_ref
                 db.session.commit()
-                # Email PDF to Fortnox arkivplats inbox
                 if inv.pdf_filename:
                     pdf_path = os.path.join(app.root_path, "static", "uploads", inv.pdf_filename)
-                    attach_name = f"{voucher_ref}-{inv.pdf_filename}"
+                    attach_name = f"{voucher_ref}-{inv.invoice_number}.pdf"
                     _email_pdf_to_fortnox_inbox(pdf_path, attach_name, voucher_ref, app.config)
                 flash(f"Fortnox verifikat skapat: {voucher_ref} / Voucher created: {voucher_ref}", "success")
         except Exception as e:
@@ -1449,6 +1503,7 @@ def invoices_delete(invoice_id):
 # ── Fortnox OAuth ─────────────────────────────────────────────────────────────
 
 @app.route("/fortnox/sync-payments", methods=["POST"])
+@limiter.limit("5 per hour")
 @login_required
 @admin_required
 def fortnox_sync_payments():
@@ -1522,7 +1577,8 @@ def settings():
         fortnox_connected=fortnox_connected,
         users=users,
         expense_categories=expense_cats,
-        supplier_categories=supplier_cats)
+        supplier_categories=supplier_cats,
+        currencies=_get_currencies())
 
 # ── User management ───────────────────────────────────────────────────────────
 
@@ -1607,6 +1663,39 @@ def expense_categories():
         return redirect(url_for("expense_categories"))
     categories = ExpenseCategory.query.order_by(ExpenseCategory.sort_order, ExpenseCategory.name).all()
     return render_template("settings/expense_categories.html", categories=categories)
+
+
+def _get_currencies():
+    raw = Settings.get("invoice_currencies", "SEK,EUR")
+    return [c.strip().upper() for c in raw.split(",") if c.strip()]
+
+
+@app.route("/settings/currencies", methods=["GET", "POST"])
+@login_required
+@admin_required
+def settings_currencies():
+    if request.method == "POST":
+        action = request.form.get("action")
+        if action == "add":
+            code = request.form.get("code", "").strip().upper()[:3]
+            if code and code.isalpha():
+                codes = _get_currencies()
+                if code not in codes:
+                    codes.append(code)
+                Settings.set("invoice_currencies", ",".join(codes))
+        elif action == "delete":
+            code = request.form.get("code", "").strip().upper()
+            codes = [c for c in _get_currencies() if c != code]
+            Settings.set("invoice_currencies", ",".join(codes) or "SEK")
+        elif action == "set_default":
+            code = request.form.get("code", "").strip().upper()
+            codes = _get_currencies()
+            if code in codes:
+                codes.remove(code)
+                codes.insert(0, code)
+                Settings.set("invoice_currencies", ",".join(codes))
+        return redirect(url_for("settings_currencies"))
+    return render_template("settings/currencies.html", currencies=_get_currencies())
 
 
 @app.route("/settings/supplier-categories", methods=["GET", "POST"])
@@ -1786,6 +1875,21 @@ def settings_restore():
     return redirect(url_for("settings"))
 
 
+@app.route("/settings/log")
+@login_required
+@admin_required
+def settings_log():
+    """Return the current week's log file as plain text."""
+    log_path = os.path.join(app.root_path, "logs", "onedesk.log")
+    if not os.path.exists(log_path):
+        return "No log file yet.", 200, {"Content-Type": "text/plain; charset=utf-8"}
+    # Read last 2000 lines so the browser doesn't choke on huge files
+    with open(log_path, encoding="utf-8", errors="replace") as f:
+        lines = f.readlines()
+    tail = "".join(lines[-2000:])
+    return tail, 200, {"Content-Type": "text/plain; charset=utf-8"}
+
+
 # ── Supplier invoices ─────────────────────────────────────────────────────────
 
 SUPPLIER_UPLOAD_FOLDER_NAME = "supplier"
@@ -1812,6 +1916,7 @@ def supplier_invoices_index():
         pending=pending, backlog=backlog, paid=paid, payment_files=payment_files)
 
 @app.route("/supplier-invoices/upload", methods=["GET", "POST"])
+@limiter.limit("10 per minute")
 @login_required
 def supplier_invoices_upload():
     if request.method == "POST":
@@ -1831,12 +1936,16 @@ def supplier_invoices_upload():
 
         # OCR
         ocr = extract_supplier_invoice_data(save_path, app.config.get("ANTHROPIC_API_KEY", ""))
+        _log = logging.getLogger("supplier_invoice")
+        if ocr.get("error"):
+            _log.warning("OCR partial or failed for %s: %s", filename, ocr.get("error"))
+        else:
+            _log.info("OCR complete for %s — supplier=%s amount=%s", filename, ocr.get("supplier_name"), ocr.get("amount_incl_vat"))
 
         inv = SupplierInvoice(
             pdf_filename=filename,
             supplier_name=ocr.get("supplier_name"),
             supplier_org_nr=ocr.get("supplier_org_nr"),
-            invoice_number=ocr.get("invoice_number"),
             invoice_date=_safe_date(ocr.get("invoice_date")),
             due_date=_safe_date(ocr.get("due_date")),
             amount_excl_vat=_safe_float(ocr.get("amount_excl_vat")),
@@ -1844,9 +1953,7 @@ def supplier_invoices_upload():
             amount_incl_vat=_safe_float(ocr.get("amount_incl_vat")),
             currency=ocr.get("currency") or "SEK",
             payment_ref=ocr.get("payment_ref"),
-            bankgiro=ocr.get("bankgiro"),
-            plusgiro=ocr.get("plusgiro"),
-            iban=ocr.get("iban"),
+            **_ocr_payment_account(ocr),
             ocr_raw=json.dumps(ocr),
             status="pending",
         )
@@ -1863,6 +1970,7 @@ def supplier_invoices_review(invoice_id):
     inv = SupplierInvoice.query.get_or_404(invoice_id)
     projects = Project.query.filter_by(active=True).join(Client).order_by(Client.name).all()
     categories = SupplierCategory.query.filter_by(active=True).order_by(SupplierCategory.sort_order, SupplierCategory.name).all()
+    currencies = _get_currencies()
 
     if request.method == "POST":
         action = request.form.get("action", "save")
@@ -1877,43 +1985,82 @@ def supplier_invoices_review(invoice_id):
 
         inv.supplier_name = request.form.get("supplier_name", inv.supplier_name or "").strip()
         inv.supplier_org_nr = request.form.get("supplier_org_nr", "").strip()
-        inv.invoice_number = request.form.get("invoice_number", "").strip()
         inv.invoice_date = _safe_date(request.form.get("invoice_date"))
         inv.due_date = _safe_date(request.form.get("due_date"))
         amount_excl = _safe_float(request.form.get("amount_excl_vat"))
         vat_amt     = _safe_float(request.form.get("vat_amount"))
         amount_incl = _safe_float(request.form.get("amount_incl_vat"))
 
+        # Validate dates
+        if not inv.invoice_date:
+            flash("Fakturadatum krävs (YYYY-MM-DD) / Invoice date is required (YYYY-MM-DD)", "error")
+            ocr = json.loads(inv.ocr_raw) if inv.ocr_raw else {}
+            return render_template("supplier_invoices/review.html",
+                inv=inv, projects=projects, categories=categories, ocr=ocr, currencies=currencies)
+        if not inv.due_date:
+            flash("Förfallodatum krävs (YYYY-MM-DD) / Due date is required (YYYY-MM-DD)", "error")
+            ocr = json.loads(inv.ocr_raw) if inv.ocr_raw else {}
+            return render_template("supplier_invoices/review.html",
+                inv=inv, projects=projects, categories=categories, ocr=ocr, currencies=currencies)
+
         # Validate amounts
         if amount_incl <= 0:
             flash("Belopp inkl. moms måste vara större än noll / Amount incl. VAT must be greater than zero", "error")
             ocr = json.loads(inv.ocr_raw) if inv.ocr_raw else {}
             return render_template("supplier_invoices/review.html",
-                inv=inv, projects=projects, categories=categories, ocr=ocr)
+                inv=inv, projects=projects, categories=categories, ocr=ocr, currencies=currencies)
         if vat_amt < 0:
             flash("Momsbelopp kan inte vara negativt / VAT amount cannot be negative", "error")
             ocr = json.loads(inv.ocr_raw) if inv.ocr_raw else {}
             return render_template("supplier_invoices/review.html",
-                inv=inv, projects=projects, categories=categories, ocr=ocr)
+                inv=inv, projects=projects, categories=categories, ocr=ocr, currencies=currencies)
         expected_incl = round(amount_excl + vat_amt, 2)
         if abs(expected_incl - amount_incl) > 0.05:
+            diff = round(abs(expected_incl - amount_incl), 2)
             flash(
-                f"Beloppen stämmer inte: {amount_excl:.2f} + {vat_amt:.2f} moms ≠ {amount_incl:.2f} inkl. moms "
-                f"/ Amounts inconsistent: {amount_excl:.2f} + {vat_amt:.2f} VAT ≠ {amount_incl:.2f} incl. VAT",
+                f"Beloppen stämmer inte: {amount_excl:.2f} (exkl.) + {vat_amt:.2f} (moms) = {expected_incl:.2f}, "
+                f"men 'Att betala' är {amount_incl:.2f} (differens {diff:.2f}). Kontrollera beloppen mot fakturan. "
+                f"/ Amount mismatch: {amount_excl:.2f} (excl.) + {vat_amt:.2f} (VAT) = {expected_incl:.2f}, "
+                f"but 'Total to pay' is {amount_incl:.2f} (diff {diff:.2f}). Check the amounts against the invoice.",
                 "error"
             )
             ocr = json.loads(inv.ocr_raw) if inv.ocr_raw else {}
             return render_template("supplier_invoices/review.html",
-                inv=inv, projects=projects, categories=categories, ocr=ocr)
+                inv=inv, projects=projects, categories=categories, ocr=ocr, currencies=currencies)
 
-        inv.amount_excl_vat = amount_excl
-        inv.vat_amount = vat_amt
-        inv.amount_incl_vat = amount_incl
-        inv.currency = request.form.get("currency", "SEK")
-        inv.payment_ref = request.form.get("payment_ref", "").strip()
-        inv.bankgiro = request.form.get("bankgiro", "").strip()
-        inv.plusgiro = request.form.get("plusgiro", "").strip()
-        inv.iban = request.form.get("iban", "").strip()
+        payment_ref     = request.form.get("payment_ref", "").strip()
+        payment_type    = request.form.get("payment_type", "bg")
+        payment_account = request.form.get("payment_account", "").strip()
+
+        def _re_render(msg):
+            flash(msg, "error")
+            ocr = json.loads(inv.ocr_raw) if inv.ocr_raw else {}
+            return render_template("supplier_invoices/review.html",
+                inv=inv, projects=projects, categories=categories, ocr=ocr, currencies=currencies)
+
+        if not payment_ref:
+            return _re_render(
+                "OCR / betalningsreferens krävs / Payment reference is required"
+            )
+        if not payment_account:
+            return _re_render(
+                "Ange kontonummer (BG, PG eller IBAN) / "
+                "Payment account (BG, PG or IBAN) is required"
+            )
+        if not _validate_payment_account(payment_type, payment_account):
+            fmt = {"bg": "NNNN-NNNN", "pg": "NNNNNNN-N", "iban": "SE00NNNN…"}.get(payment_type, "")
+            return _re_render(
+                f"Ogiltigt kontoformat för {payment_type.upper()} (förväntat: {fmt}) / "
+                f"Invalid {payment_type.upper()} format (expected: {fmt})"
+            )
+
+        inv.amount_excl_vat      = amount_excl
+        inv.vat_amount           = vat_amt
+        inv.amount_incl_vat      = amount_incl
+        inv.currency             = request.form.get("currency", "SEK")
+        inv.payment_ref          = payment_ref
+        inv.payment_account      = payment_account
+        inv.payment_account_type = payment_type
         inv.supplier_category_id = _safe_int(request.form.get("supplier_category_id")) or None
         inv.vat_rate = _safe_float(request.form.get("vat_rate"), 25.0)
         inv.project_id = _safe_int(request.form.get("project_id")) or None
@@ -1921,10 +2068,15 @@ def supplier_invoices_review(invoice_id):
         db.session.commit()
 
         _audit("supplier_invoice_saved", f"invoice_id={invoice_id} supplier={inv.supplier_name} amount={inv.amount_incl_vat} {inv.currency}")
+        _slog = logging.getLogger("supplier_invoice")
+        _slog.info("Invoice saved — id=%s file=%s supplier=%s amount=%s %s ref=%s",
+                   invoice_id, inv.pdf_filename, inv.supplier_name,
+                   inv.amount_incl_vat, inv.currency, inv.payment_ref)
         flash("Faktura sparad / Invoice saved", "success")
         try:
             fortnox = FortnoxClient(app.config)
             voucher_ref = fortnox.create_supplier_invoice_voucher(inv)
+            _slog.info("Fortnox voucher created — ref=%s file=%s", voucher_ref, inv.pdf_filename)
             flash(f"Fortnox verifikat skapat: {voucher_ref} / Voucher created: {voucher_ref}", "success")
             if inv.pdf_filename and voucher_ref:
                 folder = _supplier_upload_folder()
@@ -1941,6 +2093,9 @@ def supplier_invoices_review(invoice_id):
                     db.session.commit()
                 _email_pdf_to_fortnox_inbox(new_path, new_filename, voucher_ref, app.config)
         except Exception as e:
+            logging.getLogger("supplier_invoice").error(
+                "Fortnox voucher failed — id=%s file=%s error=%s", invoice_id, inv.pdf_filename, e,
+                exc_info=True)
             flash(f"Fortnox-fel / Fortnox error: {e}", "warning")
             session["fortnox_preview"] = _build_supplier_voucher_preview(inv)
             session["fortnox_preview"]["back_url"] = url_for("supplier_invoices_index")
@@ -1951,7 +2106,7 @@ def supplier_invoices_review(invoice_id):
 
     ocr = json.loads(inv.ocr_raw) if inv.ocr_raw else {}
     return render_template("supplier_invoices/review.html",
-        inv=inv, projects=projects, categories=categories, ocr=ocr)
+        inv=inv, projects=projects, categories=categories, ocr=ocr, currencies=currencies)
 
 @app.route("/supplier-invoices/<int:invoice_id>/book", methods=["POST"])
 @login_required
@@ -1995,12 +2150,14 @@ def supplier_invoices_delete(invoice_id):
             os.remove(fp)
     db.session.delete(inv)
     db.session.commit()
+    _audit("supplier_invoice_deleted", f"invoice_id={invoice_id} supplier={inv.supplier_name}")
     flash("Borttagen / Deleted", "success")
     return redirect(url_for("supplier_invoices_index"))
 
 # ── Payment run ───────────────────────────────────────────────────────────────
 
 @app.route("/supplier-invoices/payment-run", methods=["GET", "POST"])
+@limiter.limit("5 per hour")
 @login_required
 def payment_run():
     backlog = SupplierInvoice.query.filter(
@@ -2090,7 +2247,7 @@ def payment_file_confirm(pf_id):
 @login_required
 def payment_file_download(pf_id):
     pf = PaymentFile.query.get_or_404(pf_id)
-    invs = [i for i in pf.supplier_invoices if i.bankgiro or i.plusgiro or i.iban]
+    invs = [i for i in pf.supplier_invoices if i.payment_account]
     xml_bytes = generate_pain001(invs, pf.payment_date, app.config)
     return send_file(
         io.BytesIO(xml_bytes),
@@ -2167,7 +2324,7 @@ def _build_supplier_voucher_preview(inv: SupplierInvoice) -> dict:
         debit_acc = inv.account_code
 
     vat_rate = float(inv.vat_rate or 0)
-    description = f"{inv.supplier_name or 'Leverantör'} {inv.invoice_number or ''}".strip()
+    description = f"{inv.supplier_name or 'Leverantör'} {inv.payment_ref or ''}".strip()
     rows = [
         {"Account": debit_acc, "Debit": inv.amount_excl_vat, "Credit": 0,
          "_label": "Kostnadskonto / Expense account"},
@@ -2296,7 +2453,7 @@ def _email_pdf_to_fortnox_inbox(pdf_path, filename, voucher_ref, config):
         msg.attach(part)
     try:
         with smtplib.SMTP(config["SMTP_HOST"], config["SMTP_PORT"]) as server:
-            server.starttls()
+            server.starttls(context=ssl.create_default_context())
             server.login(config["SMTP_USER"], config["SMTP_PASSWORD"])
             server.send_message(msg)
         app.logger.info("Fortnox inbox email sent — voucher=%s to=%s", voucher_ref, inbox)
@@ -2370,7 +2527,7 @@ Best regards,
                 msg.attach(part)
 
     with smtplib.SMTP(config["SMTP_HOST"], config["SMTP_PORT"]) as server:
-        server.starttls()
+        server.starttls(context=ssl.create_default_context())
         server.login(config["SMTP_USER"], config["SMTP_PASSWORD"])
         recipients = [safe_to] + cc_addresses
         server.sendmail(safe_from, recipients, msg.as_string())
@@ -2393,6 +2550,7 @@ def init_db():
             "ALTER TABLE invoice ADD COLUMN project_id INTEGER REFERENCES project(id)",
             "ALTER TABLE project ADD COLUMN accumulated_cost REAL DEFAULT 0.0",
             "ALTER TABLE project ADD COLUMN invoice_cc_email VARCHAR(200)",
+            "ALTER TABLE project ADD COLUMN expense_markup_pct REAL DEFAULT 10.0",
             # v1.1 user model expansion
             "ALTER TABLE user ADD COLUMN display_name VARCHAR(200)",
             "ALTER TABLE user ADD COLUMN email VARCHAR(200)",
@@ -2418,6 +2576,25 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS ix_time_entry_project_id ON time_entry(project_id)",
             "CREATE INDEX IF NOT EXISTS ix_expense_status ON expense(status)",
             "CREATE INDEX IF NOT EXISTS ix_mileage_entry_status ON mileage_entry(status)",
+            # v1.1 supplier invoice cleanup — invoice_number replaced by payment_ref
+            "ALTER TABLE supplier_invoice DROP COLUMN invoice_number",
+            # v1.1 payment account consolidation — bankgiro/plusgiro/iban → payment_account + type
+            "ALTER TABLE supplier_invoice ADD COLUMN payment_account VARCHAR(100)",
+            "ALTER TABLE supplier_invoice ADD COLUMN payment_account_type VARCHAR(10)",
+            # migrate existing data into new columns
+            "UPDATE supplier_invoice SET payment_account=bankgiro, payment_account_type='bg' WHERE bankgiro IS NOT NULL AND bankgiro != ''",
+            "UPDATE supplier_invoice SET payment_account=plusgiro, payment_account_type='pg' WHERE plusgiro IS NOT NULL AND plusgiro != '' AND (payment_account IS NULL OR payment_account = '')",
+            "UPDATE supplier_invoice SET payment_account=iban,     payment_account_type='iban' WHERE iban IS NOT NULL AND iban != '' AND (payment_account IS NULL OR payment_account = '')",
+            "ALTER TABLE supplier_invoice DROP COLUMN bankgiro",
+            "ALTER TABLE supplier_invoice DROP COLUMN plusgiro",
+            "ALTER TABLE supplier_invoice DROP COLUMN iban",
+            # auth lookup indexes
+            "CREATE INDEX IF NOT EXISTS ix_user_ad_oid ON user(ad_oid)",
+            "CREATE INDEX IF NOT EXISTS ix_user_email ON user(email)",
+            # additional filter indexes
+            "CREATE INDEX IF NOT EXISTS ix_expense_project_status ON expense(project_id, status)",
+            "CREATE INDEX IF NOT EXISTS ix_mileage_project ON mileage_entry(project_id)",
+            "CREATE INDEX IF NOT EXISTS ix_time_entry_date ON time_entry(entry_date)",
         ]
         for stmt in migrations:
             try:

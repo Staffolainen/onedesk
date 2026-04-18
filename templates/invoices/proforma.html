@@ -162,16 +162,19 @@
         {% endfor %}
 
         <!-- Expenses -->
+        {% set exp_markup_pct = (inv.project.expense_markup_pct or 10.0) if inv.project else 10.0 %}
+        {% set exp_markup = 1 + exp_markup_pct / 100 %}
         {% for exp in inv.expenses %}
+        {% set exp_price = exp.amount_excl_vat * exp_markup %}
         <tr>
           <td>
-            <div style="font-weight:700;">{{ exp.description or exp.merchant or "Utlägg" }}</div>
-            <div style="font-size:11px;color:var(--muted);">{{ exp.merchant }} · {{ exp.expense_date }}</div>
+            <div style="font-weight:700;">{{ "Utlägg" if g.lang == "sv" else "Expense" }} (+{{ exp_markup_pct|int }}%)</div>
+            <div style="font-size:11px;color:var(--muted);">{{ exp.description or exp.merchant or "—" }}{% if exp.merchant and exp.description %} · {{ exp.merchant }}{% endif %} · {{ exp.expense_date }}</div>
           </td>
           <td class="r">1</td>
-          <td class="r">{{ exp.amount_excl_vat|fmt_amount }}</td>
-          <td class="r">{{ "%.0f"|format(exp.vat_rate) }}%</td>
-          <td class="r" style="font-weight:700;">{{ exp.amount_excl_vat|fmt_amount }}</td>
+          <td class="r">{{ exp_price|fmt_amount }}</td>
+          <td class="r">25%</td>
+          <td class="r" style="font-weight:700;">{{ exp_price|fmt_amount }}</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -211,7 +214,7 @@
         </div>
         {% for e in group.entries %}
         <div class="ts-row">
-          <span style="color:var(--muted);">{{ e.entry_date.strftime('%d %b') }}
+          <span style="color:var(--muted);">{{ e.entry_date.strftime('%Y-%m-%d') }}
             {% if e.hour_type %}<span style="font-size:11px;color:var(--accent-h);">[{{ e.hour_type.po.po_number if e.hour_type.po and e.hour_type.po.po_number else "" }} {{ e.display_type }}]</span>{% endif %}
             {{ e.description or '' }}
           </span>

@@ -1,6 +1,7 @@
 """
-Tests for security controls — headers, upload protection, input validation.
+Tests for security controls — headers, upload protection, input validation, token encryption.
 """
+import pytest
 
 
 def test_security_headers_present(auth_client):
@@ -8,6 +9,36 @@ def test_security_headers_present(auth_client):
     assert r.headers.get("X-Frame-Options") == "DENY"
     assert r.headers.get("X-Content-Type-Options") == "nosniff"
     assert "Content-Security-Policy" in r.headers
+    assert "Strict-Transport-Security" in r.headers
+    assert "Referrer-Policy" in r.headers
+
+
+def test_csp_blocks_framing(auth_client):
+    r = auth_client.get("/", follow_redirects=True)
+    csp = r.headers.get("Content-Security-Policy", "")
+    assert "frame-ancestors 'none'" in csp
+
+
+def test_settings_token_encryption_roundtrip(app, db):
+    """Fortnox tokens must be stored encrypted and decrypted transparently."""
+    pytest.importorskip("cryptography", reason="cryptography package not installed")
+    from models import Settings
+    with app.app_context():
+        Settings.set("fortnox_access_token", "my-secret-token")
+        row = Settings.query.filter_by(key="fortnox_access_token").first()
+        # Raw DB value must NOT be the plaintext token
+        assert row.value != "my-secret-token"
+        # But get() must return the original value
+        assert Settings.get("fortnox_access_token") == "my-secret-token"
+
+
+def test_settings_non_token_not_encrypted(app, db):
+    """Non-token settings should be stored as plaintext."""
+    from models import Settings
+    with app.app_context():
+        Settings.set("some_other_setting", "plainvalue")
+        row = Settings.query.filter_by(key="some_other_setting").first()
+        assert row.value == "plainvalue"
 
 
 def test_upload_path_traversal_blocked(auth_client):

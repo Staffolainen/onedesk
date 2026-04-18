@@ -31,6 +31,7 @@
           <th>{{ g.t.project }}</th>
           <th class="right">{{ "Inkl. moms" if g.lang == "sv" else "Incl. VAT" }}</th>
           <th class="right">{{ "Moms" if g.lang == "sv" else "VAT" }}</th>
+          <th>{{ "Fortnox ver." if g.lang == "sv" else "Fortnox ref." }}</th>
           <th>{{ g.t.status }}</th>
           <th></th>
         </tr>
@@ -50,6 +51,9 @@
           </td>
           <td class="right mono" style="font-weight:700;">{{ exp.amount_incl_vat|fmt_amount }}</td>
           <td class="right mono" style="color:var(--muted);font-size:12px;">{{ exp.vat_amount|fmt_amount }}</td>
+          <td style="font-size:11px;font-family:var(--mono);color:var(--muted);">
+            {{ exp.fortnox_voucher_nr or "—" }}
+          </td>
           <td>
             <span class="badge badge-{{ exp.status }}">
               {% if exp.status == "pending" %}{{ "Väntande" if g.lang == "sv" else "Pending" }}

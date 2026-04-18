@@ -45,3 +45,48 @@ def test_upload_route_requires_login(client):
 def test_already_logged_in_redirects_from_login(auth_client):
     r = auth_client.get("/login", follow_redirects=False)
     assert r.status_code == 302
+
+
+def test_ad_domain_whitelist_blocks_foreign_domain(app, client):
+    """AD auto-login must reject email domains not in ALLOWED_EMAIL_DOMAINS."""
+    import base64, json
+    app.config["ALLOWED_EMAIL_DOMAINS"] = "allowed.com"
+    principal = {
+        "claims": [
+            {"typ": "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress",
+             "val": "user@notallowed.com"},
+            {"typ": "http://schemas.microsoft.com/identity/claims/objectidentifier",
+             "val": "some-oid"},
+        ]
+    }
+    header = base64.b64encode(json.dumps(principal).encode()).decode()
+    r = client.get("/", headers={"X-MS-CLIENT-PRINCIPAL": header})
+    assert r.status_code == 403
+    app.config["ALLOWED_EMAIL_DOMAINS"] = ""  # restore
+
+
+def test_ad_domain_whitelist_allows_permitted_domain(app, db, client):
+    """AD auto-login must allow emails from whitelisted domains."""
+    import base64, json
+    from models import User
+    from werkzeug.security import generate_password_hash
+    with app.app_context():
+        u = User(username="aduser", email="user@allowed.com",
+                 ad_oid="test-oid-123", active=True,
+                 password_hash=generate_password_hash("x"))
+        db.session.add(u)
+        db.session.commit()
+
+    app.config["ALLOWED_EMAIL_DOMAINS"] = "allowed.com"
+    principal = {
+        "claims": [
+            {"typ": "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress",
+             "val": "user@allowed.com"},
+            {"typ": "http://schemas.microsoft.com/identity/claims/objectidentifier",
+             "val": "test-oid-123"},
+        ]
+    }
+    header = base64.b64encode(json.dumps(principal).encode()).decode()
+    r = client.get("/", headers={"X-MS-CLIENT-PRINCIPAL": header}, follow_redirects=True)
+    assert r.status_code == 200
+    app.config["ALLOWED_EMAIL_DOMAINS"] = ""  # restore

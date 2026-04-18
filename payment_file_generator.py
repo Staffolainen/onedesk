@@ -192,14 +192,15 @@ def _add_pmt_inf(
         inst = _sub(_sub(cdt_trf, "Amt"), "InstdAmt", _fmt_amount(amount))
         inst.set("Ccy", "SEK")
 
+        acct     = (inv.payment_account or "").strip()
+        acct_typ = (inv.payment_account_type or "").lower()
+
         # Creditor agent
-        if inv.bankgiro:
-            # BG: route to Bankgirot's own clearing member ID (9900)
+        if acct_typ == "bg":
             clr_sys = _sub(_sub(_sub(cdt_trf, "CdtrAgt"), "FinInstnId"), "ClrSysMmbId")
             _sub(_sub(clr_sys, "ClrSysId"), "Cd", "SESBA")
             _sub(clr_sys, "MmbId", "9900")
-        elif inv.plusgiro:
-            # PG: route to Plusgirot's clearing member ID (9500)
+        elif acct_typ == "pg":
             clr_sys = _sub(_sub(_sub(cdt_trf, "CdtrAgt"), "FinInstnId"), "ClrSysMmbId")
             _sub(_sub(clr_sys, "ClrSysId"), "Cd", "SESBA")
             _sub(clr_sys, "MmbId", "9500")
@@ -208,16 +209,16 @@ def _add_pmt_inf(
 
         # Creditor account
         cdtr_acct_id = _sub(_sub(cdt_trf, "CdtrAcct"), "Id")
-        if inv.bankgiro:
+        if acct_typ == "bg":
             cdtr_othr = _sub(cdtr_acct_id, "Othr")
-            _sub(cdtr_othr, "Id", _digits_only(inv.bankgiro))
+            _sub(cdtr_othr, "Id", _digits_only(acct))
             _sub(_sub(cdtr_othr, "SchmeNm"), "Prtry", "BGNR")
-        elif inv.plusgiro:
+        elif acct_typ == "pg":
             cdtr_othr = _sub(cdtr_acct_id, "Othr")
-            _sub(cdtr_othr, "Id", _digits_only(inv.plusgiro))
+            _sub(cdtr_othr, "Id", _digits_only(acct))
             _sub(_sub(cdtr_othr, "SchmeNm"), "Prtry", "PGNR")
         else:
-            _sub(cdtr_acct_id, "IBAN", inv.iban.replace(" ", ""))
+            _sub(cdtr_acct_id, "IBAN", acct.upper().replace(" ", ""))
 
         # Remittance info — only use structured SCOR if OCR passes Luhn check
         ref = _digits_only(inv.payment_ref or "")
@@ -228,7 +229,7 @@ def _add_pmt_inf(
             _sub(cdtr_ref_inf, "Ref", ref)
         else:
             # Fall back to unstructured: use payment_ref if present, else invoice number
-            ustrd_text = (inv.payment_ref or inv.invoice_number or "")[:140]
+            ustrd_text = (inv.payment_ref or "")[:140]
             if ustrd_text:
                 _sub(_sub(cdt_trf, "RmtInf"), "Ustrd", ustrd_text)
 
@@ -259,8 +260,8 @@ def generate_pain001(
     msg_id      = f"ONEDESK-{payment_date.strftime('%Y%m%d')}-{uuid.uuid4().hex[:8].upper()}"
     creation_dt = _datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
 
-    bg_pg_invs = [i for i in invoices if i.bankgiro or i.plusgiro]
-    iban_invs  = [i for i in invoices if i.iban and not i.bankgiro and not i.plusgiro]
+    bg_pg_invs = [i for i in invoices if i.payment_account_type in ("bg", "pg")]
+    iban_invs  = [i for i in invoices if i.payment_account_type == "iban"]
 
     n_txns   = len(bg_pg_invs) + len(iban_invs)
     ctrl_sum = _fmt_amount(

@@ -25,7 +25,7 @@
   <table style="width:100%;border-collapse:collapse;font-size:13px;">
     <thead>
       <tr>
-        {% for h in [g.t.sup_supplier_name, g.t.sup_invoice_number, g.t.sup_invoice_date, g.t.sup_due_date, g.t.amount, g.t.status, ""] %}
+        {% for h in [g.t.sup_supplier_name, g.t.sup_ocr, g.t.sup_invoice_date, g.t.sup_due_date, g.t.amount, g.t.status, ""] %}
         <th style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);padding:10px 14px;text-align:left;border-bottom:1px solid var(--border);background:var(--surface);">{{ h }}</th>
         {% endfor %}
       </tr>
@@ -34,7 +34,7 @@
     {% for inv in pending %}
     <tr style="border-bottom:1px solid var(--border);">
       <td style="padding:10px 14px;font-weight:600;">{{ inv.supplier_name or '—' }}</td>
-      <td style="padding:10px 14px;font-family:var(--mono);font-size:12px;color:var(--muted);">{{ inv.invoice_number or '—' }}</td>
+      <td style="padding:10px 14px;font-family:var(--mono);font-size:12px;color:var(--muted);">{{ inv.payment_ref or '—' }}</td>
       <td style="padding:10px 14px;">{{ inv.invoice_date or '—' }}</td>
       <td style="padding:10px 14px;{% if inv.days_until_due is not none and inv.days_until_due < 0 %}color:var(--danger);{% elif inv.days_until_due is not none and inv.days_until_due <= 5 %}color:var(--warning);{% endif %}">
         {{ inv.due_date or '—' }}
@@ -44,7 +44,13 @@
       </td>
       <td style="padding:10px 14px;font-family:var(--mono);">{{ inv.amount_incl_vat|fmt_amount }} {{ inv.currency }}</td>
       <td style="padding:10px 14px;">
-        <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:var(--surface2);color:var(--muted);">{{ inv.status }}</span>
+        {% if inv.status == 'pending' %}
+          <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:var(--surface2);color:var(--muted);">{{ 'Utkast' if g.lang == 'sv' else 'Draft' }}</span>
+        {% elif inv.status == 'approved' %}
+          <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:rgba(251,191,36,0.15);color:var(--warning);">{{ 'Ej bokförd' if g.lang == 'sv' else 'Not booked' }}</span>
+        {% else %}
+          <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:var(--surface2);color:var(--muted);">{{ inv.status }}</span>
+        {% endif %}
       </td>
       <td style="padding:8px 10px;white-space:nowrap;">
         <a href="{{ url_for('supplier_invoices_review', invoice_id=inv.id) }}" class="btn btn-ghost btn-sm">
@@ -73,7 +79,7 @@
   <table style="width:100%;border-collapse:collapse;font-size:13px;">
     <thead>
       <tr>
-        {% for h in [g.t.sup_supplier_name, g.t.sup_invoice_number, g.t.sup_due_date, g.t.sup_payment, g.t.amount, "Fortnox", ""] %}
+        {% for h in [g.t.sup_supplier_name, g.t.sup_ocr, g.t.sup_due_date, g.t.sup_payment, g.t.amount, "Fortnox", ""] %}
         <th style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);padding:10px 14px;text-align:left;border-bottom:1px solid var(--border);background:var(--surface);">{{ h }}</th>
         {% endfor %}
       </tr>
@@ -84,7 +90,7 @@
     {% set soon = inv.days_until_due is not none and inv.days_until_due <= 5 and not overdue %}
     <tr style="border-bottom:1px solid var(--border);">
       <td style="padding:10px 14px;font-weight:600;">{{ inv.supplier_name or '—' }}</td>
-      <td style="padding:10px 14px;font-family:var(--mono);font-size:12px;color:var(--muted);">{{ inv.invoice_number or '—' }}</td>
+      <td style="padding:10px 14px;font-family:var(--mono);font-size:12px;color:var(--muted);">{{ inv.payment_ref or '—' }}</td>
       <td style="padding:10px 14px;{% if overdue %}color:var(--danger);font-weight:600;{% elif soon %}color:var(--warning);{% endif %}">
         {{ inv.due_date or '—' }}
         {% if inv.days_until_due is not none %}
@@ -150,7 +156,9 @@
         <span style="font-size:11px;padding:2px 8px;border-radius:4px;
           {% if pf.status == 'confirmed' %}background:rgba(74,222,128,0.1);color:var(--success);
           {% else %}background:var(--surface2);color:var(--muted);{% endif %}">
-          {{ pf.status }}
+          {% if pf.status == 'confirmed' %}{{ 'Bekräftad' if g.lang == 'sv' else 'Confirmed' }}
+          {% elif pf.status == 'generated' %}{{ 'Genererad' if g.lang == 'sv' else 'Generated' }}
+          {% else %}{{ pf.status }}{% endif %}
         </span>
       </td>
       <td style="padding:8px 10px;white-space:nowrap;">
@@ -185,9 +193,9 @@
       <tr style="border-bottom:1px solid var(--border);">
         <td style="padding:8px 14px;color:var(--muted);">{{ inv.invoice_date or '—' }}</td>
         <td style="padding:8px 14px;">{{ inv.supplier_name or '—' }}</td>
-        <td style="padding:8px 14px;color:var(--muted);">{{ inv.invoice_number or '—' }}</td>
+        <td style="padding:8px 14px;color:var(--muted);">{{ inv.payment_ref or '—' }}</td>
         <td style="padding:8px 14px;font-family:var(--mono);">{{ inv.amount_incl_vat|fmt_amount }}</td>
-        <td style="padding:8px 14px;color:var(--success);font-size:11px;">✓ {{ g.t.paid }}</td>
+        <td style="padding:8px 14px;color:var(--success);font-size:11px;">✓ {{ 'Bokförd' if g.lang == 'sv' else 'Booked' }}</td>
       </tr>
       {% endfor %}
       </tbody>

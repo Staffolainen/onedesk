@@ -258,7 +258,7 @@
         <th class="day-col {% if d == today %}today-col{% elif loop.index0 >= 5 %}weekend-col{% elif is_holiday %}holiday-col{% endif %}"
             {% if is_holiday %}title="{{ bank_holidays[d.isoformat()] }}"{% endif %}>
           {{ day_names[loop.index0] }}<br>
-          <span style="font-size:8px;font-weight:400;opacity:0.7;">{{ d.strftime('%d/%m') }}</span>
+          <span style="font-size:8px;font-weight:400;opacity:0.7;">{{ d.strftime('%m-%d') }}</span>
           {% if is_holiday %}<br><span style="font-size:7px;opacity:0.6;">🔴</span>{% endif %}
         </th>
         {% endfor %}

@@ -19,7 +19,7 @@
         <thead>
           <tr>
             <th style="width:32px;padding:8px 12px;border-bottom:1px solid var(--border);"></th>
-            {% for h in [g.t.sup_supplier_name, g.t.sup_invoice_number, g.t.sup_due_date, g.t.sup_payment, g.t.amount] %}
+            {% for h in [g.t.sup_supplier_name, g.t.sup_ocr, g.t.sup_due_date, g.t.sup_payment, g.t.amount] %}
             <th style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);padding:8px 12px;text-align:left;border-bottom:1px solid var(--border);">{{ h }}</th>
             {% endfor %}
           </tr>
@@ -34,7 +34,7 @@
                    {% if overdue %}checked{% endif %}>
           </td>
           <td style="padding:8px 12px;font-weight:600;">{{ inv.supplier_name or '—' }}</td>
-          <td style="padding:8px 12px;font-family:var(--mono);font-size:12px;color:var(--muted);">{{ inv.invoice_number or '—' }}</td>
+          <td style="padding:8px 12px;font-family:var(--mono);font-size:12px;color:var(--muted);">{{ inv.payment_ref or '—' }}</td>
           <td style="padding:8px 12px;{% if overdue %}color:var(--danger);font-weight:600;{% elif inv.days_until_due is not none and inv.days_until_due <= 5 %}color:var(--warning);{% endif %}">
             {{ inv.due_date or '—' }}
             {% if inv.days_until_due is not none %}

@@ -1,4 +1,5 @@
 import os
+from datetime import timedelta
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -16,6 +17,14 @@ class Config:
     SESSION_COOKIE_SAMESITE = "Lax"
     SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "0") == "1"
     PERMANENT_SESSION_LIFETIME = 3600 * 8  # 8 hours
+
+    # Remember-me cookie
+    REMEMBER_COOKIE_DURATION = timedelta(days=14)
+    REMEMBER_COOKIE_HTTPONLY = True
+    REMEMBER_COOKIE_SAMESITE = "Lax"
+
+    # Azure AD — restrict to these email domains (comma-separated, empty = allow all)
+    ALLOWED_EMAIL_DOMAINS = os.getenv("ALLOWED_EMAIL_DOMAINS", "")
 
     ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin")
     ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "")

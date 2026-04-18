@@ -86,12 +86,19 @@
     .nav-group-btn .chevron { font-size: 9px; opacity: 0.6; }
     .nav-dropdown {
       display: none;
-      position: absolute; top: calc(100% + 4px); left: 0;
+      position: absolute; top: 100%; left: 0;
       min-width: 180px;
       background: var(--surface); border: 1px solid var(--border);
       border-radius: var(--radius); padding: 4px;
+      padding-top: 8px;
       z-index: 200; box-shadow: 0 4px 16px rgba(0,0,0,0.15);
     }
+    /* Invisible bridge fills the gap between button and dropdown so hover isn't lost */
+    .nav-group::after {
+      content: ''; display: none;
+      position: absolute; top: 100%; left: 0; right: 0; height: 8px;
+    }
+    .nav-group:hover::after { display: block; }
     .nav-group:hover .nav-dropdown { display: flex; flex-direction: column; gap: 1px; }
     .nav-dropdown .nav-link { padding: 7px 12px; border-radius: calc(var(--radius) - 2px); }
     .topnav-end { display: flex; align-items: center; gap: 10px; margin-left: auto; flex-shrink: 0; }
@@ -370,5 +377,9 @@ document.addEventListener('click', function(e) {
 });
 </script>
 {% block scripts %}{% endblock %}
+
+<div style="position:fixed;bottom:8px;right:10px;font-size:10px;font-family:var(--mono);color:var(--muted);opacity:0.45;pointer-events:none;z-index:9999;">
+  build {{ g.build_time }}
+</div>
 </body>
 </html>

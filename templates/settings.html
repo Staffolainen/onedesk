@@ -192,6 +192,23 @@
     {% endif %}
   </div>
 
+  <!-- Currencies -->
+  <div id="currencies" class="card" style="margin-bottom:16px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+      <div class="card-title" style="margin-bottom:0;">{{ "Valutor / Currencies" }}</div>
+      {% if current_user.is_admin %}
+      <a href="{{ url_for('settings_currencies') }}" class="btn btn-ghost btn-sm">{{ g.t.edit }}</a>
+      {% endif %}
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      {% for code in currencies %}
+      <span style="font-family:var(--mono);font-size:12px;padding:2px 10px;border-radius:4px;background:var(--surface2);color:{% if loop.first %}var(--accent){% else %}var(--muted){% endif %};">
+        {{ code }}{% if loop.first %} ★{% endif %}
+      </span>
+      {% endfor %}
+    </div>
+  </div>
+
   <!-- Backup & Restore -->
   <div class="card" style="margin-bottom:16px;">
     <div class="card-title">{{ "Säkerhetskopiering" if g.lang == "sv" else "Backup & Restore" }}</div>
@@ -201,9 +218,14 @@
       <div style="font-size:13px;color:var(--muted);margin-bottom:10px;">
         {{ "Exportera hela databasen som JSON-fil." if g.lang == "sv" else "Export the entire database as a JSON file." }}
       </div>
-      <a href="{{ url_for('settings_backup') }}" class="btn btn-secondary btn-sm">
-        ↓ {{ "Exportera backup" if g.lang == "sv" else "Download backup" }}
-      </a>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+        <a href="{{ url_for('settings_backup') }}" class="btn btn-secondary btn-sm">
+          ↓ {{ "Exportera backup" if g.lang == "sv" else "Download backup" }}
+        </a>
+        <a href="{{ url_for('settings_log') }}" target="_blank" class="btn btn-ghost btn-sm">
+          📋 {{ "Visa systemlogg" if g.lang == "sv" else "View system log" }}
+        </a>
+      </div>
     </div>
 
     <!-- Import -->

@@ -22,50 +22,36 @@
   <form method="POST">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
+    {# ── 1. Supplier + payment destination ── #}
+    {% set pt = inv.payment_account_type or "bg" %}
+    {% set pa = inv.payment_account or "" %}
     <div class="card" style="margin-bottom:16px;">
       <div class="card-title">{{ g.t.sup_supplier }}</div>
-      <div class="grid-2">
-        <div class="form-group">
-          <label class="form-label">{{ g.t.sup_supplier_name }}</label>
-          <input type="text" name="supplier_name" class="form-control"
-                 value="{{ inv.supplier_name or '' }}" required>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Org.nr</label>
-          <input type="text" name="supplier_org_nr" class="form-control"
-                 value="{{ inv.supplier_org_nr or '' }}">
-        </div>
+      <div class="form-group">
+        <label class="form-label">{{ g.t.sup_supplier_name }}</label>
+        <input type="text" name="supplier_name" class="form-control"
+               value="{{ inv.supplier_name or '' }}" required>
       </div>
-      <div class="grid-2">
+      <div class="grid-2" style="margin-top:8px;">
         <div class="form-group">
-          <label class="form-label">{{ g.t.sup_invoice_number }}</label>
-          <input type="text" name="invoice_number" class="form-control"
-                 value="{{ inv.invoice_number or '' }}">
+          <label class="form-label">{{ "Betalningstyp" if g.lang == "sv" else "Payment type" }}</label>
+          <select name="payment_type" id="f_payment_type" class="form-control">
+            <option value="bg"   {% if pt == "bg"   %}selected{% endif %}>Bankgiro</option>
+            <option value="pg"   {% if pt == "pg"   %}selected{% endif %}>Plusgiro</option>
+            <option value="iban" {% if pt == "iban" %}selected{% endif %}>IBAN</option>
+          </select>
         </div>
         <div class="form-group">
-          <label class="form-label">{{ g.t.sup_currency }}</label>
-          <input type="text" name="currency" class="form-control"
-                 value="{{ inv.currency or 'SEK' }}" maxlength="3">
+          <label class="form-label">{{ "Kontonummer" if g.lang == "sv" else "Account number" }} *</label>
+          <input type="text" name="payment_account" id="f_payment_account" class="form-control"
+                 value="{{ pa }}" placeholder="1234-5678"
+                 oninput="autoDetectPaymentType(this.value)">
+          <div id="payment-method-error" style="display:none;color:var(--accent);font-size:12px;margin-top:4px;"></div>
         </div>
       </div>
     </div>
 
-    <div class="card" style="margin-bottom:16px;">
-      <div class="card-title">{{ g.t.sup_dates }}</div>
-      <div class="grid-2">
-        <div class="form-group">
-          <label class="form-label">{{ g.t.sup_invoice_date }}</label>
-          <input type="date" name="invoice_date" class="form-control"
-                 value="{{ inv.invoice_date.isoformat() if inv.invoice_date else '' }}">
-        </div>
-        <div class="form-group">
-          <label class="form-label">{{ g.t.sup_due_date }}</label>
-          <input type="date" name="due_date" class="form-control"
-                 value="{{ inv.due_date.isoformat() if inv.due_date else '' }}">
-        </div>
-      </div>
-    </div>
-
+    {# ── 2. Invoice details (amounts + OCR + currency) ── #}
     <div class="card" style="margin-bottom:16px;">
       <div class="card-title">{{ g.t.sup_amounts }}</div>
       <div class="grid-2">
@@ -87,41 +73,47 @@
           <div style="font-size:11px;color:var(--muted);margin-top:4px;">→ 2641 Debiterad ingående moms</div>
         </div>
         <div class="form-group">
-          <label class="form-label">{{ g.t.sup_incl_vat }}</label>
+          <label class="form-label">{{ g.t.sup_incl_vat }} *</label>
           <input type="number" name="amount_incl_vat" class="form-control"
                  value="{{ inv.amount_incl_vat or '' }}" step="0.01" min="0" required>
         </div>
+        <div id="amount-sum-error" style="display:none;color:var(--accent);font-size:12px;grid-column:1/-1;"></div>
+        <div class="form-group">
+          <label class="form-label">{{ g.t.sup_ocr }} *</label>
+          <input type="text" name="payment_ref" id="payment_ref" class="form-control"
+                 value="{{ inv.payment_ref or '' }}" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">{{ g.t.sup_currency }}</label>
+          <select name="currency" class="form-control">
+            {% for code in currencies %}
+            <option value="{{ code }}" {% if (inv.currency or currencies[0]) == code %}selected{% endif %}>{{ code }}</option>
+            {% endfor %}
+          </select>
+        </div>
       </div>
     </div>
 
+    {# ── 3. Dates ── #}
     <div class="card" style="margin-bottom:16px;">
-      <div class="card-title">{{ g.t.sup_payment }}</div>
+      <div class="card-title">{{ g.t.sup_dates }}</div>
       <div class="grid-2">
         <div class="form-group">
-          <label class="form-label">{{ g.t.sup_ocr }}</label>
-          <input type="text" name="payment_ref" class="form-control"
-                 value="{{ inv.payment_ref or inv.invoice_number or '' }}">
-        </div>
-      </div>
-      <div class="grid-2">
-        <div class="form-group">
-          <label class="form-label">Bankgiro</label>
-          <input type="text" name="bankgiro" class="form-control"
-                 value="{{ inv.bankgiro or '' }}" placeholder="1234-5678">
+          <label class="form-label">{{ g.t.sup_invoice_date }} *</label>
+          <input type="text" name="invoice_date" class="form-control"
+                 value="{{ inv.invoice_date.isoformat() if inv.invoice_date else '' }}"
+                 placeholder="YYYY-MM-DD" pattern="\d{4}-\d{2}-\d{2}" required>
         </div>
         <div class="form-group">
-          <label class="form-label">Plusgiro</label>
-          <input type="text" name="plusgiro" class="form-control"
-                 value="{{ inv.plusgiro or '' }}">
-        </div>
-        <div class="form-group">
-          <label class="form-label">IBAN</label>
-          <input type="text" name="iban" class="form-control"
-                 value="{{ inv.iban or '' }}">
+          <label class="form-label">{{ g.t.sup_due_date }} *</label>
+          <input type="text" name="due_date" class="form-control"
+                 value="{{ inv.due_date.isoformat() if inv.due_date else '' }}"
+                 placeholder="YYYY-MM-DD" pattern="\d{4}-\d{2}-\d{2}" required>
         </div>
       </div>
     </div>
 
+    {# ── 5. Bookkeeping ── #}
     <div class="card" style="margin-bottom:16px;">
       <div class="card-title">{{ g.t.sup_bookkeeping }}</div>
       <div class="grid-2">
@@ -161,7 +153,7 @@
     </div>
     {% endif %}
 
-    <div style="display:flex;gap:10px;">
+    <div style="display:flex;gap:10px;margin-bottom:16px;">
       <button type="submit" name="action" value="save" id="reviewSaveBtn" class="btn btn-primary">
         {{ g.t.sup_save_book }}
       </button>
@@ -171,6 +163,36 @@
       </button>
     </div>
   </form>
+
+  {# ── OCR debug panel ── #}
+  {% if ocr.raw %}
+  <details style="margin-top:8px;">
+    <summary style="cursor:pointer;font-size:12px;color:var(--muted);padding:6px 0;user-select:none;">
+      🔍 {{ "Visa råtext från PDF-läsning" if g.lang == "sv" else "Show raw PDF text" }}
+    </summary>
+    <div style="margin-top:8px;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:12px;">
+      <div style="font-size:10px;font-family:var(--mono);text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin-bottom:8px;">
+        {{ "Extraherade fält" if g.lang == "sv" else "Extracted fields" }}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 16px;font-size:12px;margin-bottom:12px;">
+        {% for key in ["supplier_name","invoice_date","due_date","amount_excl_vat","vat_amount","amount_incl_vat","payment_ref","bankgiro","plusgiro","iban"] %}{# OCR result still uses legacy keys #}
+        {% set val = ocr.get(key) %}
+        {% if val is not none %}
+        <div style="display:contents;">
+          <span style="color:var(--muted);font-family:var(--mono);font-size:11px;">{{ key }}</span>
+          <span style="color:var(--text);">{{ val }}</span>
+        </div>
+        {% endif %}
+        {% endfor %}
+      </div>
+      <div style="font-size:10px;font-family:var(--mono);text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin-bottom:6px;">
+        {{ "Råtext (pypdf)" if g.lang == "sv" else "Raw text (pypdf)" }}
+      </div>
+      <pre style="font-size:11px;white-space:pre-wrap;word-break:break-word;color:var(--text);margin:0;max-height:400px;overflow-y:auto;line-height:1.5;">{{ ocr.raw }}</pre>
+    </div>
+  </details>
+  {% endif %}
+
 </div>
 {% endblock %}
 
@@ -180,11 +202,71 @@ function calcSupVat(rate) {
   const total = parseFloat(document.querySelector('[name=amount_incl_vat]').value) || 0;
   const vat = rate > 0 ? Math.round(total * rate / (100 + rate) * 100) / 100 : 0;
   document.getElementById('sup_vat_amount').value = vat.toFixed(2);
+  document.querySelector('[name=amount_excl_vat]').value = (total - vat).toFixed(2);
 }
+
+function validateAmounts() {
+  const incl = parseFloat(document.querySelector('[name=amount_incl_vat]').value) || 0;
+  const excl = parseFloat(document.querySelector('[name=amount_excl_vat]').value) || 0;
+  const vat  = parseFloat(document.getElementById('sup_vat_amount').value) || 0;
+  const diff = Math.abs(incl - excl - vat);
+  const el = document.getElementById('amount-sum-error');
+  if (diff > 0.05 && (excl > 0 || vat > 0)) {
+    el.style.display = 'block';
+    const label = '{{ "Exkl. moms" if g.lang == "sv" else "Excl. VAT" }}';
+    const vatLbl = '{{ "Moms" if g.lang == "sv" else "VAT" }}';
+    const inclLbl = '{{ "Att betala" if g.lang == "sv" else "Total to pay" }}';
+    const hint = '{{ "Kontrollera att beloppen stämmer med fakturan." if g.lang == "sv" else "Check that the amounts match the invoice." }}';
+    el.textContent = `${label} ${excl.toFixed(2)} + ${vatLbl} ${vat.toFixed(2)} = ${(excl+vat).toFixed(2)}, men ${inclLbl} är ${incl.toFixed(2)} (diff ${diff.toFixed(2)}). ${hint}`;
+    return false;
+  }
+  el.style.display = 'none';
+  return true;
+}
+
+function autoDetectPaymentType(val) {
+  val = val.trim().replace(/\s/g, '');
+  const sel = document.getElementById('f_payment_type');
+  if (!val) return;
+  if (/^[A-Za-z]{2}\d/.test(val)) { sel.value = 'iban'; return; }
+  if (/^\d{3,4}-\d{4}$/.test(val)) { sel.value = 'bg'; return; }
+  if (/^\d{1,7}-\d$/.test(val))    { sel.value = 'pg'; return; }
+}
+
+const _PAT = {
+  bg:   /^\d{3,4}-\d{4}$/,
+  pg:   /^\d{1,7}-\d$/,
+  iban: /^[A-Za-z]{2}\d{2}[A-Za-z0-9]{4,30}$/,
+};
+const _FMT = { bg: 'NNNN-NNNN', pg: 'NNNNNNN-N', iban: 'SE00NNNN…' };
+
+function validatePaymentMethod() {
+  const val = document.getElementById('f_payment_account').value.trim().replace(/\s/g, '');
+  const typ = document.getElementById('f_payment_type').value;
+  const el  = document.getElementById('payment-method-error');
+  if (!val) {
+    el.style.display = 'block';
+    el.textContent = '{{ "Ange kontonummer (BG, PG eller IBAN)" if g.lang == "sv" else "Enter account number (BG, PG or IBAN)" }}';
+    return false;
+  }
+  if (_PAT[typ] && !_PAT[typ].test(val)) {
+    el.style.display = 'block';
+    el.textContent = `{{ "Ogiltigt format för" if g.lang == "sv" else "Invalid format for" }} ${typ.toUpperCase()} — {{ "förväntat" if g.lang == "sv" else "expected" }}: ${_FMT[typ]}`;
+    return false;
+  }
+  el.style.display = 'none';
+  return true;
+}
+
+document.querySelector('[name=amount_incl_vat]').addEventListener('input', validateAmounts);
+document.querySelector('[name=amount_excl_vat]').addEventListener('input', validateAmounts);
+document.getElementById('sup_vat_amount').addEventListener('input', validateAmounts);
 
 document.querySelector('form').addEventListener('submit', function(e) {
   const clicked = document.activeElement;
   if (clicked && clicked.name === 'action' && clicked.value === 'discard') return;
+  const ok = validateAmounts() & validatePaymentMethod();
+  if (!ok) { e.preventDefault(); return; }
   const btn = document.getElementById('reviewSaveBtn');
   btn.disabled = true;
   btn.textContent = '{{ "Sparar..." if g.lang == "sv" else "Saving..." }}';

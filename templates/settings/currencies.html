@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}{{ "Valutor" if g.lang == "sv" else "Currencies" }}{% endblock %}
+{% block page_title %}{{ "Valutor / Currencies" }}{% endblock %}
+
+{% block topbar_actions %}
+  <a href="{{ url_for('settings') }}" class="btn btn-ghost btn-sm">← {{ g.t.back }}</a>
+{% endblock %}
+
+{% block content %}
+<div style="max-width:480px;margin:0 auto;">
+
+  <div class="card" style="margin-bottom:16px;">
+    <div class="card-title">{{ "Aktiva valutor / Active currencies" }}</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:16px;">
+      {{ "Första valutan är standard. Visas som dropdown vid fakturagranskning." if g.lang == "sv"
+         else "First currency is the default. Shown as dropdown on invoice review." }}
+    </div>
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <tbody>
+      {% for code in currencies %}
+      <tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:8px 10px;font-family:var(--mono);font-weight:600;">{{ code }}</td>
+        <td style="padding:8px 10px;color:var(--muted);font-size:11px;">
+          {% if loop.first %}★ {{ "Standard" if g.lang == "sv" else "Default" }}{% endif %}
+        </td>
+        <td style="padding:6px 8px;text-align:right;white-space:nowrap;">
+          {% if not loop.first %}
+          <form method="POST" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="action" value="set_default">
+            <input type="hidden" name="code" value="{{ code }}">
+            <button type="submit" class="btn btn-ghost btn-sm" title="{{ 'Sätt som standard' if g.lang == 'sv' else 'Set as default' }}">★</button>
+          </form>
+          {% endif %}
+          <form method="POST" style="display:inline;"
+                onsubmit="return confirm('{{ ('Ta bort ' + code + '?') if g.lang == 'sv' else ('Remove ' + code + '?') }}')">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="action" value="delete">
+            <input type="hidden" name="code" value="{{ code }}">
+            <button type="submit" class="btn btn-danger btn-sm">✕</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <div class="card-title">{{ "Lägg till valuta / Add currency" }}</div>
+    <form method="POST" style="display:flex;gap:8px;align-items:flex-end;">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="add">
+      <div class="form-group" style="margin-bottom:0;flex:1;">
+        <label class="form-label">{{ "ISO-kod (3 bokstäver)" if g.lang == "sv" else "ISO code (3 letters)" }}</label>
+        <input type="text" name="code" class="form-control mono" maxlength="3"
+               placeholder="USD" style="text-transform:uppercase;" required autofocus>
+      </div>
+      <button type="submit" class="btn btn-primary">+ {{ "Lägg till" if g.lang == "sv" else "Add" }}</button>
+    </form>
+  </div>
+
+</div>
+{% endblock %}
