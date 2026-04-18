@@ -320,12 +320,17 @@ class FortnoxClient:
         credit_account = 2893 if expense.paid_by == "personal" else 1930
         vat_account = 2641  # Debiterad ingående moms
 
+        merchant = (expense.merchant or "").strip()
+        desc = (expense.description or "").strip()
+        tx_info = f"{merchant} – {desc}" if merchant and desc else merchant or desc or "Utlägg"
+        voucher_description = f"{merchant} – {desc}" if merchant and desc else merchant or desc or "Utlägg"
+
         rows = [
             {
                 "Account": debit_account,
                 "Debit": round(float(expense.amount_excl_vat), 2),
                 "Credit": 0,
-                "TransactionInformation": (expense.description or "")[:200],
+                "TransactionInformation": tx_info[:200],
             },
         ]
         if float(expense.vat_amount or 0) > 0:
@@ -333,15 +338,17 @@ class FortnoxClient:
                 "Account": vat_account,
                 "Debit": round(float(expense.vat_amount), 2),
                 "Credit": 0,
+                "TransactionInformation": tx_info[:200],
             })
         rows.append({
             "Account": credit_account,
             "Debit": 0,
             "Credit": round(float(expense.amount_incl_vat), 2),
+            "TransactionInformation": tx_info[:200],
         })
 
         voucher_data = {
-            "Description": (expense.description or expense.merchant or "Utlägg")[:200],
+            "Description": voucher_description[:200],
             "TransactionDate": expense.expense_date.isoformat(),
             "VoucherSeries": "A",
             "VoucherRows": rows,
@@ -453,15 +460,14 @@ class FortnoxClient:
         if not rows:
             raise Exception("Inga fakturor med belopp att bokföra / No invoices with amount to post.")
 
-        suppliers_str = ", ".join(descriptions[:3]) + ("..." if len(descriptions) > 3 else "")
         rows.append({
             "Account": 1930,
             "Debit": 0,
             "Credit": round(total, 2),
-            "TransactionInformation": f"Betalning: {suppliers_str}"[:200],
+            "TransactionInformation": "Betalning leverantörsfakturor",
         })
 
-        description = f"Betalning lev.: {suppliers_str}"
+        description = f"Bet. {', '.join(descriptions[:3])}{'...' if len(descriptions) > 3 else ''}"
         voucher_data = {
             "Description": description[:200],
             "TransactionDate": payment_date.isoformat(),
