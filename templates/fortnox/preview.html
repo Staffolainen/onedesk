@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}Fortnox Dry-run Preview{% endblock %}
+{% block page_title %}Fortnox — Dry-run payload{% endblock %}
+
+{% block topbar_actions %}
+  <a href="{{ back_url }}" class="btn btn-ghost btn-sm">{{ back_label }}</a>
+{% endblock %}
+
+{% block head %}
+<style>
+  .preview-banner {
+    background: rgba(251,191,36,0.1);
+    border: 1px solid var(--warning);
+    border-radius: var(--radius);
+    padding: 12px 18px;
+    font-size: 13px;
+    color: var(--warning);
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .json-block {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px;
+    font-family: var(--mono, monospace);
+    font-size: 13px;
+    line-height: 1.7;
+    white-space: pre;
+    overflow-x: auto;
+    color: var(--text);
+  }
+  /* Minimal JSON syntax colouring */
+  .json-key    { color: #7dc4e4; }
+  .json-str    { color: #a6da95; }
+  .json-num    { color: #f5a97f; }
+  .json-bool   { color: #ed8796; }
+  .json-null   { color: var(--muted); }
+</style>
+{% endblock %}
+
+{% block content %}
+<div style="max-width:800px;margin:0 auto;">
+
+  <div class="preview-banner">
+    ⚠ {{ "Fortnox live-synk är inaktiverat. Nedan visas det payload som hade skickats till Fortnox API." if g.lang == "sv" else "Fortnox live sync is disabled. The payload below shows what would have been sent to the Fortnox API." }}
+  </div>
+
+  <div class="card" style="padding:0;overflow:hidden;">
+    <div style="padding:14px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;">
+      <span style="font-family:var(--mono);font-size:12px;color:var(--muted);">application/json</span>
+      <button onclick="copyPayload()" class="btn btn-ghost btn-sm" id="copy-btn">
+        {{ "Kopiera / Copy" }}
+      </button>
+    </div>
+    <pre class="json-block" id="payload-pre">{{ payload_json }}</pre>
+  </div>
+
+  <div style="margin-top:20px;display:flex;gap:10px;">
+    <a href="{{ back_url }}" class="btn btn-primary">{{ back_label }}</a>
+  </div>
+</div>
+
+<script>
+function copyPayload() {
+  const text = document.getElementById('payload-pre').textContent;
+  navigator.clipboard.writeText(text).then(() => {
+    const btn = document.getElementById('copy-btn');
+    btn.textContent = '✓ Kopierad / Copied';
+    setTimeout(() => { btn.textContent = 'Kopiera / Copy'; }, 2000);
+  });
+}
+</script>
+{% endblock %}

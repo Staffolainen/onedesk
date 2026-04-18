@@ -6,6 +6,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
+ARG BUILD_TIME=unknown
+ENV BUILD_TIME=$BUILD_TIME
+
 WORKDIR /app
 
 # Install Python dependencies

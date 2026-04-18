@@ -1,8 +1,32 @@
 import io
 import os
+import re
+import ssl
 import json
+import logging
 import smtplib
 import secrets
+import requests
+from logging.handlers import TimedRotatingFileHandler
+
+# ── File logging (weekly rotation, 4-week retention) ─────────────────────────
+def _setup_file_logging():
+    log_dir = os.path.join(os.path.dirname(__file__), "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, "onedesk.log")
+    handler = TimedRotatingFileHandler(
+        log_file, when="W0", interval=1, backupCount=4, encoding="utf-8"
+    )
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    ))
+    handler.setLevel(logging.INFO)
+    logging.getLogger().addHandler(handler)
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+                    datefmt="%Y-%m-%d %H:%M:%S")
+_setup_file_logging()
 from datetime import datetime, date, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -20,10 +44,15 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 
 from config import Config
-from models import db, User, Client, Project, PurchaseOrder, POHourType, TimeEntry, Expense, Invoice, MileageEntry, Settings, fiscal_year, fy_start, fy_end
+from models import (db, User, Client, Project, PurchaseOrder, POHourType,
+                    TimeEntry, Expense, Invoice, MileageEntry, Settings,
+                    VoucherTemplate, SupplierInvoice, PaymentFile,
+                    fiscal_year, fy_start, fy_end)
+from sqlalchemy.orm import selectinload, joinedload
 from fortnox import FortnoxClient
-from receipt_ocr import extract_receipt_data
+from receipt_ocr import extract_receipt_data, extract_supplier_invoice_data
 from pdf_generator import generate_invoice_pdf, render_invoice_html
+from payment_file_generator import generate_pain001, get_execution_date
 
 app = Flask(__name__)
 app.config.from_object(Config)
@@ -40,6 +69,37 @@ login_manager.login_message = ""
 def load_user(user_id):
     return User.query.get(int(user_id))
 
+import logging as _logging
+_audit_logger = _logging.getLogger("onedesk.audit")
+_audit_logger.setLevel(_logging.INFO)
+_instance_dir = os.path.join(os.path.dirname(__file__), "instance")
+os.makedirs(_instance_dir, exist_ok=True)
+_audit_handler = _logging.FileHandler(
+    os.path.join(_instance_dir, "audit.log"),
+    encoding="utf-8"
+)
+_audit_handler.setFormatter(_logging.Formatter("%(asctime)s\t%(message)s"))
+_audit_logger.addHandler(_audit_handler)
+
+def _audit(action: str, detail: str = ""):
+    if current_user.is_authenticated:
+        user = (getattr(current_user, "display_name", None)
+                or getattr(current_user, "email", None)
+                or getattr(current_user, "username", None)
+                or "—")
+    else:
+        user = "anon"
+    _audit_logger.info(f"{user}\t{action}\t{detail}")
+
+def admin_required(f):
+    """Decorator: requires role=='admin'."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not current_user.is_authenticated or current_user.role != 'admin':
+            abort(403)
+        return f(*args, **kwargs)
+    return decorated
+
 # ── Language ──────────────────────────────────────────────────────────────────
 
 TRANSLATIONS = {
@@ -54,6 +114,55 @@ TRANSLATIONS = {
         "sent": "Skickad", "paid": "Betald", "pending": "Väntande",
         "billable": "Debiterbart", "internal": "Internt", "new": "Ny",
         "back": "Tillbaka", "settings": "Inställningar", "currency": "SEK",
+        # Supplier invoices
+        "sup_title": "Leverantörsfakturor",
+        "sup_upload": "Ladda upp faktura",
+        "sup_upload_desc": "Ladda upp en PDF eller bild av fakturan. Claude Vision extraherar leverantörsuppgifter, belopp och betalningsinformation automatiskt.",
+        "sup_upload_label": "Fakturafil (PDF eller bild)",
+        "sup_upload_btn": "Ladda upp och analysera",
+        "sup_review_title": "Granska och bekräfta",
+        "sup_supplier": "Leverantör",
+        "sup_supplier_name": "Leverantörsnamn",
+        "sup_invoice_number": "Fakturanummer",
+        "sup_currency": "Valuta",
+        "sup_dates": "Datum",
+        "sup_invoice_date": "Fakturadatum",
+        "sup_due_date": "Förfallodatum",
+        "sup_amounts": "Fakturadetaljer",
+        "sup_excl_vat": "Exkl. moms",
+        "sup_vat": "Moms (SEK)",
+        "sup_incl_vat": "Att betala (inkl. moms)",
+        "sup_payment": "Betalning",
+        "sup_ocr": "OCR eller fakturanummer",
+        "sup_bookkeeping": "Bokföring",
+        "sup_category": "Motkonto bokföring",
+        "sup_credit_hint": "Kredit: 2440 Leverantörsskulder",
+        "sup_assignment": "Uppdrag (valfritt)",
+        "sup_file": "Uppladdad fil",
+        "sup_view_file": "Visa fil",
+        "sup_save_book": "Spara och bokför",
+        "sup_discard": "Kasta faktura",
+        "sup_discard_confirm": "Ta bort fakturan?",
+        "sup_pending": "Väntar på granskning",
+        "sup_backlog": "Kommande, ej utförda betalningar",
+        "sup_payment_files": "Betalningsfiler",
+        "sup_recently_paid": "Senast bokförda betalningar",
+        "sup_review_btn": "Granska",
+        "sup_mark_paid": "Markera bokförd manuellt",
+        "sup_paid_btn": "Bokförd",
+        "sup_overdue": "försenad",
+        "sup_payment_run": "Betalkörning",
+        "sup_select_invoices": "Välj fakturor att betala",
+        "sup_payment_date": "Betalningsdatum",
+        "sup_generate_btn": "Generera betalningsfil (pain.001)",
+        "sup_generate_hint": "Filen laddas ned direkt. Ladda sedan upp i Handelsbankens internetbank.",
+        "sup_no_backlog": "Inga fakturor i betalningsbackloggen.",
+        "sup_pending_orders": "Väntande betalordrar",
+        "sup_confirm_btn": "Bekräfta betalorder registrerad",
+        "sup_confirm_dialog": "Bekräfta att betalfilen är uppladdad till banken? Detta skapar betalningsverifikat i Fortnox (1930 → 2440).",
+        "sup_ocr_ok": "Claude Vision extraherade data från fakturan",
+        "sup_ocr_fail": "OCR misslyckades – fyll i manuellt",
+        "sup_no_invoices": "Inga fakturor att visa.",
     },
     "en": {
         "dashboard": "Start", "time": "Time Tracking", "expenses": "Expenses", "mileage": "Mileage",
@@ -66,14 +175,129 @@ TRANSLATIONS = {
         "sent": "Sent", "paid": "Paid", "pending": "Pending",
         "billable": "Billable", "internal": "Internal", "new": "New",
         "back": "Back", "settings": "Settings", "currency": "SEK",
+        # Supplier invoices
+        "sup_title": "Supplier Invoices",
+        "sup_upload": "Upload Invoice",
+        "sup_upload_desc": "Upload a PDF or image of the invoice. Claude Vision will automatically extract supplier details, amounts, and payment information.",
+        "sup_upload_label": "Invoice file (PDF or image)",
+        "sup_upload_btn": "Upload & analyse",
+        "sup_review_title": "Review & confirm",
+        "sup_supplier": "Supplier",
+        "sup_supplier_name": "Supplier name",
+        "sup_invoice_number": "Invoice number",
+        "sup_currency": "Currency",
+        "sup_dates": "Dates",
+        "sup_invoice_date": "Invoice date",
+        "sup_due_date": "Due date",
+        "sup_amounts": "Invoice details",
+        "sup_excl_vat": "Excl. VAT",
+        "sup_vat": "VAT (SEK)",
+        "sup_incl_vat": "Amount to pay (incl. VAT)",
+        "sup_payment": "Payment",
+        "sup_ocr": "OCR or invoice number",
+        "sup_bookkeeping": "Bookkeeping",
+        "sup_category": "Contra account",
+        "sup_credit_hint": "Credit: 2440 Accounts payable",
+        "sup_assignment": "Assignment (optional)",
+        "sup_file": "Uploaded file",
+        "sup_view_file": "View file",
+        "sup_save_book": "Save & book",
+        "sup_discard": "Discard invoice",
+        "sup_discard_confirm": "Delete this invoice?",
+        "sup_pending": "Pending review",
+        "sup_backlog": "Upcoming, unpaid invoices",
+        "sup_payment_files": "Payment files",
+        "sup_recently_paid": "Recently booked payments",
+        "sup_review_btn": "Review",
+        "sup_mark_paid": "Mark as booked manually",
+        "sup_paid_btn": "Booked",
+        "sup_overdue": "overdue",
+        "sup_payment_run": "Payment run",
+        "sup_select_invoices": "Select invoices to pay",
+        "sup_payment_date": "Payment date",
+        "sup_generate_btn": "Generate payment file (pain.001)",
+        "sup_generate_hint": "File downloads immediately. Upload to Handelsbanken internet bank.",
+        "sup_no_backlog": "No invoices in payment backlog.",
+        "sup_pending_orders": "Pending payment orders",
+        "sup_confirm_btn": "Confirm payment order registered",
+        "sup_confirm_dialog": "Confirm that the payment file has been uploaded to the bank? This will create a payment voucher in Fortnox (1930 → 2440).",
+        "sup_ocr_ok": "Claude Vision extracted data from the invoice",
+        "sup_ocr_fail": "OCR failed – please fill in manually",
+        "sup_no_invoices": "No invoices to show.",
     }
 }
+
+_AD_SKIP_ENDPOINTS = frozenset({
+    'auth_login', 'auth_logout', 'auth_not_provisioned', 'static', 'set_lang',
+})
 
 @app.before_request
 def set_language():
     g.lang = session.get("lang", "sv")
     g.t = TRANSLATIONS.get(g.lang, TRANSLATIONS["sv"])
     g.config = app.config
+    g.build_time = os.getenv("BUILD_TIME", "dev")
+
+@app.before_request
+def ad_auto_login():
+    """Auto-login from Azure AD Easy Auth headers (X-MS-CLIENT-PRINCIPAL)."""
+    if current_user.is_authenticated:
+        return
+    if request.endpoint in _AD_SKIP_ENDPOINTS:
+        return
+
+    principal_header = request.headers.get('X-MS-CLIENT-PRINCIPAL')
+    if not principal_header:
+        return
+
+    try:
+        import base64 as _b64
+        principal = json.loads(_b64.b64decode(principal_header).decode('utf-8'))
+        claims = {c['typ']: c['val'] for c in principal.get('claims', [])}
+
+        ad_oid = (
+            claims.get('http://schemas.microsoft.com/identity/claims/objectidentifier')
+            or claims.get('oid')
+        )
+        email = (
+            claims.get('http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress')
+            or claims.get('preferred_username')
+            or principal.get('userDetails', '')
+        )
+        if email:
+            email = email.lower()
+    except Exception as e:
+        app.logger.warning("AD auto-login failed to parse principal: %s", e)
+        return
+
+    allowed_domains = [d.strip() for d in app.config.get("ALLOWED_EMAIL_DOMAINS", "").split(",") if d.strip()]
+    if allowed_domains and email and email.split("@")[-1] not in allowed_domains:
+        app.logger.warning("AD auto-login rejected domain: %s", email)
+        abort(403)
+
+    try:
+        user = None
+        if ad_oid:
+            user = User.query.filter_by(ad_oid=ad_oid).first()
+        if not user and email:
+            user = User.query.filter_by(email=email).first()
+
+        if user and user.active:
+            if ad_oid and not user.ad_oid:
+                user.ad_oid = ad_oid
+            if email and not user.email:
+                user.email = email
+            user.last_login_at = datetime.utcnow()
+            db.session.commit()
+            login_user(user, remember=True)
+        elif user and not user.active:
+            flash("Ditt konto är inaktiverat / Your account is disabled", "error")
+            return redirect(url_for('auth_login'))
+        else:
+            # AD user not provisioned in onedesk
+            return redirect(url_for('auth_not_provisioned'))
+    except Exception as e:
+        app.logger.warning("AD auto-login failed: %s", e)
 
 @app.route("/lang/<lang>")
 def set_lang(lang):
@@ -83,6 +307,7 @@ def set_lang(lang):
 
 @app.after_request
 def set_security_headers(response):
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-XSS-Protection"] = "1; mode=block"
@@ -92,7 +317,8 @@ def set_security_headers(response):
         "script-src 'self' 'unsafe-inline'; "
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data:; "
-        "font-src 'self';"
+        "font-src 'self'; "
+        "frame-ancestors 'none';"
     )
     return response
 
@@ -120,6 +346,25 @@ def _safe_date(value):
     except (ValueError, TypeError):
         return None
 
+
+_PAYMENT_PATTERNS = {
+    "bg":   re.compile(r"^\d{3,4}-\d{4}$"),
+    "pg":   re.compile(r"^\d{1,7}-\d$"),
+    "iban": re.compile(r"^[A-Z]{2}\d{2}[A-Z0-9]{4,30}$"),
+}
+
+def _validate_payment_account(account_type, account):
+    pat = _PAYMENT_PATTERNS.get(account_type)
+    return pat and bool(pat.match(account.upper().replace(" ", "")))
+
+def _ocr_payment_account(ocr):
+    """Map OCR bankgiro/plusgiro/iban keys to the unified model fields."""
+    for key, typ in [("bankgiro", "bg"), ("plusgiro", "pg"), ("iban", "iban")]:
+        val = (ocr.get(key) or "").strip()
+        if val:
+            return {"payment_account": val, "payment_account_type": typ}
+    return {"payment_account": None, "payment_account_type": None}
+
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
 @app.route("/login", methods=["GET", "POST"])
@@ -142,6 +387,21 @@ def auth_login():
 def auth_logout():
     logout_user()
     return redirect(url_for("auth_login"))
+
+@app.route("/not-provisioned")
+def auth_not_provisioned():
+    """Shown when an Azure AD user exists but has no onedesk account yet."""
+    return render_template("auth/not_provisioned.html"), 403
+
+@app.route("/supplier-uploads/<path:filename>")
+@login_required
+def supplier_invoice_file(filename):
+    """Serve supplier invoice files only to authenticated users."""
+    folder = _supplier_upload_folder()
+    safe_path = os.path.realpath(os.path.join(folder, filename))
+    if not safe_path.startswith(os.path.realpath(folder) + os.sep):
+        abort(404)
+    return send_file(safe_path)
 
 @app.route("/uploads/<path:filename>")
 @login_required
@@ -184,10 +444,16 @@ def dashboard():
         .order_by(TimeEntry.entry_date.desc())
         .limit(5).all())
 
-    # Assignment budget overview
+    # Assignment budget overview — eager-load all nested relationships to avoid N+1
     active_projects = (Project.query
         .join(Client)
         .filter(Project.active == True, Client.active == True)
+        .options(
+            selectinload(Project.purchase_orders).selectinload(PurchaseOrder.hour_types),
+            selectinload(Project.time_entries).selectinload(TimeEntry.hour_type),
+            selectinload(Project.expenses),
+            selectinload(Project.mileage_entries),
+        )
         .order_by(Client.name, Project.name)
         .all())
 
@@ -330,6 +596,8 @@ def projects_new(client_id):
             start_date=_safe_date(request.form.get("start_date")),
             end_date=_safe_date(request.form.get("end_date")),
             accumulated_cost=_safe_float(request.form.get("accumulated_cost"), 0),
+            invoice_cc_email=request.form.get("invoice_cc_email", "").strip() or None,
+            expense_markup_pct=_safe_float(request.form.get("expense_markup_pct"), 10.0),
         )
         db.session.add(p)
         db.session.commit()
@@ -350,6 +618,8 @@ def projects_edit(project_id):
         p.end_date         = _safe_date(request.form.get("end_date"))
         p.active           = request.form.get("active") == "1"
         p.accumulated_cost = _safe_float(request.form.get("accumulated_cost"), 0)
+        p.invoice_cc_email = request.form.get("invoice_cc_email", "").strip() or None
+        p.expense_markup_pct = _safe_float(request.form.get("expense_markup_pct"), 10.0)
         db.session.commit()
         flash("Uppdrag uppdaterat / Assignment updated", "success")
         return redirect(url_for("clients_list"))
@@ -517,6 +787,7 @@ def time_index():
 
     entries = (TimeEntry.query
         .filter(TimeEntry.entry_date >= week_start, TimeEntry.entry_date <= week_end)
+        .options(selectinload(TimeEntry.hour_type).selectinload(POHourType.po))
         .order_by(TimeEntry.entry_date)
         .all())
 
@@ -561,7 +832,12 @@ def time_index():
         else:
             hour_types_map[p.id] = []
 
+    # Swedish public holidays for the year(s) covering the displayed week
+    import holidays as _holidays
     import json
+    se_holidays = _holidays.Sweden(years={week_start.year, week_end.year})
+    bank_holidays = {d.isoformat(): name for d, name in se_holidays.items()}
+
     return render_template("time/index.html",
         week_start=week_start, week_end=week_end,
         work_dates=work_dates,
@@ -572,7 +848,8 @@ def time_index():
         current_week_start=current_week_start,
         prev_week=(week_start - timedelta(days=7)).isoformat(),
         next_week=(week_start + timedelta(days=7)).isoformat(),
-        hour_types_map_json=json.dumps(hour_types_map),
+        hour_types_map=hour_types_map,
+        bank_holidays=bank_holidays,
     )
 
 @app.route("/time/save-row", methods=["POST"])
@@ -741,6 +1018,7 @@ def expenses_index():
     return render_template("expenses/index.html", expenses=expenses, projects=projects, status_filter=status_filter)
 
 @app.route("/expenses/capture", methods=["GET", "POST"])
+@limiter.limit("10 per minute")
 @login_required
 def expenses_capture():
     """Mobile receipt capture page"""
@@ -773,7 +1051,9 @@ def expenses_review():
     if not pending:
         return redirect(url_for("expenses_capture"))
 
+    from models import ExpenseCategory
     projects = Project.query.filter_by(active=True).join(Client).order_by(Client.name).all()
+    categories = ExpenseCategory.query.filter_by(active=True).order_by(ExpenseCategory.sort_order, ExpenseCategory.name).all()
 
     if request.method == "POST":
         action = request.form.get("action")
@@ -788,9 +1068,9 @@ def expenses_review():
 
         # Save expense
         amount_incl = _safe_float(request.form.get("amount_incl_vat"), 0.0)
-        vat_rate = _safe_float(request.form.get("vat_rate"), 25.0)
-        vat_amount = round(amount_incl * vat_rate / (100 + vat_rate), 2)
+        vat_amount = round(_safe_float(request.form.get("vat_amount"), 0.0), 2)
         amount_excl = round(amount_incl - vat_amount, 2)
+        vat_rate = round(vat_amount / amount_excl * 100, 1) if amount_excl > 0 else 0.0
         expense_date = _safe_date(request.form.get("expense_date"))
         if not expense_date:
             flash("Ogiltigt datum / Invalid date", "error")
@@ -798,6 +1078,7 @@ def expenses_review():
 
         exp = Expense(
             project_id=_safe_int(request.form.get("project_id")) or None,
+            expense_category_id=_safe_int(request.form.get("expense_category_id")) or None,
             expense_date=expense_date,
             merchant=request.form.get("merchant", ""),
             description=request.form.get("description", ""),
@@ -818,7 +1099,14 @@ def expenses_review():
         # Post to Fortnox if connected
         try:
             fortnox = FortnoxClient(app.config)
-            fortnox.create_expense_voucher(exp)
+            voucher_ref = fortnox.create_expense_voucher(exp)
+            if voucher_ref and exp.receipt_filename:
+                receipt_path = os.path.join(app.config["UPLOAD_FOLDER"], exp.receipt_filename)
+                base = exp.receipt_filename
+                if "_" in base and len(base.split("_")[0]) == 16:
+                    base = base.split("_", 1)[1]
+                attach_name = f"{voucher_ref}-{base}"
+                _email_pdf_to_fortnox_inbox(receipt_path, attach_name, voucher_ref, app.config)
         except Exception as e:
             flash(f"Fortnox-fel / Fortnox error: {e}", "warning")
 
@@ -826,7 +1114,7 @@ def expenses_review():
         return redirect(url_for("expenses_index"))
 
     return render_template("expenses/review.html",
-        pending=pending, projects=projects,
+        pending=pending, projects=projects, categories=categories,
         ocr=pending.get("ocr_data", {}))
 
 @app.route("/expenses/<int:exp_id>/delete", methods=["POST"])
@@ -906,6 +1194,7 @@ def invoices_list():
     return render_template("invoices/index.html", invoices=invoices, today=date.today())
 
 @app.route("/invoices/new", methods=["GET", "POST"])
+@limiter.limit("20 per hour")
 @login_required
 def invoices_new():
     projects = (Project.query
@@ -983,8 +1272,9 @@ def invoices_new():
                 MileageEntry.entry_date <= period_end,
             ).all())
 
+        markup_factor = 1 + (project.expense_markup_pct or 10.0) / 100
         time_subtotal = round(sum(e.hours * e.effective_rate for e in entries), 2)
-        expense_subtotal = round(sum(e.amount_excl_vat for e in expenses), 2)
+        expense_subtotal = round(sum(e.amount_excl_vat * markup_factor for e in expenses), 2)
         mileage_subtotal = round(sum(m.amount for m in mileage), 2)
         subtotal = time_subtotal + expense_subtotal + mileage_subtotal
         vat = round(subtotal * 0.25, 2)
@@ -1004,9 +1294,18 @@ def invoices_new():
             currency=client.currency,
             status="draft",
         )
-        inv.generate_number(app.config["FY_START_MONTH"])
+        from sqlalchemy.exc import IntegrityError as _IntegrityError
         db.session.add(inv)
-        db.session.flush()
+        for attempt in range(5):
+            inv.generate_number(app.config["FY_START_MONTH"])
+            try:
+                db.session.flush()
+                break
+            except _IntegrityError:
+                db.session.rollback()
+                if attempt == 4:
+                    flash("Fakturanummer kunde inte tilldelas – försök igen / Could not assign invoice number – please retry", "error")
+                    return redirect(url_for("invoices_create"))
 
         for e in entries:
             e.invoice_id = inv.id
@@ -1032,7 +1331,13 @@ def invoices_new():
 @app.route("/invoices/<int:invoice_id>")
 @login_required
 def invoices_proforma(invoice_id):
-    inv = Invoice.query.get_or_404(invoice_id)
+    inv = (Invoice.query
+        .options(
+            selectinload(Invoice.time_entries).selectinload(TimeEntry.hour_type).selectinload(POHourType.po),
+            selectinload(Invoice.expenses),
+            selectinload(Invoice.mileage_entries),
+        )
+        .get_or_404(invoice_id))
     return render_template("invoices/proforma.html", inv=inv)
 
 @app.route("/invoices/<int:invoice_id>/approve", methods=["POST"])
@@ -1059,6 +1364,7 @@ def invoices_approve(invoice_id):
               "PDF could not be generated – use the Print button to save as PDF via the browser. "
               "Run 'brew install pango' to enable automatic PDF generation.", "warning")
 
+    _audit("invoice_approved", f"invoice_id={invoice_id} number={inv.invoice_number} total={inv.total}")
     flash("Faktura godkänd / Invoice approved", "success")
     return redirect(url_for("invoices_proforma", invoice_id=invoice_id))
 
@@ -1080,57 +1386,38 @@ def invoices_send(invoice_id):
     except Exception as e:
         flash(f"E-postfel / Email error: {e}", "error")
 
-    # DEBUG: Fortnox API call disabled — dry-run only
-    try:
-        fortnox = FortnoxClient(app.config)
-        customer_nr = fortnox.get_or_create_customer(inv.client)
+    # ── Fortnox live sync ──
+    if Settings.get("fortnox_access_token"):
+        try:
+            # Ensure PDF exists before posting (it's attached to the voucher)
+            if not inv.pdf_filename:
+                pdf_path = generate_invoice_pdf(inv, app.config)
+                inv.pdf_filename = os.path.basename(pdf_path)
+                db.session.commit()
+            fortnox = FortnoxClient(app.config)
+            result = fortnox.create_outgoing_invoice_voucher(inv)
+            voucher = result.get("Voucher", {})
+            voucher_nr = voucher.get("VoucherNumber")
+            voucher_series = voucher.get("VoucherSeries", "B")
+            fy_year = (inv.issue_date or date.today()).year
+            voucher_ref = f"{fy_year}-{voucher_series}{voucher_nr}" if voucher_nr else None
+            if voucher_ref:
+                inv.fortnox_invoice_nr = voucher_ref
+                db.session.commit()
+                if inv.pdf_filename:
+                    pdf_path = os.path.join(app.root_path, "static", "uploads", inv.pdf_filename)
+                    attach_name = f"{voucher_ref}-{inv.invoice_number}.pdf"
+                    _email_pdf_to_fortnox_inbox(pdf_path, attach_name, voucher_ref, app.config)
+                flash(f"Fortnox verifikat skapat: {voucher_ref} / Voucher created: {voucher_ref}", "success")
+        except Exception as e:
+            flash(f"Fortnox-fel / Fortnox error: {e}", "warning")
+        return redirect(url_for("invoices_proforma", invoice_id=invoice_id))
 
-        rows = []
-        if inv.time_entries:
-            total_hours = sum(e.hours for e in inv.time_entries)
-            rows.append({
-                "ArticleNumber": "TID",
-                "Description": f"Konsulttjänster {inv.period_start} – {inv.period_end}",
-                "DeliveredQuantity": str(total_hours),
-                "Price": str(inv.client.hourly_rate),
-                "VAT": "25",
-                "Unit": "tim",
-            })
-        for exp in inv.expenses:
-            rows.append({
-                "Description": exp.description or exp.merchant or "Utlägg",
-                "DeliveredQuantity": "1",
-                "Price": str(exp.amount_excl_vat),
-                "VAT": str(int(exp.vat_rate)),
-            })
-
-        dry_run_payload = {
-            "Invoice": {
-                "CustomerNumber": customer_nr,
-                "InvoiceDate": inv.issue_date.isoformat(),
-                "DueDate": inv.due_date.isoformat(),
-                "Currency": inv.currency,
-                "Language": "SV" if inv.language == "sv" else "EN",
-                "InvoiceRows": rows,
-                "Remarks": inv.notes or "",
-            }
-        }
-
-        import json as _json
-        app.logger.info(
-            "DEBUG Fortnox dry-run — POST %s/invoices\n%s",
-            FortnoxClient.BASE_URL,
-            _json.dumps(dry_run_payload, indent=2, ensure_ascii=False),
-        )
-        flash(
-            "DEBUG: Fortnox POST (dry-run) — se serverloggen för payload / "
-            "See server log for payload",
-            "info",
-        )
-    except Exception as e:
-        flash(f"Fortnox dry-run fel / Fortnox dry-run error: {e}", "warning")
-
-    return redirect(url_for("invoices_proforma", invoice_id=invoice_id))
+    # Fortnox not connected — show dry-run payload preview instead
+    session["fortnox_preview"] = _build_outgoing_invoice_voucher_preview(inv)
+    session["fortnox_preview"]["back_url"] = url_for("invoices_proforma", invoice_id=invoice_id)
+    session["fortnox_preview"]["back_label"] = f"← Faktura {inv.invoice_number}"
+    return redirect(url_for("fortnox_preview"))
 
 @app.route("/invoices/<int:invoice_id>/download")
 @login_required
@@ -1164,6 +1451,7 @@ def invoices_mark_paid(invoice_id):
     inv = Invoice.query.get_or_404(invoice_id)
     inv.status = "paid"
     db.session.commit()
+    _audit("invoice_marked_paid", f"invoice_id={invoice_id} number={inv.invoice_number}")
     flash("Markerad som betald / Marked as paid", "success")
     return redirect(url_for("invoices_list"))
 
@@ -1205,42 +1493,245 @@ def invoices_delete(invoice_id):
     for m in inv.mileage_entries:
         m.invoice_id = None
         m.status = "approved"
+    inv_number = inv.invoice_number
     db.session.delete(inv)
     db.session.commit()
+    _audit("invoice_deleted", f"invoice_id={invoice_id} number={inv_number}")
     flash("Faktura borttagen / Invoice deleted", "success")
     return redirect(url_for("invoices_list"))
 
 # ── Fortnox OAuth ─────────────────────────────────────────────────────────────
+
+@app.route("/fortnox/sync-payments", methods=["POST"])
+@limiter.limit("5 per hour")
+@login_required
+@admin_required
+def fortnox_sync_payments():
+    """Check Fortnox C-series vouchers and mark matching invoices as paid."""
+    if not Settings.get("fortnox_access_token"):
+        flash("Fortnox ej anslutet / Fortnox not connected", "error")
+        return redirect(url_for("invoices_list"))
+    try:
+        fortnox = FortnoxClient(app.config)
+        paid_nrs = fortnox.get_paid_invoice_numbers()
+        app.logger.info("Fortnox payment sync — found C-series invoice numbers: %s", paid_nrs)
+        count = 0
+        if paid_nrs:
+            from models import Invoice as Inv
+            invoices = Inv.query.filter(
+                Inv.status == "sent",
+                Inv.invoice_number.in_(paid_nrs)
+            ).all()
+            for inv in invoices:
+                inv.status = "paid"
+                count += 1
+            db.session.commit()
+        flash(f"{count} faktura(or) markerade som betalda / {count} invoice(s) marked as paid", "success")
+    except Exception as e:
+        flash(f"Fortnox sync-fel: {e}", "error")
+    return redirect(url_for("invoices_list"))
+
 
 @app.route("/fortnox/connect")
 @login_required
 def fortnox_connect():
     fortnox = FortnoxClient(app.config)
     auth_url = fortnox.get_auth_url()
+    app.logger.info("Fortnox OAuth — redirecting to auth URL: %s", auth_url)
     return redirect(auth_url)
 
 @app.route("/fortnox/callback")
 @login_required
 def fortnox_callback():
+    app.logger.info("Fortnox callback received — args: %s", dict(request.args))
     code = request.args.get("code")
     if not code:
-        flash("Fortnox-anslutning misslyckades / Fortnox connection failed", "error")
+        error = request.args.get("error", "no_code")
+        error_desc = request.args.get("error_description", "")
+        app.logger.error("Fortnox callback missing code. error=%s desc=%s args=%s",
+                         error, error_desc, dict(request.args))
+        flash(f"Fortnox-anslutning misslyckades: {error} — {error_desc} / "
+              f"Connection failed: {error} — {error_desc}", "error")
         return redirect(url_for("settings"))
     try:
         fortnox = FortnoxClient(app.config)
         tokens = fortnox.exchange_code(code)
+        app.logger.info("Fortnox token exchange success — keys: %s", list(tokens.keys()))
         Settings.set("fortnox_access_token", tokens["access_token"])
         Settings.set("fortnox_refresh_token", tokens.get("refresh_token", ""))
         flash("Fortnox anslutet / Fortnox connected!", "success")
     except Exception as e:
+        app.logger.error("Fortnox token exchange failed: %s", e, exc_info=True)
         flash(f"Fortnox-fel: {e}", "error")
     return redirect(url_for("settings"))
 
 @app.route("/settings")
 @login_required
 def settings():
+    from models import ExpenseCategory, SupplierCategory
     fortnox_connected = bool(Settings.get("fortnox_access_token"))
-    return render_template("settings.html", fortnox_connected=fortnox_connected)
+    users = User.query.order_by(User.display_name).all() if current_user.is_admin else []
+    expense_cats = ExpenseCategory.query.filter_by(active=True).order_by(ExpenseCategory.sort_order, ExpenseCategory.name).all()
+    supplier_cats = SupplierCategory.query.filter_by(active=True).order_by(SupplierCategory.sort_order, SupplierCategory.name).all()
+    return render_template("settings.html",
+        fortnox_connected=fortnox_connected,
+        users=users,
+        expense_categories=expense_cats,
+        supplier_categories=supplier_cats,
+        currencies=_get_currencies())
+
+# ── User management ───────────────────────────────────────────────────────────
+
+@app.route("/settings/users/new", methods=["GET", "POST"])
+@login_required
+@admin_required
+def user_new():
+    if request.method == "POST":
+        email = (request.form.get("email") or "").strip().lower()
+        display_name = request.form.get("display_name", "").strip()
+        role = request.form.get("role", "employee")
+        if not email or not display_name:
+            flash("Namn och e-post krävs / Name and email are required", "error")
+            return redirect(url_for("user_new"))
+        if User.query.filter_by(email=email).first():
+            flash("E-postadressen används redan / Email already in use", "error")
+            return redirect(url_for("user_new"))
+        user = User(
+            display_name=display_name,
+            email=email,
+            role=role,
+            active=True,
+        )
+        db.session.add(user)
+        db.session.commit()
+        flash(f"Användare {display_name} skapad / User {display_name} created", "success")
+        return redirect(url_for("settings") + "#users")
+    return render_template("users/form.html", user=None)
+
+@app.route("/settings/users/<int:user_id>/edit", methods=["GET", "POST"])
+@login_required
+@admin_required
+def user_edit(user_id):
+    user = User.query.get_or_404(user_id)
+    if request.method == "POST":
+        user.display_name = request.form.get("display_name", user.display_name).strip()
+        user.email = (request.form.get("email") or user.email).strip().lower()
+        user.role = request.form.get("role", user.role)
+        active_val = request.form.get("active", "1")
+        # Prevent admin from deactivating themselves
+        if user.id == current_user.id and active_val != "1":
+            flash("Du kan inte inaktivera ditt eget konto / Cannot deactivate your own account", "error")
+        else:
+            user.active = (active_val == "1")
+        db.session.commit()
+        flash("Användare uppdaterad / User updated", "success")
+        return redirect(url_for("settings") + "#users")
+    return render_template("users/form.html", user=user)
+
+# ── Expense categories ────────────────────────────────────────────────────────
+
+@app.route("/settings/expense-categories", methods=["GET", "POST"])
+@login_required
+@admin_required
+def expense_categories():
+    from models import ExpenseCategory
+    if request.method == "POST":
+        action = request.form.get("action")
+        if action == "new":
+            name = request.form.get("name", "").strip()
+            debit_account = request.form.get("debit_account", "").strip()
+            if name and debit_account:
+                sort_order = ExpenseCategory.query.count() + 1
+                db.session.add(ExpenseCategory(name=name, debit_account=debit_account, sort_order=sort_order))
+                db.session.commit()
+                flash("Kategori skapad / Category created", "success")
+        elif action == "delete":
+            cat_id = _safe_int(request.form.get("category_id"))
+            cat = ExpenseCategory.query.get(cat_id)
+            if cat:
+                cat.active = False
+                db.session.commit()
+                flash("Kategori inaktiverad / Category deactivated", "success")
+        elif action == "save":
+            cat_id = _safe_int(request.form.get("category_id"))
+            cat = ExpenseCategory.query.get(cat_id)
+            if cat:
+                cat.name = request.form.get("name", cat.name).strip()
+                cat.debit_account = request.form.get("debit_account", cat.debit_account).strip()
+                db.session.commit()
+                flash("Kategori sparad / Category saved", "success")
+        return redirect(url_for("expense_categories"))
+    categories = ExpenseCategory.query.order_by(ExpenseCategory.sort_order, ExpenseCategory.name).all()
+    return render_template("settings/expense_categories.html", categories=categories)
+
+
+def _get_currencies():
+    raw = Settings.get("invoice_currencies", "SEK,EUR")
+    return [c.strip().upper() for c in raw.split(",") if c.strip()]
+
+
+@app.route("/settings/currencies", methods=["GET", "POST"])
+@login_required
+@admin_required
+def settings_currencies():
+    if request.method == "POST":
+        action = request.form.get("action")
+        if action == "add":
+            code = request.form.get("code", "").strip().upper()[:3]
+            if code and code.isalpha():
+                codes = _get_currencies()
+                if code not in codes:
+                    codes.append(code)
+                Settings.set("invoice_currencies", ",".join(codes))
+        elif action == "delete":
+            code = request.form.get("code", "").strip().upper()
+            codes = [c for c in _get_currencies() if c != code]
+            Settings.set("invoice_currencies", ",".join(codes) or "SEK")
+        elif action == "set_default":
+            code = request.form.get("code", "").strip().upper()
+            codes = _get_currencies()
+            if code in codes:
+                codes.remove(code)
+                codes.insert(0, code)
+                Settings.set("invoice_currencies", ",".join(codes))
+        return redirect(url_for("settings_currencies"))
+    return render_template("settings/currencies.html", currencies=_get_currencies())
+
+
+@app.route("/settings/supplier-categories", methods=["GET", "POST"])
+@login_required
+@admin_required
+def supplier_categories():
+    from models import SupplierCategory
+    if request.method == "POST":
+        action = request.form.get("action")
+        if action == "new":
+            name = request.form.get("name", "").strip()
+            debit_account = request.form.get("debit_account", "").strip()
+            if name and debit_account:
+                sort_order = SupplierCategory.query.count() + 1
+                db.session.add(SupplierCategory(name=name, debit_account=debit_account, sort_order=sort_order))
+                db.session.commit()
+                flash("Kategori skapad / Category created", "success")
+        elif action == "delete":
+            cat_id = _safe_int(request.form.get("category_id"))
+            cat = SupplierCategory.query.get(cat_id)
+            if cat:
+                cat.active = False
+                db.session.commit()
+                flash("Kategori inaktiverad / Category deactivated", "success")
+        elif action == "save":
+            cat_id = _safe_int(request.form.get("category_id"))
+            cat = SupplierCategory.query.get(cat_id)
+            if cat:
+                cat.name = request.form.get("name", cat.name).strip()
+                cat.debit_account = request.form.get("debit_account", cat.debit_account).strip()
+                db.session.commit()
+                flash("Kategori sparad / Category saved", "success")
+        return redirect(url_for("supplier_categories"))
+    categories = SupplierCategory.query.order_by(SupplierCategory.sort_order, SupplierCategory.name).all()
+    return render_template("settings/supplier_categories.html", categories=categories)
+
 
 @app.route("/settings/password", methods=["POST"])
 @login_required
@@ -1252,8 +1743,7 @@ def change_password():
     elif len(new_pw) < 8:
         flash("Lösenordet måste vara minst 8 tecken / Password must be at least 8 characters", "error")
     else:
-        user = User.query.first()
-        user.password_hash = generate_password_hash(new_pw)
+        current_user.password_hash = generate_password_hash(new_pw)
         db.session.commit()
         flash("Lösenord uppdaterat / Password updated", "success")
     return redirect(url_for("settings"))
@@ -1385,11 +1875,597 @@ def settings_restore():
     return redirect(url_for("settings"))
 
 
+@app.route("/settings/log")
+@login_required
+@admin_required
+def settings_log():
+    """Return the current week's log file as plain text."""
+    log_path = os.path.join(app.root_path, "logs", "onedesk.log")
+    if not os.path.exists(log_path):
+        return "No log file yet.", 200, {"Content-Type": "text/plain; charset=utf-8"}
+    # Read last 2000 lines so the browser doesn't choke on huge files
+    with open(log_path, encoding="utf-8", errors="replace") as f:
+        lines = f.readlines()
+    tail = "".join(lines[-2000:])
+    return tail, 200, {"Content-Type": "text/plain; charset=utf-8"}
+
+
+# ── Supplier invoices ─────────────────────────────────────────────────────────
+
+SUPPLIER_UPLOAD_FOLDER_NAME = "supplier"
+
+def _supplier_upload_folder():
+    base = os.path.join(app.root_path, "instance", "uploads", "supplier")
+    os.makedirs(base, exist_ok=True)
+    return base
+
+@app.route("/supplier-invoices")
+@login_required
+def supplier_invoices_index():
+    _sup_opts = selectinload(SupplierInvoice.supplier_category)
+    pending = SupplierInvoice.query.filter(
+        SupplierInvoice.status == "pending"
+    ).options(_sup_opts).order_by(SupplierInvoice.due_date).all()
+    # "approved" = saved but Fortnox booking failed; "booked" = fully booked, ready to pay
+    backlog = SupplierInvoice.query.filter(
+        SupplierInvoice.status.in_(["approved", "booked"])
+    ).options(_sup_opts).order_by(SupplierInvoice.due_date).all()
+    paid = SupplierInvoice.query.filter_by(status="paid").options(_sup_opts).order_by(SupplierInvoice.created_at.desc()).limit(20).all()
+    payment_files = PaymentFile.query.order_by(PaymentFile.created_at.desc()).limit(10).all()
+    return render_template("supplier_invoices/index.html",
+        pending=pending, backlog=backlog, paid=paid, payment_files=payment_files)
+
+@app.route("/supplier-invoices/upload", methods=["GET", "POST"])
+@limiter.limit("10 per minute")
+@login_required
+def supplier_invoices_upload():
+    if request.method == "POST":
+        file = request.files.get("invoice_file")
+        if not file or not file.filename:
+            flash("Ingen fil vald / No file selected", "error")
+            return redirect(url_for("supplier_invoices_upload"))
+        ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else ""
+        if ext not in {"pdf", "jpg", "jpeg", "png", "webp"}:
+            flash("Filtypen stöds ej / Unsupported file type", "error")
+            return redirect(url_for("supplier_invoices_upload"))
+
+        folder = _supplier_upload_folder()
+        filename = f"{secrets.token_hex(8)}_{secure_filename(file.filename)}"
+        save_path = os.path.join(folder, filename)
+        file.save(save_path)
+
+        # OCR
+        ocr = extract_supplier_invoice_data(save_path, app.config.get("ANTHROPIC_API_KEY", ""))
+        _log = logging.getLogger("supplier_invoice")
+        if ocr.get("error"):
+            _log.warning("OCR partial or failed for %s: %s", filename, ocr.get("error"))
+        else:
+            _log.info("OCR complete for %s — supplier=%s amount=%s", filename, ocr.get("supplier_name"), ocr.get("amount_incl_vat"))
+
+        inv = SupplierInvoice(
+            pdf_filename=filename,
+            supplier_name=ocr.get("supplier_name"),
+            supplier_org_nr=ocr.get("supplier_org_nr"),
+            invoice_date=_safe_date(ocr.get("invoice_date")),
+            due_date=_safe_date(ocr.get("due_date")),
+            amount_excl_vat=_safe_float(ocr.get("amount_excl_vat")),
+            vat_amount=_safe_float(ocr.get("vat_amount")),
+            amount_incl_vat=_safe_float(ocr.get("amount_incl_vat")),
+            currency=ocr.get("currency") or "SEK",
+            payment_ref=ocr.get("payment_ref"),
+            **_ocr_payment_account(ocr),
+            ocr_raw=json.dumps(ocr),
+            status="pending",
+        )
+        db.session.add(inv)
+        db.session.commit()
+        return redirect(url_for("supplier_invoices_review", invoice_id=inv.id))
+
+    return render_template("supplier_invoices/upload.html")
+
+@app.route("/supplier-invoices/<int:invoice_id>/review", methods=["GET", "POST"])
+@login_required
+def supplier_invoices_review(invoice_id):
+    from models import SupplierCategory
+    inv = SupplierInvoice.query.get_or_404(invoice_id)
+    projects = Project.query.filter_by(active=True).join(Client).order_by(Client.name).all()
+    categories = SupplierCategory.query.filter_by(active=True).order_by(SupplierCategory.sort_order, SupplierCategory.name).all()
+    currencies = _get_currencies()
+
+    if request.method == "POST":
+        action = request.form.get("action", "save")
+        if action == "discard":
+            fp = os.path.join(_supplier_upload_folder(), inv.pdf_filename)
+            if os.path.exists(fp):
+                os.remove(fp)
+            db.session.delete(inv)
+            db.session.commit()
+            flash("Faktura kasserad / Invoice discarded", "info")
+            return redirect(url_for("supplier_invoices_index"))
+
+        inv.supplier_name = request.form.get("supplier_name", inv.supplier_name or "").strip()
+        inv.supplier_org_nr = request.form.get("supplier_org_nr", "").strip()
+        inv.invoice_date = _safe_date(request.form.get("invoice_date"))
+        inv.due_date = _safe_date(request.form.get("due_date"))
+        amount_excl = _safe_float(request.form.get("amount_excl_vat"))
+        vat_amt     = _safe_float(request.form.get("vat_amount"))
+        amount_incl = _safe_float(request.form.get("amount_incl_vat"))
+
+        # Validate dates
+        if not inv.invoice_date:
+            flash("Fakturadatum krävs (YYYY-MM-DD) / Invoice date is required (YYYY-MM-DD)", "error")
+            ocr = json.loads(inv.ocr_raw) if inv.ocr_raw else {}
+            return render_template("supplier_invoices/review.html",
+                inv=inv, projects=projects, categories=categories, ocr=ocr, currencies=currencies)
+        if not inv.due_date:
+            flash("Förfallodatum krävs (YYYY-MM-DD) / Due date is required (YYYY-MM-DD)", "error")
+            ocr = json.loads(inv.ocr_raw) if inv.ocr_raw else {}
+            return render_template("supplier_invoices/review.html",
+                inv=inv, projects=projects, categories=categories, ocr=ocr, currencies=currencies)
+
+        # Validate amounts
+        if amount_incl <= 0:
+            flash("Belopp inkl. moms måste vara större än noll / Amount incl. VAT must be greater than zero", "error")
+            ocr = json.loads(inv.ocr_raw) if inv.ocr_raw else {}
+            return render_template("supplier_invoices/review.html",
+                inv=inv, projects=projects, categories=categories, ocr=ocr, currencies=currencies)
+        if vat_amt < 0:
+            flash("Momsbelopp kan inte vara negativt / VAT amount cannot be negative", "error")
+            ocr = json.loads(inv.ocr_raw) if inv.ocr_raw else {}
+            return render_template("supplier_invoices/review.html",
+                inv=inv, projects=projects, categories=categories, ocr=ocr, currencies=currencies)
+        expected_incl = round(amount_excl + vat_amt, 2)
+        if abs(expected_incl - amount_incl) > 0.05:
+            diff = round(abs(expected_incl - amount_incl), 2)
+            flash(
+                f"Beloppen stämmer inte: {amount_excl:.2f} (exkl.) + {vat_amt:.2f} (moms) = {expected_incl:.2f}, "
+                f"men 'Att betala' är {amount_incl:.2f} (differens {diff:.2f}). Kontrollera beloppen mot fakturan. "
+                f"/ Amount mismatch: {amount_excl:.2f} (excl.) + {vat_amt:.2f} (VAT) = {expected_incl:.2f}, "
+                f"but 'Total to pay' is {amount_incl:.2f} (diff {diff:.2f}). Check the amounts against the invoice.",
+                "error"
+            )
+            ocr = json.loads(inv.ocr_raw) if inv.ocr_raw else {}
+            return render_template("supplier_invoices/review.html",
+                inv=inv, projects=projects, categories=categories, ocr=ocr, currencies=currencies)
+
+        payment_ref     = request.form.get("payment_ref", "").strip()
+        payment_type    = request.form.get("payment_type", "bg")
+        payment_account = request.form.get("payment_account", "").strip()
+
+        def _re_render(msg):
+            flash(msg, "error")
+            ocr = json.loads(inv.ocr_raw) if inv.ocr_raw else {}
+            return render_template("supplier_invoices/review.html",
+                inv=inv, projects=projects, categories=categories, ocr=ocr, currencies=currencies)
+
+        if not payment_ref:
+            return _re_render(
+                "OCR / betalningsreferens krävs / Payment reference is required"
+            )
+        if not payment_account:
+            return _re_render(
+                "Ange kontonummer (BG, PG eller IBAN) / "
+                "Payment account (BG, PG or IBAN) is required"
+            )
+        if not _validate_payment_account(payment_type, payment_account):
+            fmt = {"bg": "NNNN-NNNN", "pg": "NNNNNNN-N", "iban": "SE00NNNN…"}.get(payment_type, "")
+            return _re_render(
+                f"Ogiltigt kontoformat för {payment_type.upper()} (förväntat: {fmt}) / "
+                f"Invalid {payment_type.upper()} format (expected: {fmt})"
+            )
+
+        inv.amount_excl_vat      = amount_excl
+        inv.vat_amount           = vat_amt
+        inv.amount_incl_vat      = amount_incl
+        inv.currency             = request.form.get("currency", "SEK")
+        inv.payment_ref          = payment_ref
+        inv.payment_account      = payment_account
+        inv.payment_account_type = payment_type
+        inv.supplier_category_id = _safe_int(request.form.get("supplier_category_id")) or None
+        inv.vat_rate = _safe_float(request.form.get("vat_rate"), 25.0)
+        inv.project_id = _safe_int(request.form.get("project_id")) or None
+        inv.status = "approved"
+        db.session.commit()
+
+        _audit("supplier_invoice_saved", f"invoice_id={invoice_id} supplier={inv.supplier_name} amount={inv.amount_incl_vat} {inv.currency}")
+        _slog = logging.getLogger("supplier_invoice")
+        _slog.info("Invoice saved — id=%s file=%s supplier=%s amount=%s %s ref=%s",
+                   invoice_id, inv.pdf_filename, inv.supplier_name,
+                   inv.amount_incl_vat, inv.currency, inv.payment_ref)
+        flash("Faktura sparad / Invoice saved", "success")
+        try:
+            fortnox = FortnoxClient(app.config)
+            voucher_ref = fortnox.create_supplier_invoice_voucher(inv)
+            _slog.info("Fortnox voucher created — ref=%s file=%s", voucher_ref, inv.pdf_filename)
+            flash(f"Fortnox verifikat skapat: {voucher_ref} / Voucher created: {voucher_ref}", "success")
+            if inv.pdf_filename and voucher_ref:
+                folder = _supplier_upload_folder()
+                old_path = os.path.join(folder, inv.pdf_filename)
+                # Strip random hex prefix, prepend voucher ref
+                base = inv.pdf_filename
+                if "_" in base and len(base.split("_")[0]) == 16:
+                    base = base.split("_", 1)[1]
+                new_filename = f"{voucher_ref}-{base}"
+                new_path = os.path.join(folder, new_filename)
+                if os.path.exists(old_path):
+                    os.rename(old_path, new_path)
+                    inv.pdf_filename = new_filename
+                    db.session.commit()
+                _email_pdf_to_fortnox_inbox(new_path, new_filename, voucher_ref, app.config)
+        except Exception as e:
+            logging.getLogger("supplier_invoice").error(
+                "Fortnox voucher failed — id=%s file=%s error=%s", invoice_id, inv.pdf_filename, e,
+                exc_info=True)
+            flash(f"Fortnox-fel / Fortnox error: {e}", "warning")
+            session["fortnox_preview"] = _build_supplier_voucher_preview(inv)
+            session["fortnox_preview"]["back_url"] = url_for("supplier_invoices_index")
+            session["fortnox_preview"]["back_label"] = "← Leverantörsfakturor / Supplier invoices"
+            return redirect(url_for("fortnox_preview"))
+
+        return redirect(url_for("supplier_invoices_index"))
+
+    ocr = json.loads(inv.ocr_raw) if inv.ocr_raw else {}
+    return render_template("supplier_invoices/review.html",
+        inv=inv, projects=projects, categories=categories, ocr=ocr, currencies=currencies)
+
+@app.route("/supplier-invoices/<int:invoice_id>/book", methods=["POST"])
+@login_required
+def supplier_invoices_book(invoice_id):
+    """Manually trigger Fortnox booking for an already-approved invoice."""
+    inv = SupplierInvoice.query.get_or_404(invoice_id)
+    if inv.status not in ("approved", "pending"):
+        flash("Fakturan är redan bokförd / Invoice already booked", "error")
+        return redirect(url_for("supplier_invoices_index"))
+    # Live booking commented out — show dry-run preview instead
+    # try:
+    #     _book_supplier_invoice_fortnox(inv)
+    #     flash("Bokförd i Fortnox / Booked in Fortnox", "success")
+    # except Exception as e:
+    #     flash(f"Fortnox-fel / Fortnox error: {e}", "error")
+    session["fortnox_preview"] = _build_supplier_voucher_preview(inv)
+    session["fortnox_preview"]["back_url"] = url_for("supplier_invoices_index")
+    session["fortnox_preview"]["back_label"] = "← Leverantörsfakturor / Supplier invoices"
+    return redirect(url_for("fortnox_preview"))
+
+@app.route("/supplier-invoices/<int:invoice_id>/mark-paid", methods=["POST"])
+@login_required
+def supplier_invoices_mark_paid(invoice_id):
+    inv = SupplierInvoice.query.get_or_404(invoice_id)
+    inv.status = "paid"
+    db.session.commit()
+    _audit("supplier_invoice_marked_paid", f"invoice_id={invoice_id} supplier={inv.supplier_name} amount={inv.amount_incl_vat}")
+    flash("Markerad som betald / Marked as paid", "success")
+    return redirect(url_for("supplier_invoices_index"))
+
+@app.route("/supplier-invoices/<int:invoice_id>/delete", methods=["POST"])
+@login_required
+def supplier_invoices_delete(invoice_id):
+    inv = SupplierInvoice.query.get_or_404(invoice_id)
+    if inv.status in ("booked", "paid"):
+        flash("Kan ej ta bort bokförd faktura / Cannot delete a booked invoice", "error")
+        return redirect(url_for("supplier_invoices_index"))
+    if inv.pdf_filename:
+        fp = os.path.join(_supplier_upload_folder(), inv.pdf_filename)
+        if os.path.exists(fp):
+            os.remove(fp)
+    db.session.delete(inv)
+    db.session.commit()
+    _audit("supplier_invoice_deleted", f"invoice_id={invoice_id} supplier={inv.supplier_name}")
+    flash("Borttagen / Deleted", "success")
+    return redirect(url_for("supplier_invoices_index"))
+
+# ── Payment run ───────────────────────────────────────────────────────────────
+
+@app.route("/supplier-invoices/payment-run", methods=["GET", "POST"])
+@limiter.limit("5 per hour")
+@login_required
+def payment_run():
+    backlog = SupplierInvoice.query.filter(
+        SupplierInvoice.status == "booked",
+        SupplierInvoice.payment_file_id == None,
+    ).order_by(SupplierInvoice.due_date).all()
+    pending_files = PaymentFile.query.filter_by(status="generated").order_by(PaymentFile.created_at.desc()).all()
+    if request.method == "POST":
+        selected_ids = [_safe_int(i) for i in request.form.getlist("invoice_ids") if i]
+        payment_date = _safe_date(request.form.get("payment_date")) or date.today()
+        if not selected_ids:
+            flash("Välj minst en faktura / Select at least one invoice", "error")
+            return redirect(url_for("payment_run"))
+
+        selected = SupplierInvoice.query.filter(
+            SupplierInvoice.id.in_(selected_ids),
+            SupplierInvoice.status == "booked",
+            SupplierInvoice.payment_file_id == None,
+        ).all()
+        if not selected:
+            flash("Inga giltiga fakturor / No valid invoices", "error")
+            return redirect(url_for("payment_run"))
+
+        try:
+            xml_bytes = generate_pain001(selected, payment_date, app.config)
+        except Exception as e:
+            flash(f"Kunde inte generera betalningsfil / Could not generate payment file: {e}", "error")
+            return redirect(url_for("payment_run"))
+
+        # Save file record — use the actual ReqdExctnDt from the pain.001 as payment_date
+        execution_date = get_execution_date(selected)
+        total = sum(i.amount_incl_vat for i in selected)
+        filename = f"betalning_{execution_date.isoformat()}_{secrets.token_hex(4)}.xml"
+        pf = PaymentFile(
+            filename=filename,
+            payment_date=execution_date,
+            total_amount=total,
+            invoice_count=len(selected),
+            status="generated",
+        )
+        db.session.add(pf)
+        db.session.flush()
+        for inv in selected:
+            inv.payment_file_id = pf.id
+        db.session.commit()
+        _audit("payment_file_generated", f"pf_id={pf.id} file={filename} invoices={len(selected)} total={total}")
+
+        return send_file(
+            io.BytesIO(xml_bytes),
+            as_attachment=True,
+            download_name=filename,
+            mimetype="application/xml",
+        )
+
+    return render_template("supplier_invoices/payment_run.html", backlog=backlog, today=date.today(), pending_files=pending_files)
+
+@app.route("/supplier-invoices/payment-files/<int:pf_id>/confirm", methods=["POST"])
+@login_required
+def payment_file_confirm(pf_id):
+    pf = PaymentFile.query.get_or_404(pf_id)
+    pf.status = "confirmed"
+    pf.confirmed_at = datetime.utcnow()
+    for inv in pf.supplier_invoices:
+        inv.status = "paid"
+    db.session.commit()
+    _audit("payment_file_confirmed", f"pf_id={pf_id} file={pf.filename} invoices={pf.invoice_count} total={pf.total_amount}")
+
+    # Post payment voucher: 2440 → 1930 for all invoices in this payment file
+    # Voucher must be dated on the bank execution date, not the confirmation date.
+    if not pf.payment_date:
+        flash("Betalningsfilen saknar betalningsdatum — Fortnox-bokföring hoppades över / "
+              "Payment file has no payment date — Fortnox posting skipped", "warning")
+        return redirect(url_for("supplier_invoices_index"))
+    try:
+        fortnox = FortnoxClient(app.config)
+        invoice_ids = [inv.id for inv in pf.supplier_invoices]
+        voucher_ref = fortnox.create_payment_voucher(invoice_ids, pf.payment_date)
+        flash(
+            f"Betalning bekräftad — {pf.invoice_count} fakturor betalda, verifikat {voucher_ref} / "
+            f"Payment confirmed — {pf.invoice_count} invoices paid, voucher {voucher_ref}",
+            "success",
+        )
+    except Exception as e:
+        flash(
+            f"Betalning bekräftad men Fortnox-bokföring misslyckades: {e} / "
+            f"Payment confirmed but Fortnox posting failed: {e}",
+            "warning",
+        )
+
+    return redirect(url_for("supplier_invoices_index"))
+
+@app.route("/supplier-invoices/payment-files/<int:pf_id>/download")
+@login_required
+def payment_file_download(pf_id):
+    pf = PaymentFile.query.get_or_404(pf_id)
+    invs = [i for i in pf.supplier_invoices if i.payment_account]
+    xml_bytes = generate_pain001(invs, pf.payment_date, app.config)
+    return send_file(
+        io.BytesIO(xml_bytes),
+        as_attachment=True,
+        download_name=pf.filename,
+        mimetype="application/xml",
+    )
+
+def _build_outgoing_invoice_voucher_preview(inv: Invoice) -> dict:
+    """
+    Build the Fortnox voucher payload for an outgoing invoice (dry-run).
+    Account structure:
+      Debit  1510  Total incl VAT   (Kundfordringar)
+      Credit 3001  Excl VAT amount  (Försäljning Sverige 25%)
+      Credit 2610  VAT amount       (Utgående moms 25%)
+      3740         Rounding         (if total != excl + vat)
+    Financial year ID is resolved at runtime from Fortnox API; shown as
+    '(looked up from /financialyears for invoice date)' in preview.
+    """
+    excl_vat = round(inv.subtotal, 2)
+    vat      = round(inv.vat_amount, 2)
+    total    = round(inv.total, 2)
+    rounding = round(total - excl_vat - vat, 2)
+    project_nr = (inv.project.project_number if inv.project else None) or ""
+    description = f"Faktura {inv.invoice_number} {inv.client.name}"
+
+    def _row(account, debit, credit, label, info=""):
+        r = {
+            "Account": str(account),
+            "_label": label,
+            "Debit": debit,
+            "Credit": credit,
+        }
+        if info:
+            r["TransactionInformation"] = info
+        if project_nr:
+            r["Project"] = project_nr
+        return r
+
+    rows = [
+        _row(1510, total,    0,       "Kundfordringar (accounts receivable)", description),
+        _row(3001, 0,        excl_vat, "Försäljning Sverige 25% moms",
+             f"Period {inv.period_start} – {inv.period_end}"),
+        _row(2610, 0,        vat,      "Utgående moms 25%", "Utgående moms 25%"),
+    ]
+    if rounding != 0:
+        rows.append(_row(3740,
+                         max(-rounding, 0),
+                         max(rounding, 0),
+                         "Öresavrundning (rounding)",
+                         "Öresavrundning"))
+
+    payload = {
+        "_endpoint": "POST /vouchers",
+        "_note": "Fortnox live sync disabled — dry-run preview",
+        "_financial_year": "(looked up from GET /financialyears for invoice date)",
+        "_pdf_attachment": inv.pdf_filename or "(not generated yet)",
+        "Voucher": {
+            "Description": description,
+            "VoucherDate": inv.issue_date.isoformat() if inv.issue_date else None,
+            "VoucherSeries": "A",
+            "FinancialYear": "(int32 — resolved at runtime)",
+            "VoucherRows": rows,
+        },
+    }
+    return {"payload": payload}
+
+def _build_supplier_voucher_preview(inv: SupplierInvoice) -> dict:
+    """Build the Fortnox voucher payload that would be sent (for dry-run preview)."""
+    debit_acc = "6540"
+    if inv.supplier_category and inv.supplier_category.debit_account:
+        debit_acc = inv.supplier_category.debit_account
+    elif inv.account_code:
+        debit_acc = inv.account_code
+
+    vat_rate = float(inv.vat_rate or 0)
+    description = f"{inv.supplier_name or 'Leverantör'} {inv.payment_ref or ''}".strip()
+    rows = [
+        {"Account": debit_acc, "Debit": inv.amount_excl_vat, "Credit": 0,
+         "_label": "Kostnadskonto / Expense account"},
+    ]
+    if vat_rate > 0 and inv.vat_amount:
+        rows.append({"Account": "2641", "Debit": inv.vat_amount, "Credit": 0,
+                     "_label": "Debiterad ingående moms"})
+    rows.append({"Account": "2440", "Debit": 0, "Credit": inv.amount_incl_vat,
+                 "_label": "Leverantörsskulder (betalas vid betalfil)"})
+
+    payload = {
+        "_endpoint": "POST /vouchers",
+        "_note": "Fortnox live booking disabled — dry-run preview",
+        "_pdf_attachment": inv.pdf_filename or "(none)",
+        "Voucher": {
+            "Description": description,
+            "TransactionDate": (inv.invoice_date or date.today()).isoformat(),
+            "VoucherSeries": "A",
+            "VoucherRows": rows,
+        },
+    }
+    return {"payload": payload}
+
+# def _book_supplier_invoice_fortnox(inv: SupplierInvoice):
+#     """Create a supplier voucher in Fortnox and update invoice status to 'booked'."""
+#     fortnox = FortnoxClient(app.config)
+#     ... (commented out — enable when ready for live Fortnox sync)
+
+# ── Fortnox dry-run preview ───────────────────────────────────────────────────
+
+@app.route("/fortnox/test-archive")
+@login_required
+@admin_required
+def fortnox_test_archive():
+    """Dev route: try multiple archive upload methods and show raw responses."""
+    from models import Invoice
+    inv = Invoice.query.filter(Invoice.pdf_filename.isnot(None)).order_by(Invoice.id.desc()).first()
+    if not inv:
+        return "No invoice with PDF found.", 404
+    pdf_path = os.path.join(app.root_path, "static", "uploads", inv.pdf_filename)
+    if not os.path.exists(pdf_path):
+        return f"PDF not found on disk: {pdf_path}", 404
+
+    fortnox = FortnoxClient(app.config)
+    token = Settings.get("fortnox_access_token")
+    base = "https://api.fortnox.se/3"
+    filename = inv.pdf_filename
+    results = {}
+
+    with open(pdf_path, "rb") as f:
+        pdf_bytes = f.read()
+
+    auth_header = {"Authorization": f"Bearer {token}"}
+
+    # 1. GET /archive to see root structure
+    r = requests.get(f"{base}/archive", headers={**auth_header, "Accept": "application/json"})
+    results["1_GET_archive_root"] = {"status": r.status_code, "body": r.text[:800]}
+
+    # 2. POST /archive — multipart, field name "file", no params
+    r = requests.post(f"{base}/archive", headers=auth_header,
+                      files={"file": (filename, pdf_bytes, "application/pdf")})
+    results["2_POST_multipart_file"] = {"status": r.status_code, "body": r.text}
+
+    # 3. POST /archive — multipart, field name "attachment"
+    r = requests.post(f"{base}/archive", headers=auth_header,
+                      files={"attachment": (filename, pdf_bytes, "application/pdf")})
+    results["3_POST_multipart_attachment"] = {"status": r.status_code, "body": r.text}
+
+    # 4. POST /archive?path=/Verifikat
+    r = requests.post(f"{base}/archive", headers=auth_header,
+                      params={"path": "/Verifikat"},
+                      files={"file": (filename, pdf_bytes, "application/pdf")})
+    results["4_POST_path_Verifikat"] = {"status": r.status_code, "body": r.text}
+
+    # 5. POST /archive/root — direct to root folder id
+    r = requests.post(f"{base}/archive/root", headers=auth_header,
+                      files={"file": (filename, pdf_bytes, "application/pdf")})
+    results["5_POST_archive_root_id"] = {"status": r.status_code, "body": r.text}
+
+    # 6. GET /inbox to see if inbox is an alternative
+    r = requests.get(f"{base}/inbox", headers={**auth_header, "Accept": "application/json"})
+    results["6_GET_inbox"] = {"status": r.status_code, "body": r.text[:400]}
+
+    return f"<pre>{json.dumps(results, indent=2, ensure_ascii=False)}</pre>"
+
+@app.route("/fortnox/preview")
+@login_required
+def fortnox_preview():
+    preview = session.pop("fortnox_preview", None)
+    if not preview:
+        return redirect(url_for("dashboard"))
+    return render_template("fortnox/preview.html",
+        payload_json=json.dumps(preview.get("payload", {}), indent=2, ensure_ascii=False),
+        back_url=preview.get("back_url", url_for("dashboard")),
+        back_label=preview.get("back_label", "← Back"),
+    )
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _sanitize_header(value):
     """Strip newlines to prevent email header injection."""
     return str(value or "").replace("\r", "").replace("\n", "")
+
+
+def _email_pdf_to_fortnox_inbox(pdf_path, filename, voucher_ref, config):
+    """Email a PDF to the Fortnox arkivplats inbox address."""
+    inbox = config.get("FORTNOX_INBOX_EMAIL", "")
+    if not inbox:
+        app.logger.info("Fortnox inbox email not configured — skipping PDF email")
+        return
+    if not os.path.exists(pdf_path):
+        app.logger.warning("Fortnox inbox email — PDF not found: %s", pdf_path)
+        return
+    # Use filename as-is — callers are responsible for naming the attachment correctly.
+    attachment_name = os.path.basename(filename)
+    msg = MIMEMultipart()
+    msg["From"] = _sanitize_header(config["SMTP_FROM"])
+    msg["To"] = inbox
+    msg["Subject"] = f"Verifikat {voucher_ref} — {attachment_name}"
+    msg.attach(MIMEText(f"Verifikat {voucher_ref}", "plain", "utf-8"))
+    with open(pdf_path, "rb") as f:
+        part = MIMEBase("application", "octet-stream")
+        part.set_payload(f.read())
+        encoders.encode_base64(part)
+        part.add_header("Content-Disposition", f'attachment; filename="{attachment_name}"')
+        msg.attach(part)
+    try:
+        with smtplib.SMTP(config["SMTP_HOST"], config["SMTP_PORT"]) as server:
+            server.starttls(context=ssl.create_default_context())
+            server.login(config["SMTP_USER"], config["SMTP_PASSWORD"])
+            server.send_message(msg)
+        app.logger.info("Fortnox inbox email sent — voucher=%s to=%s", voucher_ref, inbox)
+    except Exception as e:
+        app.logger.error("Fortnox inbox email failed: %s", e)
+
 
 def _send_invoice_email(inv, config):
     client = inv.client
@@ -1429,9 +2505,24 @@ Best regards,
 """
     body = body_sv if lang == "sv" else body_en
 
+    # Build CC list: always-CC + project-level CC + admin email
+    cc_addresses = []
+    always_cc = config.get("COMPANY_CC_MAIL_ON_INVOICING", "")
+    if always_cc and always_cc != safe_to:
+        cc_addresses.append(_sanitize_header(always_cc))
+    if inv.project and inv.project.invoice_cc_email:
+        proj_cc = _sanitize_header(inv.project.invoice_cc_email)
+        if proj_cc not in cc_addresses:
+            cc_addresses.append(proj_cc)
+    admin_email = config.get("ADMIN_EMAIL", "")
+    if admin_email and admin_email != safe_to and _sanitize_header(admin_email) not in cc_addresses:
+        cc_addresses.append(_sanitize_header(admin_email))
+
     msg = MIMEMultipart()
     msg["From"] = safe_from
     msg["To"] = safe_to
+    if cc_addresses:
+        msg["Cc"] = ", ".join(cc_addresses)
     msg["Subject"] = subject
     msg.attach(MIMEText(body, "plain", "utf-8"))
 
@@ -1447,9 +2538,10 @@ Best regards,
                 msg.attach(part)
 
     with smtplib.SMTP(config["SMTP_HOST"], config["SMTP_PORT"]) as server:
-        server.starttls()
+        server.starttls(context=ssl.create_default_context())
         server.login(config["SMTP_USER"], config["SMTP_PASSWORD"])
-        server.send_message(msg)
+        recipients = [safe_to] + cc_addresses
+        server.sendmail(safe_from, recipients, msg.as_string())
 
 # ── Init ──────────────────────────────────────────────────────────────────────
 
@@ -1468,6 +2560,52 @@ def init_db():
             "ALTER TABLE purchase_order ADD COLUMN km_rate REAL",
             "ALTER TABLE invoice ADD COLUMN project_id INTEGER REFERENCES project(id)",
             "ALTER TABLE project ADD COLUMN accumulated_cost REAL DEFAULT 0.0",
+            "ALTER TABLE project ADD COLUMN invoice_cc_email VARCHAR(200)",
+            "ALTER TABLE project ADD COLUMN expense_markup_pct REAL DEFAULT 10.0",
+            # v1.1 user model expansion
+            "ALTER TABLE user ADD COLUMN display_name VARCHAR(200)",
+            "ALTER TABLE user ADD COLUMN email VARCHAR(200)",
+            "ALTER TABLE user ADD COLUMN ad_oid VARCHAR(100)",
+            "ALTER TABLE user ADD COLUMN role VARCHAR(20) DEFAULT 'admin'",
+            "ALTER TABLE user ADD COLUMN active BOOLEAN DEFAULT 1",
+            "ALTER TABLE user ADD COLUMN created_at DATETIME",
+            "ALTER TABLE user ADD COLUMN last_login_at DATETIME",
+            # backfill NULL role/active for users created before the column was added
+            "UPDATE \"user\" SET role='admin' WHERE role IS NULL",
+            "UPDATE \"user\" SET active=1 WHERE active IS NULL",
+            # v1.1 expense categories
+            "ALTER TABLE expense ADD COLUMN expense_category_id INTEGER REFERENCES expense_category(id)",
+            # v1.1 supplier categories
+            "ALTER TABLE supplier_invoice ADD COLUMN supplier_category_id INTEGER REFERENCES supplier_category(id)",
+            "ALTER TABLE supplier_invoice ADD COLUMN vat_rate REAL DEFAULT 25.0",
+            # indexes for common filter/sort columns
+            "CREATE INDEX IF NOT EXISTS ix_supplier_invoice_status ON supplier_invoice(status)",
+            "CREATE INDEX IF NOT EXISTS ix_supplier_invoice_due_date ON supplier_invoice(due_date)",
+            "CREATE INDEX IF NOT EXISTS ix_supplier_invoice_payment_file_id ON supplier_invoice(payment_file_id)",
+            "CREATE INDEX IF NOT EXISTS ix_invoice_status ON invoice(status)",
+            "CREATE INDEX IF NOT EXISTS ix_time_entry_invoiced ON time_entry(invoiced)",
+            "CREATE INDEX IF NOT EXISTS ix_time_entry_project_id ON time_entry(project_id)",
+            "CREATE INDEX IF NOT EXISTS ix_expense_status ON expense(status)",
+            "CREATE INDEX IF NOT EXISTS ix_mileage_entry_status ON mileage_entry(status)",
+            # v1.1 supplier invoice cleanup — invoice_number replaced by payment_ref
+            "ALTER TABLE supplier_invoice DROP COLUMN invoice_number",
+            # v1.1 payment account consolidation — bankgiro/plusgiro/iban → payment_account + type
+            "ALTER TABLE supplier_invoice ADD COLUMN payment_account VARCHAR(100)",
+            "ALTER TABLE supplier_invoice ADD COLUMN payment_account_type VARCHAR(10)",
+            # migrate existing data into new columns
+            "UPDATE supplier_invoice SET payment_account=bankgiro, payment_account_type='bg' WHERE bankgiro IS NOT NULL AND bankgiro != ''",
+            "UPDATE supplier_invoice SET payment_account=plusgiro, payment_account_type='pg' WHERE plusgiro IS NOT NULL AND plusgiro != '' AND (payment_account IS NULL OR payment_account = '')",
+            "UPDATE supplier_invoice SET payment_account=iban,     payment_account_type='iban' WHERE iban IS NOT NULL AND iban != '' AND (payment_account IS NULL OR payment_account = '')",
+            "ALTER TABLE supplier_invoice DROP COLUMN bankgiro",
+            "ALTER TABLE supplier_invoice DROP COLUMN plusgiro",
+            "ALTER TABLE supplier_invoice DROP COLUMN iban",
+            # auth lookup indexes
+            "CREATE INDEX IF NOT EXISTS ix_user_ad_oid ON user(ad_oid)",
+            "CREATE INDEX IF NOT EXISTS ix_user_email ON user(email)",
+            # additional filter indexes
+            "CREATE INDEX IF NOT EXISTS ix_expense_project_status ON expense(project_id, status)",
+            "CREATE INDEX IF NOT EXISTS ix_mileage_project ON mileage_entry(project_id)",
+            "CREATE INDEX IF NOT EXISTS ix_time_entry_date ON time_entry(entry_date)",
         ]
         for stmt in migrations:
             try:
@@ -1475,16 +2613,113 @@ def init_db():
                     conn.execute(text(stmt))
                     conn.commit()
             except Exception:
-                pass  # Column already exists
+                pass  # Column already exists or table doesn't exist yet
+
         # Create admin user if not exists
         if not User.query.first():
+            admin_email = app.config.get("ADMIN_EMAIL", "")
             user = User(
                 username="admin",
-                password_hash=generate_password_hash(app.config["ADMIN_PASSWORD"])
+                password_hash=generate_password_hash(app.config["ADMIN_PASSWORD"]),
+                display_name=app.config.get("COMPANY_NAME", "Admin"),
+                email=admin_email,
+                role="admin",
+                active=True,
+                created_at=datetime.utcnow(),
             )
             db.session.add(user)
             db.session.commit()
             print("Admin user created")
+        else:
+            # Migrate existing admin user to have role/active set
+            admin = User.query.first()
+            if admin.role is None:
+                admin.role = "admin"
+            if admin.active is None:
+                admin.active = True
+            db.session.commit()
+
+        # Seed default voucher templates if not present
+        defaults = [
+            {
+                "transaction_type": "supplier_invoice",
+                "debit_account": "6540", "debit_account_label": "IT-tjänster",
+                "vat_account": "2640", "vat_rate": 25.0,
+                "credit_account": "2440", "voucher_series": "L",
+                "description_template": "{supplier} {invoice_nr}",
+            },
+            {
+                "transaction_type": "expense_internal",
+                "debit_account": "6570", "debit_account_label": "Representation / Övrigt",
+                "vat_account": "2640", "vat_rate": 25.0,
+                "credit_account": "2440", "voucher_series": "A",
+                "description_template": "{merchant} {date}",
+            },
+            {
+                "transaction_type": "expense_external",
+                "debit_account": "6570", "debit_account_label": "Representation / Övrigt",
+                "vat_account": "2640", "vat_rate": 25.0,
+                "credit_account": "2890", "voucher_series": "A",
+                "description_template": "{merchant} {date}",
+            },
+            {
+                "transaction_type": "mileage",
+                "debit_account": "7321", "debit_account_label": "Milersättning",
+                "vat_account": "", "vat_rate": 0.0,
+                "credit_account": "2890", "voucher_series": "A",
+                "description_template": "Mil {date}",
+            },
+            {
+                "transaction_type": "salary",
+                "debit_account": "7010", "debit_account_label": "Löner",
+                "vat_account": "", "vat_rate": 0.0,
+                "credit_account": "2710", "voucher_series": "L",
+                "description_template": "Lön {period}",
+            },
+        ]
+        for d in defaults:
+            if not VoucherTemplate.query.filter_by(transaction_type=d["transaction_type"]).first():
+                db.session.add(VoucherTemplate(**d))
+        db.session.commit()
+
+        # Seed default expense categories — upsert by name so existing DBs get the full list
+        from models import ExpenseCategory, SupplierCategory
+        _default_expense_cats = [
+            ("Resekostnader att vidarefakturera",           "4010",  1),
+            ("IT tjänster",                                  "6540",  2),
+            ("Bankkostnader",                                "6570",  3),
+            ("Reparation och underhåll av personbilar",      "5613",  4),
+            ("Programvaror",                                 "5420",  5),
+            ("Förbrukningsinventarier",                      "5410",  6),
+            ("Förvaltnings- och kreditförsäkringsavgifter",  "7470",  7),
+            ("Övriga personalkostnader",                     "7690",  8),
+            ("Extern representation",                        "6071",  9),
+            ("Personalrepresentation ej avdragsgill",        "7632", 10),
+            ("Kontorsmaterial och trycksaker",               "6110", 11),
+            ("Böcker, tidskrifter och kurser",               "6420", 12),
+        ]
+        for name, account, order in _default_expense_cats:
+            if not ExpenseCategory.query.filter_by(name=name).first():
+                db.session.add(ExpenseCategory(name=name, debit_account=account, sort_order=order))
+        db.session.commit()
+
+        # Seed default supplier categories — upsert by name so existing DBs get the full list
+        _default_supplier_cats = [
+            ("Resekostnader att vidarefakturera",           "4010",  1),
+            ("Leasing av personbilar",                       "5615",  2),
+            ("Försäkring och skatt för personbilar",         "5612",  3),
+            ("Programvaror",                                 "5420",  4),
+            ("IT tjänster",                                  "6540",  5),
+            ("Telekommunikation",                            "6210",  6),
+            ("Företagsförsäkringar",                         "6310",  7),
+            ("Förvaltnings- och kreditförsäkringsavgifter",  "7470",  8),
+            ("Kontorsmaterial och trycksaker",               "6110",  9),
+            ("Böcker, tidskrifter och kurser",               "6420", 10),
+        ]
+        for name, account, order in _default_supplier_cats:
+            if not SupplierCategory.query.filter_by(name=name).first():
+                db.session.add(SupplierCategory(name=name, debit_account=account, sort_order=order))
+        db.session.commit()
 
 if __name__ == "__main__":
     init_db()

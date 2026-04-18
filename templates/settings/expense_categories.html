@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}{{ "Utgiftskategorier" if g.lang == "sv" else "Expense Categories" }}{% endblock %}
+{% block page_title %}{{ "Utgiftskategorier / Expense Categories" }}{% endblock %}
+
+{% block topbar_actions %}
+  <a href="{{ url_for('settings') }}" class="btn btn-ghost btn-sm">← {{ g.t.back }}</a>
+{% endblock %}
+
+{% block content %}
+<div style="max-width:640px;margin:0 auto;">
+
+  <!-- Existing categories -->
+  <div class="card" style="margin-bottom:16px;">
+    <div class="card-title">{{ "Aktiva kategorier / Active categories" }}</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:16px;">
+      {{ "Debetkonto används vid Fortnox-bokföring av utlägg." if g.lang == "sv" else "Debit account is used when posting expenses to Fortnox." }}
+    </div>
+    {% if categories %}
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead>
+        <tr>
+          <th style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);padding:8px 10px;text-align:left;border-bottom:1px solid var(--border);">{{ "Kategori" if g.lang == "sv" else "Category" }}</th>
+          <th style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);padding:8px 10px;text-align:left;border-bottom:1px solid var(--border);">{{ "Debetk." if g.lang == "sv" else "Debit acc." }}</th>
+          <th style="border-bottom:1px solid var(--border);"></th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for cat in categories %}
+      <tr style="border-bottom:1px solid var(--border);">
+        <form method="POST">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="action" value="save">
+          <input type="hidden" name="category_id" value="{{ cat.id }}">
+          <td style="padding:6px 10px;">
+            <input type="text" name="name" value="{{ cat.name }}" class="form-control" style="font-size:13px;padding:4px 8px;">
+          </td>
+          <td style="padding:6px 10px;width:110px;">
+            <input type="text" name="debit_account" value="{{ cat.debit_account }}" class="form-control mono" style="font-size:13px;padding:4px 8px;width:80px;">
+          </td>
+          <td style="padding:6px 8px;text-align:right;white-space:nowrap;">
+            <button type="submit" class="btn btn-ghost btn-sm">{{ g.t.save if g.t.save else "Spara" }}</button>
+        </form>
+        <form method="POST" style="display:inline;" onsubmit="return confirm('{{ ('Inaktivera ' + cat.name + '?') if g.lang == 'sv' else ('Deactivate ' + cat.name + '?') }}')">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="action" value="delete">
+          <input type="hidden" name="category_id" value="{{ cat.id }}">
+          <button type="submit" class="btn btn-danger btn-sm">✕</button>
+        </form>
+          </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p style="color:var(--muted);font-size:13px;">{{ "Inga kategorier ännu." if g.lang == "sv" else "No categories yet." }}</p>
+    {% endif %}
+  </div>
+
+  <!-- Add new category -->
+  <div class="card">
+    <div class="card-title">{{ "Lägg till kategori / Add category" }}</div>
+    <form method="POST">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="new">
+      <div class="grid-2">
+        <div class="form-group">
+          <label class="form-label">{{ "Kategorinamn" if g.lang == "sv" else "Category name" }} *</label>
+          <input type="text" name="name" class="form-control" required autofocus
+                 placeholder="{{ 'T.ex. Resekostnader' if g.lang == 'sv' else 'e.g. Travel expenses' }}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">{{ "Debetkonto (BAS)" if g.lang == "sv" else "Debit account (BAS)" }} *</label>
+          <input type="text" name="debit_account" class="form-control mono" required
+                 placeholder="5410" style="max-width:100px;">
+        </div>
+      </div>
+      <button type="submit" class="btn btn-primary">+ {{ "Lägg till" if g.lang == "sv" else "Add" }}</button>
+    </form>
+  </div>
+
+</div>
+{% endblock %}

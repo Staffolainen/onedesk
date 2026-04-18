@@ -21,7 +21,14 @@
       "Bash(python3 -c \"import pdf_generator; print\\(''pdf_generator OK''\\)\")",
       "Bash(python3 -c \"from app import app; print\\(''app OK''\\)\")",
       "Bash(python3 -c \"from app import app; print\\(''OK''\\)\")",
-      "Bash(python3 -c \"from app import app; import pdf_generator; print\\(''OK''\\)\")"
+      "Bash(python3 -c \"from app import app; import pdf_generator; print\\(''OK''\\)\")",
+      "Skill(update-config)",
+      "Skill(update-config:*)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('app.py'\\).read\\(\\)\\); print\\('app.py OK'\\)\")",
+      "Bash(pip3 install:*)",
+      "Bash(python3 -m pytest tests/ -x -q)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('app.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('app.py'\\).read\\(\\)\\); ast.parse\\(open\\('fortnox.py'\\).read\\(\\)\\); print\\('OK'\\)\")"
     ]
   }
 }

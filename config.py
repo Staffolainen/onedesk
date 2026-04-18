@@ -1,4 +1,5 @@
 import os
+from datetime import timedelta
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -15,9 +16,18 @@ class Config:
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = "Lax"
     SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "0") == "1"
-    PERMANENT_SESSION_LIFETIME = 86400 * 14  # 14 days for remembered sessions
+    PERMANENT_SESSION_LIFETIME = 3600 * 8  # 8 hours
+
+    # Remember-me cookie
+    REMEMBER_COOKIE_DURATION = timedelta(days=14)
+    REMEMBER_COOKIE_HTTPONLY = True
+    REMEMBER_COOKIE_SAMESITE = "Lax"
+
+    # Azure AD — restrict to these email domains (comma-separated, empty = allow all)
+    ALLOWED_EMAIL_DOMAINS = os.getenv("ALLOWED_EMAIL_DOMAINS", "")
 
     ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin")
+    ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "")
 
     # Company
     COMPANY_NAME = os.getenv("COMPANY_NAME", "My Company AB")
@@ -26,15 +36,21 @@ class Config:
     COMPANY_EMAIL = os.getenv("COMPANY_EMAIL", "")
     COMPANY_PHONE = os.getenv("COMPANY_PHONE", "")
     COMPANY_BANKGIRO = os.getenv("COMPANY_BANKGIRO", "")
+    COMPANY_IBAN     = os.getenv("COMPANY_IBAN", "")       # Debtor IBAN (optional, not used by HB pain.001)
+    COMPANY_BBAN     = os.getenv("COMPANY_BBAN", "")       # Debtor clearing+account for pain.001, e.g. 60001234567890
+    COMPANY_BIC      = os.getenv("COMPANY_BIC", "HANDSESS")  # Handelsbanken default
     COMPANY_VAT_NR = os.getenv("COMPANY_VAT_NR", "")
     COMPANY_LOGO_PATH = os.getenv("COMPANY_LOGO_PATH", "static/img/logo.png")
     COMPANY_REFERENCE = os.getenv("COMPANY_REFERENCE", "")  # "Vår referens" on invoices
+    COMPANY_CC_MAIL_ON_INVOICING = os.getenv("COMPANY_CC_MAIL_ON_INVOICING", "")
 
     # Fortnox
     FORTNOX_CLIENT_ID = os.getenv("FORTNOX_CLIENT_ID", "")
     FORTNOX_CLIENT_SECRET = os.getenv("FORTNOX_CLIENT_SECRET", "")
     FORTNOX_REDIRECT_URI = os.getenv("FORTNOX_REDIRECT_URI", "http://localhost:5000/fortnox/callback")
     FORTNOX_BASE_URL = "https://api.fortnox.se/3"
+    FORTNOX_INBOX_EMAIL = os.getenv("FORTNOX_INBOX_EMAIL", "")
+
 
     # Anthropic (cloud OCR)
     ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")

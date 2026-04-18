@@ -74,6 +74,141 @@
     </div>
   </div>
 
+  <!-- Users (admin only) -->
+  {% if current_user.is_admin %}
+  <div id="users" class="card" style="margin-bottom:16px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+      <div class="card-title" style="margin-bottom:0;">{{ "Användare / Users" }}</div>
+      <a href="{{ url_for('user_new') }}" class="btn btn-secondary btn-sm">+ {{ "Ny användare / New user" }}</a>
+    </div>
+    {% if users %}
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead>
+        <tr>
+          {% for h in ["Namn/Name","E-post/Email","Roll/Role","Status","Senast inloggad",""] %}
+          <th style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);padding:8px 10px;text-align:left;border-bottom:1px solid var(--border);">{{ h }}</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+      {% for u in users %}
+      <tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:8px 10px;font-weight:600;">{{ u.display_name or u.username or '—' }}</td>
+        <td style="padding:8px 10px;color:var(--muted);font-size:12px;">{{ u.email or '—' }}</td>
+        <td style="padding:8px 10px;">
+          <span style="font-size:10px;padding:2px 7px;border-radius:4px;
+            {% if u.role == 'admin' %}background:rgba(78,119,150,0.15);color:var(--accent);
+            {% elif u.role == 'employee' %}background:rgba(74,222,128,0.1);color:var(--success);
+            {% else %}background:var(--surface2);color:var(--muted);{% endif %}">
+            {{ u.role }}
+          </span>
+        </td>
+        <td style="padding:8px 10px;">
+          {% if u.active %}
+          <span style="color:var(--success);font-size:11px;">✓</span>
+          {% else %}
+          <span style="color:var(--danger);font-size:11px;">✗ {{ "Inaktiv" if g.lang == "sv" else "Inactive" }}</span>
+          {% endif %}
+        </td>
+        <td style="padding:8px 10px;color:var(--muted);font-size:12px;">
+          {{ u.last_login_at.strftime('%Y-%m-%d') if u.last_login_at else '—' }}
+        </td>
+        <td style="padding:6px 8px;">
+          <a href="{{ url_for('user_edit', user_id=u.id) }}" class="btn btn-ghost btn-sm">{{ g.t.edit }}</a>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div style="color:var(--muted);font-size:13px;">{{ "Inga ytterligare användare." if g.lang == "sv" else "No additional users." }}</div>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <!-- Expense categories -->
+  <div id="expense-categories" class="card" style="margin-bottom:16px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+      <div class="card-title" style="margin-bottom:0;">{{ "Utgiftskategorier / Expense categories" }}</div>
+      {% if current_user.is_admin %}
+      <a href="{{ url_for('expense_categories') }}" class="btn btn-ghost btn-sm">{{ g.t.edit }}</a>
+      {% endif %}
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px;">
+      {{ "Debetkontorouting per utläggstyp för Fortnox-bokföring." if g.lang == "sv" else "Debit account routing per expense type for Fortnox posting." }}
+    </div>
+    {% if expense_categories %}
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead>
+        <tr>
+          <th style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);padding:6px 10px;text-align:left;border-bottom:1px solid var(--border);">{{ "Kategori" if g.lang == "sv" else "Category" }}</th>
+          <th style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);padding:6px 10px;text-align:left;border-bottom:1px solid var(--border);">{{ "Debet" }}</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for cat in expense_categories %}
+      <tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:6px 10px;">{{ cat.name }}</td>
+        <td style="padding:6px 10px;font-family:var(--mono);font-size:12px;">{{ cat.debit_account }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p style="color:var(--muted);font-size:13px;">{{ "Inga kategorier konfigurerade." if g.lang == "sv" else "No categories configured." }}</p>
+    {% endif %}
+  </div>
+
+  <!-- Supplier categories -->
+  <div id="supplier-categories" class="card" style="margin-bottom:16px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+      <div class="card-title" style="margin-bottom:0;">{{ "Leverantörskategorier / Supplier categories" }}</div>
+      {% if current_user.is_admin %}
+      <a href="{{ url_for('supplier_categories') }}" class="btn btn-ghost btn-sm">{{ g.t.edit }}</a>
+      {% endif %}
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px;">
+      {{ "Debetkontorouting per leverantörstyp för Fortnox-bokföring." if g.lang == "sv" else "Debit account routing per supplier type for Fortnox posting." }}
+    </div>
+    {% if supplier_categories %}
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead>
+        <tr>
+          <th style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);padding:6px 10px;text-align:left;border-bottom:1px solid var(--border);">{{ "Kategori" if g.lang == "sv" else "Category" }}</th>
+          <th style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);padding:6px 10px;text-align:left;border-bottom:1px solid var(--border);">{{ "Debet" }}</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for cat in supplier_categories %}
+      <tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:6px 10px;">{{ cat.name }}</td>
+        <td style="padding:6px 10px;font-family:var(--mono);font-size:12px;">{{ cat.debit_account }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p style="color:var(--muted);font-size:13px;">{{ "Inga kategorier konfigurerade." if g.lang == "sv" else "No categories configured." }}</p>
+    {% endif %}
+  </div>
+
+  <!-- Currencies -->
+  <div id="currencies" class="card" style="margin-bottom:16px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+      <div class="card-title" style="margin-bottom:0;">{{ "Valutor / Currencies" }}</div>
+      {% if current_user.is_admin %}
+      <a href="{{ url_for('settings_currencies') }}" class="btn btn-ghost btn-sm">{{ g.t.edit }}</a>
+      {% endif %}
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      {% for code in currencies %}
+      <span style="font-family:var(--mono);font-size:12px;padding:2px 10px;border-radius:4px;background:var(--surface2);color:{% if loop.first %}var(--accent){% else %}var(--muted){% endif %};">
+        {{ code }}{% if loop.first %} ★{% endif %}
+      </span>
+      {% endfor %}
+    </div>
+  </div>
+
   <!-- Backup & Restore -->
   <div class="card" style="margin-bottom:16px;">
     <div class="card-title">{{ "Säkerhetskopiering" if g.lang == "sv" else "Backup & Restore" }}</div>
@@ -83,9 +218,14 @@
       <div style="font-size:13px;color:var(--muted);margin-bottom:10px;">
         {{ "Exportera hela databasen som JSON-fil." if g.lang == "sv" else "Export the entire database as a JSON file." }}
       </div>
-      <a href="{{ url_for('settings_backup') }}" class="btn btn-secondary btn-sm">
-        ↓ {{ "Exportera backup" if g.lang == "sv" else "Download backup" }}
-      </a>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+        <a href="{{ url_for('settings_backup') }}" class="btn btn-secondary btn-sm">
+          ↓ {{ "Exportera backup" if g.lang == "sv" else "Download backup" }}
+        </a>
+        <a href="{{ url_for('settings_log') }}" target="_blank" class="btn btn-ghost btn-sm">
+          📋 {{ "Visa systemlogg" if g.lang == "sv" else "View system log" }}
+        </a>
+      </div>
     </div>
 
     <!-- Import -->

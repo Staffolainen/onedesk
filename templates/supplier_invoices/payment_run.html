@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% block title %}{{ g.t.sup_payment_run }}{% endblock %}
+{% block page_title %}{{ g.t.sup_payment_run }}{% endblock %}
+
+{% block topbar_actions %}
+  <a href="{{ url_for('supplier_invoices_index') }}" class="btn btn-ghost btn-sm">← {{ g.t.back }}</a>
+{% endblock %}
+
+{% block content %}
+<div style="max-width:700px;margin:0 auto;">
+  <form method="POST">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+    {% if backlog %}
+    <div class="card" style="margin-bottom:16px;">
+      <div class="card-title">{{ g.t.sup_select_invoices }}</div>
+
+      <table style="width:100%;border-collapse:collapse;font-size:13px;">
+        <thead>
+          <tr>
+            <th style="width:32px;padding:8px 12px;border-bottom:1px solid var(--border);"></th>
+            {% for h in [g.t.sup_supplier_name, g.t.sup_ocr, g.t.sup_due_date, g.t.sup_payment, g.t.amount] %}
+            <th style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);padding:8px 12px;text-align:left;border-bottom:1px solid var(--border);">{{ h }}</th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+        {% set total = namespace(amount=0) %}
+        {% for inv in backlog %}
+        {% set overdue = inv.days_until_due is not none and inv.days_until_due < 0 %}
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:8px 12px;">
+            <input type="checkbox" name="invoice_ids" value="{{ inv.id }}"
+                   {% if overdue %}checked{% endif %}>
+          </td>
+          <td style="padding:8px 12px;font-weight:600;">{{ inv.supplier_name or '—' }}</td>
+          <td style="padding:8px 12px;font-family:var(--mono);font-size:12px;color:var(--muted);">{{ inv.payment_ref or '—' }}</td>
+          <td style="padding:8px 12px;{% if overdue %}color:var(--danger);font-weight:600;{% elif inv.days_until_due is not none and inv.days_until_due <= 5 %}color:var(--warning);{% endif %}">
+            {{ inv.due_date or '—' }}
+            {% if inv.days_until_due is not none %}
+              ({{ inv.days_until_due }}d)
+            {% endif %}
+          </td>
+          <td style="padding:8px 12px;font-size:12px;color:var(--muted);">{{ inv.payment_destination }}</td>
+          <td style="padding:8px 12px;font-family:var(--mono);">{{ inv.amount_incl_vat|fmt_amount }} {{ inv.currency }}</td>
+        </tr>
+        {% set total.amount = total.amount + inv.amount_incl_vat %}
+        {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr>
+            <td colspan="4" style="padding:10px 12px;font-weight:600;text-align:right;border-top:1px solid var(--border);">
+              {{ g.t.total }}
+            </td>
+            <td colspan="2" style="padding:10px 12px;font-family:var(--mono);font-weight:700;border-top:1px solid var(--border);">
+              {{ total.amount|fmt_amount }} SEK
+            </td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+
+    <div class="card" style="margin-bottom:16px;">
+      <div class="form-group">
+        <label class="form-label">{{ g.t.sup_payment_date }}</label>
+        <input type="date" name="payment_date" class="form-control"
+               value="{{ today.isoformat() }}" min="{{ today.isoformat() }}">
+      </div>
+    </div>
+
+    <div style="display:flex;gap:10px;align-items:center;">
+      <button type="submit" class="btn btn-primary">
+        ↓ {{ g.t.sup_generate_btn }}
+      </button>
+      <div style="font-size:12px;color:var(--muted);">
+        {{ g.t.sup_generate_hint }}
+      </div>
+    </div>
+
+    {% else %}
+    <div class="card" style="text-align:center;padding:48px;color:var(--muted);">
+      {{ g.t.sup_no_backlog }}<br><br>
+      <a href="{{ url_for('supplier_invoices_index') }}" class="btn btn-ghost btn-sm">← {{ g.t.back }}</a>
+    </div>
+    {% endif %}
+  </form>
+
+  {% if pending_files %}
+  <div style="margin-top:24px;">
+    <div class="card-title" style="margin-bottom:8px;">{{ g.t.sup_pending_orders }}</div>
+    <div class="card" style="padding:0;overflow:hidden;">
+      <table style="width:100%;border-collapse:collapse;font-size:13px;">
+        <thead>
+          <tr>
+            {% for h in ["Fil", g.t.sup_payment_date, g.t.invoice, g.t.amount, ""] %}
+            <th style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);padding:10px 14px;text-align:left;border-bottom:1px solid var(--border);background:var(--surface);">{{ h }}</th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+        {% for pf in pending_files %}
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:10px 14px;font-family:var(--mono);font-size:12px;">{{ pf.filename }}</td>
+          <td style="padding:10px 14px;">{{ pf.payment_date }}</td>
+          <td style="padding:10px 14px;">{{ pf.invoice_count }}</td>
+          <td style="padding:10px 14px;font-family:var(--mono);">{{ pf.total_amount|fmt_amount }} SEK</td>
+          <td style="padding:8px 14px;white-space:nowrap;">
+            <a href="{{ url_for('payment_file_download', pf_id=pf.id) }}" class="btn btn-ghost btn-sm">↓</a>
+            <form method="POST" action="{{ url_for('payment_file_confirm', pf_id=pf.id) }}" style="display:inline;">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit" class="btn btn-secondary btn-sm"
+                      onclick="return confirm('{{ g.t.sup_confirm_dialog }}')">
+                ✓ {{ g.t.sup_confirm_btn }}
+              </button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

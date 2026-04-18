@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}{{ g.t.sup_upload }}{% endblock %}
+{% block page_title %}{{ g.t.sup_upload }}{% endblock %}
+
+{% block topbar_actions %}
+  <a href="{{ url_for('supplier_invoices_index') }}" class="btn btn-ghost btn-sm">← {{ g.t.back }}</a>
+{% endblock %}
+
+{% block content %}
+<div style="max-width:520px;margin:0 auto;">
+  <div class="card">
+    <div style="font-size:13px;color:var(--muted);margin-bottom:20px;">
+      {{ g.t.sup_upload_desc }}
+    </div>
+
+    <form method="POST" enctype="multipart/form-data">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+      <div class="form-group">
+        <label class="form-label">{{ g.t.sup_upload_label }}</label>
+        <input type="file" name="invoice_file" class="form-control"
+               accept=".pdf,.jpg,.jpeg,.png,.webp" required>
+      </div>
+
+      <button type="submit" id="uploadBtn" class="btn btn-primary" style="width:100%;margin-top:10px;">
+        {{ g.t.sup_upload_btn }}
+      </button>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.querySelector('form').addEventListener('submit', function() {
+  const btn = document.getElementById('uploadBtn');
+  btn.disabled = true;
+  btn.textContent = '{{ "Laddar upp..." if g.lang == "sv" else "Uploading..." }}';
+});
+</script>
+{% endblock %}

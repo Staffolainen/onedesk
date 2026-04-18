@@ -56,6 +56,26 @@
         </div>
       </div>
 
+      <div class="form-group">
+        <label class="form-label">{{ "Påslag vidarefakturerade kostnader (%)" if g.lang == "sv" else "Pass-through expense markup (%)" }}</label>
+        <input type="number" name="expense_markup_pct" class="form-control" min="0" step="0.5"
+               value="{{ project.expense_markup_pct if editing and project.expense_markup_pct is not none else 10 }}"
+               placeholder="10">
+        <div style="font-size:12px;color:var(--muted);margin-top:4px;">
+          {{ "Påslag på vidarefakturerade utlägg. Standard 10%. Moms alltid 25% på utgående faktura." if g.lang == "sv" else "Markup added on top of billable expenses. Default 10%. VAT always 25% on outbound invoice." }}
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">{{ "CC på fakturor (t.ex. kundens PM)" if g.lang == "sv" else "CC on invoices (e.g. client PM)" }}</label>
+        <input type="email" name="invoice_cc_email" class="form-control"
+               value="{{ project.invoice_cc_email if editing and project.invoice_cc_email else '' }}"
+               placeholder="pm@kund.se">
+        <div style="font-size:12px;color:var(--muted);margin-top:4px;">
+          {{ "Läggs till som CC på alla fakturamejl för detta uppdrag." if g.lang == "sv" else "Added as CC on all invoice emails for this assignment." }}
+        </div>
+      </div>
+
       {% if editing %}
       <div class="form-group">
         <label class="form-label">{{ "Status" }}</label>

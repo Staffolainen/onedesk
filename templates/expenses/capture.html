@@ -118,7 +118,7 @@
     <div class="preview-container" id="previewContainer" style="margin-top:20px;">
       <img id="previewImg" class="preview-img" src="" alt="Preview">
       <div style="margin-top:16px;">
-        <button type="submit" class="btn btn-primary" style="width:100%;padding:14px;font-size:15px;" onclick="showProcessing()">
+        <button type="submit" class="btn btn-primary" style="width:100%;padding:14px;font-size:15px;" onclick="return showProcessing()">
           {{ "Analysera kvitto" if g.lang == "sv" else "Analyze receipt" }} →
         </button>
         <button type="button" class="btn btn-ghost" style="width:100%;margin-top:8px;" onclick="resetCapture()">
@@ -185,8 +185,12 @@ function previewFile(input) {
   }
 }
 
+let _submitted = false;
 function showProcessing() {
+  if (_submitted) return false;
+  _submitted = true;
   document.getElementById('processingOverlay').style.display = 'flex';
+  return true;
 }
 
 function resetCapture() {

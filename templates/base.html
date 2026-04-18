@@ -68,6 +68,39 @@
     .nav-link:hover { color: var(--text); background: var(--surface2); }
     .nav-link.active { color: var(--text); background: var(--surface2); }
     .nav-divider { width: 1px; height: 18px; background: var(--border); margin: 0 8px; }
+    /* ── Dropdown groups ── */
+    .nav-group { position: relative; }
+    .nav-group-btn {
+      display: flex; align-items: center; gap: 5px;
+      padding: 6px 12px;
+      color: var(--muted);
+      font-size: 13px; font-weight: 500;
+      border-radius: var(--radius);
+      cursor: pointer; border: none;
+      background: transparent; font-family: var(--sans);
+      transition: color 0.12s, background 0.12s;
+      white-space: nowrap;
+    }
+    .nav-group-btn:hover, .nav-group:hover .nav-group-btn { color: var(--text); background: var(--surface2); }
+    .nav-group-btn.active { color: var(--text); background: var(--surface2); }
+    .nav-group-btn .chevron { font-size: 9px; opacity: 0.6; }
+    .nav-dropdown {
+      display: none;
+      position: absolute; top: 100%; left: 0;
+      min-width: 180px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 4px;
+      padding-top: 8px;
+      z-index: 200; box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+    }
+    /* Invisible bridge fills the gap between button and dropdown so hover isn't lost */
+    .nav-group::after {
+      content: ''; display: none;
+      position: absolute; top: 100%; left: 0; right: 0; height: 8px;
+    }
+    .nav-group:hover::after { display: block; }
+    .nav-group:hover .nav-dropdown { display: flex; flex-direction: column; gap: 1px; }
+    .nav-dropdown .nav-link { padding: 7px 12px; border-radius: calc(var(--radius) - 2px); }
     .topnav-end { display: flex; align-items: center; gap: 10px; margin-left: auto; flex-shrink: 0; }
     .lang-toggle { display: flex; gap: 2px; }
     .lang-btn {
@@ -221,13 +254,41 @@
   </div>
 
   <div class="topnav-links">
+    {% set in_reskontra = 'invoice' in request.endpoint or 'supplier' in request.endpoint or 'payment' in request.endpoint %}
+    {% set in_expenses  = 'expense' in request.endpoint or 'mileage' in request.endpoint %}
+    {% set in_system    = 'client' in request.endpoint or 'project' in request.endpoint or request.endpoint == 'settings' or 'user' in request.endpoint or 'voucher' in request.endpoint or 'categor' in request.endpoint %}
+
     <a href="{{ url_for('time_index') }}" class="nav-link {% if 'time' in request.endpoint %}active{% endif %}">{{ g.t.time }}</a>
-    <a href="{{ url_for('expenses_index') }}" class="nav-link {% if 'expense' in request.endpoint %}active{% endif %}">{{ g.t.expenses }}</a>
-    <a href="{{ url_for('mileage_index') }}" class="nav-link {% if 'mileage' in request.endpoint %}active{% endif %}">{{ g.t.mileage }}</a>
-    <a href="{{ url_for('invoices_list') }}" class="nav-link {% if 'invoice' in request.endpoint %}active{% endif %}">{{ g.t.invoices }}</a>
-    <div class="nav-divider"></div>
-    <a href="{{ url_for('clients_list') }}" class="nav-link {% if 'client' in request.endpoint or 'project' in request.endpoint %}active{% endif %}">{{ g.t.clients }}</a>
-    <a href="{{ url_for('settings') }}" class="nav-link {% if request.endpoint == 'settings' %}active{% endif %}">{{ g.t.settings }}</a>
+
+    <div class="nav-group">
+      <button class="nav-group-btn {% if in_expenses %}active{% endif %}">
+        {{ "Utlägg" if g.lang == "sv" else "Expenses" }} <span class="chevron">▾</span>
+      </button>
+      <div class="nav-dropdown">
+        <a href="{{ url_for('expenses_index') }}" class="nav-link {% if 'expense' in request.endpoint %}active{% endif %}">{{ "Utläggsrapport" if g.lang == "sv" else "Expense report" }}</a>
+        <a href="{{ url_for('mileage_index') }}" class="nav-link {% if 'mileage' in request.endpoint %}active{% endif %}">{{ "Reseräkning" if g.lang == "sv" else "Mileage" }}</a>
+      </div>
+    </div>
+
+    <div class="nav-group">
+      <button class="nav-group-btn {% if in_reskontra %}active{% endif %}">
+        Reskontra <span class="chevron">▾</span>
+      </button>
+      <div class="nav-dropdown">
+        <a href="{{ url_for('invoices_list') }}" class="nav-link {% if 'invoice' in request.endpoint and 'supplier' not in request.endpoint %}active{% endif %}">{{ "Fakturering" if g.lang == "sv" else "Invoicing" }}</a>
+        <a href="{{ url_for('supplier_invoices_index') }}" class="nav-link {% if 'supplier' in request.endpoint or 'payment' in request.endpoint %}active{% endif %}">{{ "Leverantörsfakturor" if g.lang == "sv" else "Supplier invoices" }}</a>
+      </div>
+    </div>
+
+    <div class="nav-group">
+      <button class="nav-group-btn {% if in_system %}active{% endif %}">
+        System <span class="chevron">▾</span>
+      </button>
+      <div class="nav-dropdown">
+        <a href="{{ url_for('clients_list') }}" class="nav-link {% if 'client' in request.endpoint or 'project' in request.endpoint %}active{% endif %}">{{ "Kunder och Uppdrag" if g.lang == "sv" else "Clients & Projects" }}</a>
+        <a href="{{ url_for('settings') }}" class="nav-link {% if in_system and 'client' not in request.endpoint and 'project' not in request.endpoint %}active{% endif %}">{{ "Inställningar" if g.lang == "sv" else "Settings" }}</a>
+      </div>
+    </div>
   </div>
 
   <div class="topnav-end">
@@ -244,11 +305,15 @@
 <!-- Mobile dropdown -->
 <div class="mobile-dropdown" id="mobileMenu">
   <a href="{{ url_for('time_index') }}" class="nav-link {% if 'time' in request.endpoint %}active{% endif %}">{{ g.t.time }}</a>
-  <a href="{{ url_for('expenses_index') }}" class="nav-link {% if 'expense' in request.endpoint %}active{% endif %}">{{ g.t.expenses }}</a>
-  <a href="{{ url_for('mileage_index') }}" class="nav-link {% if 'mileage' in request.endpoint %}active{% endif %}">{{ g.t.mileage }}</a>
-  <a href="{{ url_for('invoices_list') }}" class="nav-link {% if 'invoice' in request.endpoint %}active{% endif %}">{{ g.t.invoices }}</a>
-  <a href="{{ url_for('clients_list') }}" class="nav-link {% if 'client' in request.endpoint or 'project' in request.endpoint %}active{% endif %}">{{ g.t.clients }}</a>
-  <a href="{{ url_for('settings') }}" class="nav-link {% if request.endpoint == 'settings' %}active{% endif %}">{{ g.t.settings }}</a>
+  <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:var(--muted);padding:8px 12px 2px;">{{ "Utlägg" if g.lang == "sv" else "Expenses" }}</div>
+  <a href="{{ url_for('expenses_index') }}" class="nav-link {% if 'expense' in request.endpoint %}active{% endif %}" style="padding-left:20px;">{{ "Utläggsrapport" if g.lang == "sv" else "Expense report" }}</a>
+  <a href="{{ url_for('mileage_index') }}" class="nav-link {% if 'mileage' in request.endpoint %}active{% endif %}" style="padding-left:20px;">{{ "Reseräkning" if g.lang == "sv" else "Mileage" }}</a>
+  <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:var(--muted);padding:8px 12px 2px;">Reskontra</div>
+  <a href="{{ url_for('invoices_list') }}" class="nav-link {% if 'invoice' in request.endpoint and 'supplier' not in request.endpoint %}active{% endif %}" style="padding-left:20px;">{{ g.t.invoices }}</a>
+  <a href="{{ url_for('supplier_invoices_index') }}" class="nav-link {% if 'supplier' in request.endpoint or 'payment' in request.endpoint %}active{% endif %}" style="padding-left:20px;">{{ "Leverantörsfakturor" if g.lang == "sv" else "Supplier invoices" }}</a>
+  <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:var(--muted);padding:8px 12px 2px;">System</div>
+  <a href="{{ url_for('clients_list') }}" class="nav-link {% if 'client' in request.endpoint or 'project' in request.endpoint %}active{% endif %}" style="padding-left:20px;">{{ g.t.clients }}</a>
+  <a href="{{ url_for('settings') }}" class="nav-link {% if request.endpoint == 'settings' %}active{% endif %}" style="padding-left:20px;">{{ "Inställningar" if g.lang == "sv" else "Settings" }}</a>
   <div style="display:flex;gap:8px;padding:8px 14px;margin-top:4px;border-top:1px solid var(--border);align-items:center;">
     <a href="{{ url_for('set_lang', lang='sv') }}" class="lang-btn {% if g.lang == 'sv' %}active{% endif %}">SV</a>
     <a href="{{ url_for('set_lang', lang='en') }}" class="lang-btn {% if g.lang == 'en' %}active{% endif %}">EN</a>
@@ -312,5 +377,9 @@ document.addEventListener('click', function(e) {
 });
 </script>
 {% block scripts %}{% endblock %}
+
+<div style="position:fixed;bottom:8px;right:10px;font-size:10px;font-family:var(--mono);color:var(--muted);opacity:0.45;pointer-events:none;z-index:9999;">
+  build {{ g.build_time }}
+</div>
 </body>
 </html>
