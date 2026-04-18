@@ -453,14 +453,15 @@ class FortnoxClient:
         if not rows:
             raise Exception("Inga fakturor med belopp att bokföra / No invoices with amount to post.")
 
+        suppliers_str = ", ".join(descriptions[:3]) + ("..." if len(descriptions) > 3 else "")
         rows.append({
             "Account": 1930,
             "Debit": 0,
             "Credit": round(total, 2),
-            "TransactionInformation": "Betalning leverantörsfakturor",
+            "TransactionInformation": f"Betalning: {suppliers_str}"[:200],
         })
 
-        description = f"Bet. {', '.join(descriptions[:3])}{'...' if len(descriptions) > 3 else ''}"
+        description = f"Betalning lev.: {suppliers_str}"
         voucher_data = {
             "Description": description[:200],
             "TransactionDate": payment_date.isoformat(),
