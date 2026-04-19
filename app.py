@@ -597,6 +597,7 @@ def projects_new(client_id):
             end_date=_safe_date(request.form.get("end_date")),
             accumulated_cost=_safe_float(request.form.get("accumulated_cost"), 0),
             invoice_cc_email=request.form.get("invoice_cc_email", "").strip() or None,
+            contact_person_name=request.form.get("contact_person_name", "").strip() or None,
             expense_markup_pct=_safe_float(request.form.get("expense_markup_pct"), 10.0),
         )
         db.session.add(p)
@@ -619,6 +620,7 @@ def projects_edit(project_id):
         p.active           = request.form.get("active") == "1"
         p.accumulated_cost = _safe_float(request.form.get("accumulated_cost"), 0)
         p.invoice_cc_email = request.form.get("invoice_cc_email", "").strip() or None
+        p.contact_person_name = request.form.get("contact_person_name", "").strip() or None
         p.expense_markup_pct = _safe_float(request.form.get("expense_markup_pct"), 10.0)
         db.session.commit()
         flash("Uppdrag uppdaterat / Assignment updated", "success")
@@ -1105,7 +1107,8 @@ def expenses_review():
                 base = exp.receipt_filename
                 if "_" in base and len(base.split("_")[0]) == 16:
                     base = base.split("_", 1)[1]
-                attach_name = f"{voucher_ref}-{base}"
+                base = base.replace("—", "-").replace("–", "-")
+                attach_name = f"{voucher_ref} - {base}"
                 _email_pdf_to_fortnox_inbox(receipt_path, attach_name, voucher_ref, app.config)
         except Exception as e:
             flash(f"Fortnox-fel / Fortnox error: {e}", "warning")
@@ -1406,7 +1409,7 @@ def invoices_send(invoice_id):
                 db.session.commit()
                 if inv.pdf_filename:
                     pdf_path = os.path.join(app.root_path, "static", "uploads", inv.pdf_filename)
-                    attach_name = f"{voucher_ref}-{inv.invoice_number}.pdf"
+                    attach_name = f"{voucher_ref} - {inv.invoice_number}.pdf"
                     _email_pdf_to_fortnox_inbox(pdf_path, attach_name, voucher_ref, app.config)
                 flash(f"Fortnox verifikat skapat: {voucher_ref} / Voucher created: {voucher_ref}", "success")
         except Exception as e:
@@ -2085,7 +2088,8 @@ def supplier_invoices_review(invoice_id):
                 base = inv.pdf_filename
                 if "_" in base and len(base.split("_")[0]) == 16:
                     base = base.split("_", 1)[1]
-                new_filename = f"{voucher_ref}-{base}"
+                base = base.replace("—", "-").replace("–", "-")
+                new_filename = f"{voucher_ref} - {base}"
                 new_path = os.path.join(folder, new_filename)
                 if os.path.exists(old_path):
                     os.rename(old_path, new_path)
@@ -2475,7 +2479,8 @@ def _send_invoice_email(inv, config):
     safe_inv_nr  = _sanitize_header(inv.invoice_number)
     safe_to      = _sanitize_header(client.contact_email)
     safe_from    = _sanitize_header(config["SMTP_FROM"])
-    safe_name    = _sanitize_header(client.contact_name or client.name)
+    contact_person = (inv.project and inv.project.contact_person_name) or client.contact_name or client.name
+    safe_name    = _sanitize_header(contact_person)
 
     subject_sv = f"Faktura {safe_inv_nr} – {safe_company}"
     subject_en = f"Invoice {safe_inv_nr} – {safe_company}"
@@ -2562,6 +2567,7 @@ def init_db():
             "ALTER TABLE project ADD COLUMN accumulated_cost REAL DEFAULT 0.0",
             "ALTER TABLE project ADD COLUMN invoice_cc_email VARCHAR(200)",
             "ALTER TABLE project ADD COLUMN expense_markup_pct REAL DEFAULT 10.0",
+            "ALTER TABLE project ADD COLUMN contact_person_name VARCHAR(200)",
             # v1.1 user model expansion
             "ALTER TABLE user ADD COLUMN display_name VARCHAR(200)",
             "ALTER TABLE user ADD COLUMN email VARCHAR(200)",

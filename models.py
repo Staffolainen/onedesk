@@ -155,7 +155,8 @@ class Project(db.Model):
     end_date = db.Column(db.Date)
     active = db.Column(db.Boolean, default=True)
     accumulated_cost = db.Column(db.Float, default=0.0)  # pre-system historical cost
-    invoice_cc_email = db.Column(db.String(200))  # CC on invoice emails (e.g. client PM)
+    invoice_cc_email = db.Column(db.String(200))  # contact person email, CC on invoice emails
+    contact_person_name = db.Column(db.String(200))  # contact person name for invoice greeting
     expense_markup_pct = db.Column(db.Float, default=10.0)  # markup on vidarefakturerade kostnader
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
