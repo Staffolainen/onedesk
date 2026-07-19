@@ -124,7 +124,20 @@
             <button type="button" class="btn btn-ghost btn-sm" onclick="calcExpVat(12.5)">12,5%</button>
             <button type="button" class="btn btn-ghost btn-sm" onclick="calcExpVat(0)">0%</button>
           </div>
-          <div style="font-size:11px;color:var(--muted);margin-top:4px;">→ 2641 Debiterad ingående moms</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px;" id="exp_vat_hint">→ 2641 Debiterad ingående moms</div>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px;">
+          <input type="checkbox" name="reverse_charge" value="1" id="exp_reverse_charge"
+                 style="accent-color:var(--accent);">
+          {{ "Omvänd skattskyldighet" if g.lang == "sv" else "Reverse charge VAT" }}
+        </label>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px;">
+          {{ "Kvittot saknar moms. 25% beräknas och bokförs på 2614/2647 — beloppet som betalas är summan."
+             if g.lang == "sv" else
+             "Receipt carries no VAT. 25% is self-assessed to 2614/2647 — the amount paid is just the sum." }}
         </div>
       </div>
 
@@ -200,6 +213,28 @@ function calcExpVat(rate) {
   const vat = rate > 0 ? Math.round(total * rate / (100 + rate) * 100) / 100 : 0;
   document.getElementById('exp_vat_amount').value = vat.toFixed(2);
 }
+
+(function() {
+  const rc      = document.getElementById('exp_reverse_charge');
+  const vatIn   = document.getElementById('exp_vat_amount');
+  const vatHint = document.getElementById('exp_vat_hint');
+  const vatBtns = vatIn.parentElement.querySelectorAll('button');
+
+  function syncReverseCharge() {
+    const on = rc.checked;
+    // Under reverse charge the receipt has no VAT — the 25% is virtual and posted server-side.
+    if (on) vatIn.value = '';
+    vatIn.disabled = on;
+    vatBtns.forEach(b => b.disabled = on);
+    vatIn.style.opacity = on ? '0.5' : '';
+    vatHint.textContent = on
+      ? '{{ "→ 2614 / 2647 omvänd skattskyldighet 25% (virtuell moms)" if g.lang == "sv" else "→ 2614 / 2647 reverse charge 25% (virtual VAT)" }}'
+      : '{{ "→ 2641 Debiterad ingående moms" if g.lang == "sv" else "→ 2641 Debiterad ingående moms" }}';
+  }
+
+  rc.addEventListener('change', syncReverseCharge);
+  syncReverseCharge();
+})();
 
 (function() {
   const select = document.getElementById('expense_category_id');

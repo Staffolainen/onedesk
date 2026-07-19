@@ -19,7 +19,9 @@
   </div>
   {% endif %}
 
-  <form method="POST">
+  {# novalidate: the native bubble is easy to miss when the offending field is scrolled
+     off-screen. Constraints are still enforced via checkValidity() in showFormErrors(). #}
+  <form method="POST" novalidate>
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
     {# ── 1. Supplier + payment destination ── #}
@@ -70,7 +72,20 @@
             <button type="button" class="btn btn-ghost btn-sm" onclick="calcSupVat(12.5)">12,5%</button>
             <button type="button" class="btn btn-ghost btn-sm" onclick="calcSupVat(0)">0%</button>
           </div>
-          <div style="font-size:11px;color:var(--muted);margin-top:4px;">→ 2641 Debiterad ingående moms</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px;" id="sup_vat_hint">→ 2641 Debiterad ingående moms</div>
+        </div>
+        <div class="form-group" style="grid-column:1/-1;">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px;">
+            <input type="checkbox" name="reverse_charge" value="1" id="sup_reverse_charge"
+                   style="accent-color:var(--accent);"
+                   {% if inv.reverse_charge %}checked{% endif %}>
+            {{ "Omvänd skattskyldighet" if g.lang == "sv" else "Reverse charge VAT" }}
+          </label>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px;">
+            {{ "Fakturan saknar moms. 25% beräknas och bokförs på 2614/2647 — beloppet som betalas är summan."
+               if g.lang == "sv" else
+               "Invoice carries no VAT. 25% is self-assessed to 2614/2647 — the amount paid is just the sum." }}
+          </div>
         </div>
         <div class="form-group">
           <label class="form-label">{{ g.t.sup_incl_vat }} *</label>
@@ -153,6 +168,10 @@
     </div>
     {% endif %}
 
+    {# Surfaces browser-level validation failures, which otherwise block the submit silently #}
+    <div id="form-error-summary" style="display:none;margin-bottom:12px;padding:10px 12px;
+         border:1px solid var(--accent);border-radius:6px;color:var(--accent);font-size:13px;line-height:1.6;"></div>
+
     <div style="display:flex;gap:10px;margin-bottom:16px;">
       <button type="submit" name="action" value="save" id="reviewSaveBtn" class="btn btn-primary">
         {{ g.t.sup_save_book }}
@@ -206,6 +225,11 @@ function calcSupVat(rate) {
 }
 
 function validateAmounts() {
+  // Under reverse charge net == total to pay by definition — the sum check does not apply.
+  if (document.getElementById('sup_reverse_charge').checked) {
+    document.getElementById('amount-sum-error').style.display = 'none';
+    return true;
+  }
   const incl = parseFloat(document.querySelector('[name=amount_incl_vat]').value) || 0;
   const excl = parseFloat(document.querySelector('[name=amount_excl_vat]').value) || 0;
   const vat  = parseFloat(document.getElementById('sup_vat_amount').value) || 0;
@@ -238,7 +262,20 @@ const _PAT = {
   pg:   /^\d{1,7}-\d$/,
   iban: /^[A-Za-z]{2}\d{2}[A-Za-z0-9]{4,30}$/,
 };
-const _FMT = { bg: 'NNNN-NNNN', pg: 'NNNNNNN-N', iban: 'SE00NNNN…' };
+const _FMT = { bg: 'NNN-NNNN / NNNN-NNNN', pg: 'NNNNNNN-N', iban: 'SE00NNNN…' };
+
+// Bankgiro is 7-8 digits, hyphen before the last four. Accept '1218114' and
+// '121 8114' by reformatting rather than rejecting — mirrors _normalize_bankgiro().
+function normalizeBankgiro(v) {
+  const d = (v || '').replace(/\D/g, '');
+  return (d.length === 7 || d.length === 8) ? d.slice(0, -4) + '-' + d.slice(-4) : (v || '').trim();
+}
+(function() {
+  const el = document.getElementById('f_payment_account');
+  el.addEventListener('blur', function() {
+    if (document.getElementById('f_payment_type').value === 'bg') el.value = normalizeBankgiro(el.value);
+  });
+})();
 
 function validatePaymentMethod() {
   const val = document.getElementById('f_payment_account').value.trim().replace(/\s/g, '');
@@ -258,13 +295,98 @@ function validatePaymentMethod() {
   return true;
 }
 
+(function() {
+  const rc      = document.getElementById('sup_reverse_charge');
+  const inclIn  = document.querySelector('[name=amount_incl_vat]');
+  const exclIn  = document.querySelector('[name=amount_excl_vat]');
+  const vatIn   = document.getElementById('sup_vat_amount');
+  const vatHint = document.getElementById('sup_vat_hint');
+  const vatBtns = vatIn.parentElement.querySelectorAll('button');
+
+  function syncReverseCharge() {
+    const on = rc.checked;
+    if (on) {
+      // No VAT on the invoice: net mirrors the total, the 25% is posted server-side.
+      vatIn.value = '';
+      exclIn.value = inclIn.value;
+    }
+    [exclIn, vatIn].forEach(el => {
+      el.disabled = on;
+      el.style.opacity = on ? '0.5' : '';
+    });
+    vatBtns.forEach(b => b.disabled = on);
+    vatHint.textContent = on
+      ? '{{ "→ 2614 / 2647 omvänd skattskyldighet 25% (virtuell moms)" if g.lang == "sv" else "→ 2614 / 2647 reverse charge 25% (virtual VAT)" }}'
+      : '→ 2641 Debiterad ingående moms';
+    validateAmounts();
+  }
+
+  rc.addEventListener('change', syncReverseCharge);
+  inclIn.addEventListener('input', () => { if (rc.checked) exclIn.value = inclIn.value; });
+  syncReverseCharge();
+})();
+
 document.querySelector('[name=amount_incl_vat]').addEventListener('input', validateAmounts);
 document.querySelector('[name=amount_excl_vat]').addEventListener('input', validateAmounts);
 document.getElementById('sup_vat_amount').addEventListener('input', validateAmounts);
 
+// The date fields are plain text with a strict YYYY-MM-DD pattern, so "2026-7-1",
+// "20260701" or a stray trailing space all fail. Normalise instead of rejecting.
+function normalizeDate(v) {
+  v = (v || '').trim().replace(/[\/\.\s]/g, '-').replace(/-+/g, '-');
+  if (/^\d{8}$/.test(v)) return v.slice(0,4) + '-' + v.slice(4,6) + '-' + v.slice(6,8);
+  const m = v.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (m) return `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
+  return v;
+}
+
+['invoice_date', 'due_date'].forEach(function(n) {
+  const el = document.querySelector(`[name=${n}]`);
+  if (el) el.addEventListener('blur', () => { el.value = normalizeDate(el.value); });
+});
+
+// Label text for a control, for use in the error summary.
+function fieldLabel(el) {
+  const grp = el.closest('.form-group');
+  const lbl = grp && grp.querySelector('.form-label');
+  return (lbl ? lbl.textContent : el.name).replace(/\s*\*\s*$/, '').trim();
+}
+
+// Own wording rather than el.validationMessage, which follows the browser's locale
+// and so would show English text in an otherwise Swedish form.
+function reasonFor(el) {
+  if (el.validity.valueMissing)    return '{{ "obligatoriskt fält" if g.lang == "sv" else "required field" }}';
+  if (el.validity.patternMismatch) return '{{ "använd formatet ÅÅÅÅ-MM-DD" if g.lang == "sv" else "use the format YYYY-MM-DD" }}';
+  if (el.validity.rangeUnderflow)  return '{{ "kan inte vara negativt" if g.lang == "sv" else "cannot be negative" }}';
+  return el.validationMessage;
+}
+
+function showFormErrors(form) {
+  const box = document.getElementById('form-error-summary');
+  const bad = [...form.elements].filter(el => el.willValidate && !el.checkValidity());
+  if (!bad.length) { box.style.display = 'none'; return true; }
+  const intro = '{{ "Formuläret kunde inte sparas — kontrollera:" if g.lang == "sv" else "The form could not be saved — please check:" }}';
+  box.innerHTML = intro + '<ul style="margin:6px 0 0 18px;padding:0;">' +
+    bad.map(el => `<li><strong>${fieldLabel(el)}</strong> — ${reasonFor(el)}</li>`).join('') +
+    '</ul>';
+  box.style.display = 'block';
+  bad[0].scrollIntoView({behavior: 'smooth', block: 'center'});
+  bad[0].focus({preventScroll: true});
+  return false;
+}
+
 document.querySelector('form').addEventListener('submit', function(e) {
   const clicked = document.activeElement;
   if (clicked && clicked.name === 'action' && clicked.value === 'discard') return;
+  // Normalise before validating, so a reformattable date is fixed rather than rejected.
+  ['invoice_date', 'due_date'].forEach(function(n) {
+    const el = document.querySelector(`[name=${n}]`);
+    if (el) el.value = normalizeDate(el.value);
+  });
+  const acc = document.getElementById('f_payment_account');
+  if (document.getElementById('f_payment_type').value === 'bg') acc.value = normalizeBankgiro(acc.value);
+  // Browser-level constraints first — these are the ones that fail invisibly.
+  if (!showFormErrors(this)) { e.preventDefault(); return; }
   const ok = validateAmounts() & validatePaymentMethod();
   if (!ok) { e.preventDefault(); return; }
   const btn = document.getElementById('reviewSaveBtn');

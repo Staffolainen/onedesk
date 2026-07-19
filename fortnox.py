@@ -8,7 +8,8 @@ import json
 import logging
 import requests
 from urllib.parse import urlencode
-from models import Settings
+from models import (Settings, REVERSE_CHARGE_OUTPUT_ACCOUNT,
+                    REVERSE_CHARGE_INPUT_ACCOUNT, reverse_charge_vat)
 
 logger = logging.getLogger(__name__)
 
@@ -340,6 +341,22 @@ class FortnoxClient:
                 "Credit": 0,
                 "TransactionInformation": tx_info[:200],
             })
+        if getattr(expense, "reverse_charge", False):
+            # Omvänd skattskyldighet: self-assess the VAT on both sides. The two rows
+            # cancel, so the credit below stays equal to what is actually paid.
+            virtual_vat = reverse_charge_vat(expense.amount_excl_vat)
+            rows.append({
+                "Account": REVERSE_CHARGE_INPUT_ACCOUNT,
+                "Debit": virtual_vat,
+                "Credit": 0,
+                "TransactionInformation": tx_info[:200],
+            })
+            rows.append({
+                "Account": REVERSE_CHARGE_OUTPUT_ACCOUNT,
+                "Debit": 0,
+                "Credit": virtual_vat,
+                "TransactionInformation": tx_info[:200],
+            })
         rows.append({
             "Account": credit_account,
             "Debit": 0,
@@ -395,6 +412,20 @@ class FortnoxClient:
                 "Account": 2641,
                 "Debit": round(float(inv.vat_amount), 2),
                 "Credit": 0,
+            })
+        if getattr(inv, "reverse_charge", False):
+            # Omvänd skattskyldighet: self-assess the VAT on both sides. The two rows
+            # cancel, so 2440 — and therefore the payment — stays at the invoice sum.
+            virtual_vat = reverse_charge_vat(inv.amount_excl_vat)
+            rows.append({
+                "Account": REVERSE_CHARGE_INPUT_ACCOUNT,
+                "Debit": virtual_vat,
+                "Credit": 0,
+            })
+            rows.append({
+                "Account": REVERSE_CHARGE_OUTPUT_ACCOUNT,
+                "Debit": 0,
+                "Credit": virtual_vat,
             })
         rows.append({
             "Account": 2440,  # Leverantörsskulder — cleared when payment is made

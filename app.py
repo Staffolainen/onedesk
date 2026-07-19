@@ -47,10 +47,12 @@ from config import Config
 from models import (db, User, Client, Project, PurchaseOrder, POHourType,
                     TimeEntry, Expense, Invoice, MileageEntry, Settings,
                     VoucherTemplate, SupplierInvoice, PaymentFile,
-                    fiscal_year, fy_start, fy_end)
+                    fiscal_year, fy_start, fy_end,
+                    REVERSE_CHARGE_VAT_RATE, REVERSE_CHARGE_OUTPUT_ACCOUNT,
+                    REVERSE_CHARGE_INPUT_ACCOUNT, reverse_charge_vat)
 from sqlalchemy.orm import selectinload, joinedload
 from fortnox import FortnoxClient
-from receipt_ocr import extract_receipt_data, extract_supplier_invoice_data
+from receipt_ocr import extract_receipt_data, extract_supplier_invoice_data, _normalize_bankgiro
 from pdf_generator import generate_invoice_pdf, render_invoice_html
 from payment_file_generator import generate_pain001, get_execution_date
 
@@ -229,6 +231,7 @@ TRANSLATIONS = {
 
 _AD_SKIP_ENDPOINTS = frozenset({
     'auth_login', 'auth_logout', 'auth_not_provisioned', 'static', 'set_lang',
+    'healthz',
 })
 
 @app.before_request
@@ -298,6 +301,23 @@ def ad_auto_login():
             return redirect(url_for('auth_not_provisioned'))
     except Exception as e:
         app.logger.warning("AD auto-login failed: %s", e)
+
+@app.route("/healthz")
+def healthz():
+    """Unauthenticated liveness/readiness probe for smoke tests and load balancers.
+
+    Reports the build currently running (BUILD_TIME) so a deploy can be verified
+    against the expected image, and pings the DB to confirm the app can serve requests.
+    """
+    build_time = os.getenv("BUILD_TIME", "dev")
+    try:
+        from sqlalchemy import text
+        db.session.execute(text("SELECT 1"))
+        return jsonify(status="ok", build_time=build_time), 200
+    except Exception as e:
+        app.logger.warning("healthz DB check failed: %s", e)
+        return jsonify(status="error", build_time=build_time, detail="db"), 503
+
 
 @app.route("/lang/<lang>")
 def set_lang(lang):
@@ -1070,9 +1090,18 @@ def expenses_review():
 
         # Save expense
         amount_incl = _safe_float(request.form.get("amount_incl_vat"), 0.0)
-        vat_amount = round(_safe_float(request.form.get("vat_amount"), 0.0), 2)
-        amount_excl = round(amount_incl - vat_amount, 2)
-        vat_rate = round(vat_amount / amount_excl * 100, 1) if amount_excl > 0 else 0.0
+        reverse_charge = request.form.get("reverse_charge") == "1"
+        if reverse_charge:
+            # Omvänd skattskyldighet: the receipt carries no VAT, so the amount entered
+            # is both the net cost and what is actually paid. The 25% is virtual and
+            # booked to 2614/2647 by the voucher builder — it never touches the payment.
+            vat_amount = 0.0
+            amount_excl = amount_incl
+            vat_rate = REVERSE_CHARGE_VAT_RATE
+        else:
+            vat_amount = round(_safe_float(request.form.get("vat_amount"), 0.0), 2)
+            amount_excl = round(amount_incl - vat_amount, 2)
+            vat_rate = round(vat_amount / amount_excl * 100, 1) if amount_excl > 0 else 0.0
         expense_date = _safe_date(request.form.get("expense_date"))
         if not expense_date:
             flash("Ogiltigt datum / Invalid date", "error")
@@ -1088,6 +1117,7 @@ def expenses_review():
             amount_excl_vat=amount_excl,
             vat_amount=vat_amount,
             vat_rate=vat_rate,
+            reverse_charge=reverse_charge,
             billable=request.form.get("billable") == "1",
             paid_by=request.form.get("paid_by", "personal"),
             receipt_filename=pending["receipt_filename"],
@@ -2017,6 +2047,12 @@ def supplier_invoices_review(invoice_id):
             ocr = json.loads(inv.ocr_raw) if inv.ocr_raw else {}
             return render_template("supplier_invoices/review.html",
                 inv=inv, projects=projects, categories=categories, ocr=ocr, currencies=currencies)
+        reverse_charge = request.form.get("reverse_charge") == "1"
+        if reverse_charge:
+            # Omvänd skattskyldighet: the invoice carries no VAT, so net == total to pay.
+            # The 25% is virtual (2614/2647) and must not inflate the payment.
+            vat_amt = 0.0
+            amount_excl = amount_incl
         expected_incl = round(amount_excl + vat_amt, 2)
         if abs(expected_incl - amount_incl) > 0.05:
             diff = round(abs(expected_incl - amount_incl), 2)
@@ -2034,6 +2070,9 @@ def supplier_invoices_review(invoice_id):
         payment_ref     = request.form.get("payment_ref", "").strip()
         payment_type    = request.form.get("payment_type", "bg")
         payment_account = request.form.get("payment_account", "").strip()
+        if payment_type == "bg":
+            # Accept '1218114' / '121 8114' as well as '121-8114'
+            payment_account = _normalize_bankgiro(payment_account)
 
         def _re_render(msg):
             flash(msg, "error")
@@ -2051,7 +2090,7 @@ def supplier_invoices_review(invoice_id):
                 "Payment account (BG, PG or IBAN) is required"
             )
         if not _validate_payment_account(payment_type, payment_account):
-            fmt = {"bg": "NNNN-NNNN", "pg": "NNNNNNN-N", "iban": "SE00NNNN…"}.get(payment_type, "")
+            fmt = {"bg": "NNN-NNNN eller NNNN-NNNN", "pg": "NNNNNNN-N", "iban": "SE00NNNN…"}.get(payment_type, "")
             return _re_render(
                 f"Ogiltigt kontoformat för {payment_type.upper()} (förväntat: {fmt}) / "
                 f"Invalid {payment_type.upper()} format (expected: {fmt})"
@@ -2065,7 +2104,9 @@ def supplier_invoices_review(invoice_id):
         inv.payment_account      = payment_account
         inv.payment_account_type = payment_type
         inv.supplier_category_id = _safe_int(request.form.get("supplier_category_id")) or None
-        inv.vat_rate = _safe_float(request.form.get("vat_rate"), 25.0)
+        inv.reverse_charge = reverse_charge
+        inv.vat_rate = (REVERSE_CHARGE_VAT_RATE if reverse_charge
+                        else _safe_float(request.form.get("vat_rate"), 25.0))
         inv.project_id = _safe_int(request.form.get("project_id")) or None
         inv.status = "approved"
         db.session.commit()
@@ -2342,6 +2383,12 @@ def _build_supplier_voucher_preview(inv: SupplierInvoice) -> dict:
     if vat_rate > 0 and inv.vat_amount:
         rows.append({"Account": "2641", "Debit": inv.vat_amount, "Credit": 0,
                      "_label": "Debiterad ingående moms"})
+    if getattr(inv, "reverse_charge", False):
+        virtual_vat = reverse_charge_vat(inv.amount_excl_vat)
+        rows.append({"Account": str(REVERSE_CHARGE_INPUT_ACCOUNT), "Debit": virtual_vat, "Credit": 0,
+                     "_label": "Ingående moms omvänd skattskyldighet"})
+        rows.append({"Account": str(REVERSE_CHARGE_OUTPUT_ACCOUNT), "Debit": 0, "Credit": virtual_vat,
+                     "_label": "Utgående moms omvänd skattskyldighet"})
     rows.append({"Account": "2440", "Debit": 0, "Credit": inv.amount_incl_vat,
                  "_label": "Leverantörsskulder (betalas vid betalfil)"})
 
@@ -2584,6 +2631,9 @@ def init_db():
             # v1.1 supplier categories
             "ALTER TABLE supplier_invoice ADD COLUMN supplier_category_id INTEGER REFERENCES supplier_category(id)",
             "ALTER TABLE supplier_invoice ADD COLUMN vat_rate REAL DEFAULT 25.0",
+            # omvänd skattskyldighet (reverse charge)
+            "ALTER TABLE supplier_invoice ADD COLUMN reverse_charge BOOLEAN DEFAULT 0",
+            "ALTER TABLE expense ADD COLUMN reverse_charge BOOLEAN DEFAULT 0",
             # indexes for common filter/sort columns
             "CREATE INDEX IF NOT EXISTS ix_supplier_invoice_status ON supplier_invoice(status)",
             "CREATE INDEX IF NOT EXISTS ix_supplier_invoice_due_date ON supplier_invoice(due_date)",

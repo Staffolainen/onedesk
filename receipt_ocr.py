@@ -24,7 +24,7 @@ SUPPLIER_INVOICE_PROMPT = """You are analyzing a supplier invoice (PDF or image)
   "amount_incl_vat": 1250.00,
   "currency": "SEK",
   "payment_ref": "OCR number or payment reference, digits only, or null",
-  "bankgiro": "BG number like 1234-5678, or null",
+  "bankgiro": "BG number, 7 or 8 digits, like 121-8114 or 1234-5678, or null",
   "plusgiro": "PG number, or null",
   "iban": "IBAN number if present, or null"
 }
@@ -32,7 +32,8 @@ SUPPLIER_INVOICE_PROMPT = """You are analyzing a supplier invoice (PDF or image)
 Rules:
 - amount_incl_vat is the total to pay including VAT (look for 'Totalt att betala', 'Total', 'Att betala')
 - payment_ref is the OCR/reference number to use when paying (often labeled 'OCR', 'Referensnummer', 'Betalningsreferens')
-- bankgiro format: keep hyphens (e.g. '1234-5678')
+- bankgiro is 7 or 8 digits with a hyphen before the last four: '121-8114' (7) or '1234-5678' (8).
+  Add the hyphen if the invoice prints the digits without one.
 - If a field cannot be determined, use null
 - All amounts as numbers, not strings
 """
@@ -209,6 +210,24 @@ def _normalize_pdf_text(text: str) -> str:
     return text
 
 
+def _normalize_bankgiro(value: str) -> str:
+    """Normalise a bankgiro to the canonical NNN-NNNN / NNNN-NNNN form.
+
+    A bankgiro is 7 or 8 digits with the hyphen always before the last four, so
+    unhyphenated or space-separated variants are recoverable rather than invalid:
+      '121-8114'  → '121-8114'
+      '1218114'   → '121-8114'
+      '121 8114'  → '121-8114'
+      '12345678'  → '1234-5678'
+    Anything that is not 7-8 digits is returned with whitespace stripped only,
+    so genuinely malformed input still fails validation rather than being mangled.
+    """
+    digits = re.sub(r"\D", "", value or "")
+    if len(digits) in (7, 8):
+        return f"{digits[:-4]}-{digits[-4:]}"
+    return re.sub(r"\s+", "", value or "")
+
+
 def _extract_pdf_regex(file_path: str) -> dict:
     """Extract supplier invoice fields from a PDF using text extraction + regex.
     Works on born-digital PDFs without any AI or network calls.
@@ -252,14 +271,25 @@ def _extract_pdf_regex(file_path: str) -> dict:
     DATE_PAT = r"\d{4}-\d{2}-\d{2}"
     invoice_date = _find([
         r"(?:fakturadatum|invoice date)[:\s]*("+DATE_PAT+")",
-        r"(?:datum)[:\s]*("+DATE_PAT+")",
+        # \b so 'datum' does not match the tail of 'Förfallodatum' and pick up the due date
+        r"\bdatum[:\s]*("+DATE_PAT+")",
     ], text)
     due_date = _find([
-        r"(?:f[öo]rfallodatum|f[öo]rfall|betala senast|due date|payment due)[:\s]*("+DATE_PAT+")",
+        # f[öo]rfall\w* covers 'Förfallodatum', 'Förfallodag', 'Förfallodagen'
+        r"(?:f[öo]rfall\w*|betala senast|due date|payment due)[:\s.]*("+DATE_PAT+")",
         r"(?:sista\s+betalningsdag)[:\s]*("+DATE_PAT+")",
         # 'Betalning hos oss senast' sometimes appears fully merged: 'Betalninghososssenast'
         r"betalning\s*hos\s*oss\s*senast[:\s]*("+DATE_PAT+")",
     ], text)
+
+    # Fallback: no labelled invoice date, so take the first YYYY-MM-DD in the document.
+    # Skipped when that date is the one already identified as the due date, which would
+    # otherwise silently book the invoice as issued on its own due date.
+    if not invoice_date:
+        for m in re.finditer(DATE_PAT, text):
+            if m.group(0) != due_date:
+                invoice_date = m.group(0)
+                break
 
     # ── Invoice number ───────────────────────────────────────────────────────
     # pypdf sometimes splits numbers across lines in columnar layouts; allow
@@ -304,12 +334,15 @@ def _extract_pdf_regex(file_path: str) -> dict:
     # ── Payment info — BG takes priority, then PG, IBAN only as last resort ──
     bankgiro = _find([
         # "Bankgiro" or "Bankgironr" or "Till bankgiro" followed by number
-        r"(?:(?:till\s+)?bankgiro(?:\s*nr)?)[:\s]*((?:\d[\d\s]{1,5}-\d{4}|\d{7,8}))",
-        r"\bbg[:\s]*((?:\d{3,4}-\d{4}|\d{7,8}))",
+        # The (?!\d) guard stops an unhyphenated BG from swallowing the digits of a
+        # following number — 'Bankgiro 1218114 5000' must not become '1218-1145'.
+        # bankgiro\w* covers 'Bankgironr'/'Bankgironummer'/'Bankgirokonto' written as one
+        # word; the trailing (?:\s*nr\w*)? covers them written separately ('Bankgiro nr').
+        r"(?:(?:till\s+)?bankgiro\w*(?:\s*(?:nr|nummer|no|konto)\w*)?)[:\s.]*((?:\d[\d\s]{1,5}-\d{4}|\d{3,4}\s?\d{4})(?!\d))",
+        r"\bbg[:\s]*((?:\d{3,4}-\d{4}|\d{3,4}\s?\d{4})(?!\d))",
     ], text)
     if bankgiro:
-        # Normalise: strip embedded spaces from "5 093-4108" → "5093-4108"
-        bankgiro = re.sub(r"\s+", "", bankgiro)
+        bankgiro = _normalize_bankgiro(bankgiro)
     if bankgiro:
         plusgiro = None
         iban = None

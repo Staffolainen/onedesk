@@ -1,9 +1,25 @@
 import os
 import base64
 import hashlib
+import sqlite3
 from datetime import datetime, date
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import UserMixin
+from sqlalchemy import event
+from sqlalchemy.engine import Engine
+
+# ── Omvänd skattskyldighet (reverse charge) ──────────────────────────────────
+# The supplier invoices without VAT and the buyer self-assesses it. The two rows
+# cancel out, so the amount paid stays equal to the invoice sum.
+REVERSE_CHARGE_VAT_RATE = 25.0
+REVERSE_CHARGE_OUTPUT_ACCOUNT = 2614  # Utgående moms omvänd skattskyldighet, 25%
+REVERSE_CHARGE_INPUT_ACCOUNT = 2647   # Ingående moms omvänd skattskyldighet
+
+
+def reverse_charge_vat(amount_excl) -> float:
+    """Virtual VAT self-assessed on a reverse-charge purchase."""
+    return round(float(amount_excl or 0) * REVERSE_CHARGE_VAT_RATE / 100.0, 2)
+
 
 def _fernet():
     from cryptography.fernet import Fernet
@@ -45,6 +61,23 @@ def fy_end(fy, start_month=5):
     return date(end_year, end_month, last_day)
 
 db = SQLAlchemy()
+
+
+@event.listens_for(Engine, "connect")
+def _set_sqlite_pragmas(dbapi_connection, connection_record):
+    """Tune SQLite for the multi-worker Gunicorn setup.
+
+    Guarded on the real sqlite3 connection type, so this is a no-op on any other
+    backend (e.g. PostgreSQL). WAL lets readers and the single writer proceed
+    concurrently instead of locking the whole DB, and busy_timeout makes a writer
+    wait for a held lock rather than failing immediately with "database is locked".
+    """
+    if isinstance(dbapi_connection, sqlite3.Connection):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=5000")
+        cursor.close()
+
 
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -294,6 +327,8 @@ class Expense(db.Model):
     amount_excl_vat = db.Column(db.Float, nullable=False)
     vat_amount = db.Column(db.Float, default=0.0)
     vat_rate = db.Column(db.Float, default=25.0)
+    # Omvänd skattskyldighet — no VAT on the receipt; 25% is self-assessed to 2614/2647
+    reverse_charge = db.Column(db.Boolean, default=False)
     amount_incl_vat = db.Column(db.Float, nullable=False)
     currency = db.Column(db.String(10), default="SEK")
     billable = db.Column(db.Boolean, default=True)
@@ -450,6 +485,8 @@ class SupplierInvoice(db.Model):
     supplier_category_id = db.Column(db.Integer, db.ForeignKey('supplier_category.id'), nullable=True)
     supplier_category = db.relationship('SupplierCategory', lazy=True)
     vat_rate = db.Column(db.Float, default=25.0)
+    # Omvänd skattskyldighet — invoice carries no VAT; 25% is self-assessed to 2614/2647
+    reverse_charge = db.Column(db.Boolean, default=False)
     project_id = db.Column(db.Integer, db.ForeignKey('project.id'), nullable=True)
     pdf_filename = db.Column(db.String(300))
     status = db.Column(db.String(20), default='pending')  # pending, approved, booked, paid
