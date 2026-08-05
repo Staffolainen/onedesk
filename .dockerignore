@@ -4,6 +4,7 @@ __pycache__/
 *.pyo
 instance/
 static/uploads/
+logs/
 .git/
 .gitignore
 README.md
