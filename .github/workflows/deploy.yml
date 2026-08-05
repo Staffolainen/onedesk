@@ -1,0 +1,127 @@
+name: Deploy
+
+# Push to main → test → build image once → auto-deploy to homelab staging →
+# manual approval (production Environment) → promote the SAME image to Azure prod.
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Existing image tag to (re)deploy, e.g. a prior git SHA for rollback. Leave blank to build from this commit."
+        required: false
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: onedeskregistry
+  IMAGE: onedesk
+  RESOURCE_GROUP: onedesk-rg
+  WEBAPP: onedesk-app
+  PROD_URL: https://onedesk-app.azurewebsites.net
+  STAGING_URL: http://localhost:5003
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: pytest
+
+  build:
+    runs-on: ubuntu-latest
+    needs: test
+    outputs:
+      image_tag: ${{ steps.tag.outputs.image_tag }}
+    steps:
+      - name: Resolve image tag
+        id: tag
+        run: echo "image_tag=${{ github.event.inputs.image_tag || github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # Build once in ACR from this exact commit. Skipped on a rollback dispatch
+      # (image_tag provided) since that image already exists in the registry.
+      - name: Build image in ACR
+        if: ${{ github.event.inputs.image_tag == '' }}
+        uses: azure/cli@v2
+        with:
+          inlineScript: |
+            az acr build \
+              --registry "$REGISTRY" \
+              --image "$IMAGE:${{ steps.tag.outputs.image_tag }}" \
+              --build-arg BUILD_TIME="$(date -u +%FT%TZ)" \
+              "https://github.com/${{ github.repository }}.git#${{ github.sha }}"
+
+  deploy-staging:
+    runs-on: [self-hosted, homelab]
+    needs: build
+    environment: staging
+    env:
+      IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to ACR
+        run: az acr login --name "$REGISTRY"
+
+      - name: Pull and restart staging
+        run: |
+          docker compose -f docker-compose-staging.yml pull
+          docker compose -f docker-compose-staging.yml up -d
+
+      - name: Smoke test staging
+        run: |
+          for i in $(seq 1 30); do
+            body=$(curl -fsS "$STAGING_URL/healthz" 2>/dev/null) && break
+            echo "waiting for staging... ($i)"; sleep 2
+          done
+          echo "$body"
+          echo "$body" | grep -q '"status":"ok"' || { echo "healthz not ok"; exit 1; }
+          echo "$body" | grep -q "\"build_time\"" || { echo "no build_time"; exit 1; }
+
+  deploy-prod:
+    runs-on: ubuntu-latest
+    needs: [build, deploy-staging]
+    # The `production` Environment must have a Required reviewer configured — that
+    # protection rule is what pauses the run here for manual approval.
+    environment:
+      name: production
+      url: https://onedesk-app.azurewebsites.net
+    env:
+      IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
+    steps:
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Point web app at the promoted image and restart
+        uses: azure/cli@v2
+        with:
+          inlineScript: |
+            az webapp config container set \
+              --name "$WEBAPP" \
+              --resource-group "$RESOURCE_GROUP" \
+              --docker-custom-image-name "$REGISTRY.azurecr.io/$IMAGE:$IMAGE_TAG"
+            az webapp restart --name "$WEBAPP" --resource-group "$RESOURCE_GROUP"
+
+      - name: Smoke test production
+        run: |
+          for i in $(seq 1 60); do
+            body=$(curl -fsS "$PROD_URL/healthz" 2>/dev/null) && break
+            echo "waiting for prod... ($i)"; sleep 5
+          done
+          echo "$body"
+          echo "$body" | grep -q '"status":"ok"' || { echo "healthz not ok"; exit 1; }

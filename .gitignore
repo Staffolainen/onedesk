@@ -1,6 +1,7 @@
-# Secrets
+# Secrets — ignore every .env variant except the committed template
 .env
-.env.dev
+.env.*
+!.env.example
 
 # Database
 instance/
@@ -18,6 +19,9 @@ build/
 
 # Uploads (user data, not code)
 static/uploads/
+
+# Runtime logs (may carry invoice and supplier data)
+logs/
 
 # OS
 .DS_Store

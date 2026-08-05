@@ -8,8 +8,9 @@ import json
 import logging
 import requests
 from urllib.parse import urlencode
-from models import (Settings, REVERSE_CHARGE_OUTPUT_ACCOUNT,
-                    REVERSE_CHARGE_INPUT_ACCOUNT, reverse_charge_vat)
+from models import Settings
+from bookkeeping import (REVERSE_CHARGE_OUTPUT_ACCOUNT, REVERSE_CHARGE_INPUT_ACCOUNT,
+                        reverse_charge_vat, supplier_invoice_rows)
 
 logger = logging.getLogger(__name__)
 
@@ -384,7 +385,7 @@ class FortnoxClient:
         return voucher_ref
 
     def create_supplier_invoice_voucher(self, inv):
-        """Book a supplier invoice: debit=category, VAT=2641, credit=1930."""
+        """Book a supplier invoice — rows per the VAT treatment (see bookkeeping.py)."""
         voucher_date = inv.invoice_date or inv.due_date
         if not voucher_date:
             from datetime import date as _date
@@ -393,45 +394,16 @@ class FortnoxClient:
         if not fy_id:
             raise Exception(f"No financial year found in Fortnox for date {voucher_date}.")
 
-        debit_account = 6540  # fallback
-        if inv.supplier_category and inv.supplier_category.debit_account:
-            debit_account = int(inv.supplier_category.debit_account)
-        elif inv.account_code:
-            debit_account = int(inv.account_code)
-
+        tx_info = (inv.supplier_name or "")[:200]
         rows = [
             {
-                "Account": debit_account,
-                "Debit": round(float(inv.amount_excl_vat or 0), 2),
-                "Credit": 0,
-                "TransactionInformation": (inv.supplier_name or "")[:200],
-            },
+                "Account": r["account"],
+                "Debit": r["debit"],
+                "Credit": r["credit"],
+                "TransactionInformation": tx_info,
+            }
+            for r in supplier_invoice_rows(inv)
         ]
-        if float(inv.vat_amount or 0) > 0:
-            rows.append({
-                "Account": 2641,
-                "Debit": round(float(inv.vat_amount), 2),
-                "Credit": 0,
-            })
-        if getattr(inv, "reverse_charge", False):
-            # Omvänd skattskyldighet: self-assess the VAT on both sides. The two rows
-            # cancel, so 2440 — and therefore the payment — stays at the invoice sum.
-            virtual_vat = reverse_charge_vat(inv.amount_excl_vat)
-            rows.append({
-                "Account": REVERSE_CHARGE_INPUT_ACCOUNT,
-                "Debit": virtual_vat,
-                "Credit": 0,
-            })
-            rows.append({
-                "Account": REVERSE_CHARGE_OUTPUT_ACCOUNT,
-                "Debit": 0,
-                "Credit": virtual_vat,
-            })
-        rows.append({
-            "Account": 2440,  # Leverantörsskulder — cleared when payment is made
-            "Debit": 0,
-            "Credit": round(float(inv.amount_incl_vat or 0), 2),
-        })
 
         description = f"{inv.supplier_name or 'Leverantör'} {inv.payment_ref or ''}".strip()
         voucher_data = {

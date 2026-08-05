@@ -8,17 +8,9 @@ from flask_login import UserMixin
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
 
-# ── Omvänd skattskyldighet (reverse charge) ──────────────────────────────────
-# The supplier invoices without VAT and the buyer self-assesses it. The two rows
-# cancel out, so the amount paid stays equal to the invoice sum.
-REVERSE_CHARGE_VAT_RATE = 25.0
-REVERSE_CHARGE_OUTPUT_ACCOUNT = 2614  # Utgående moms omvänd skattskyldighet, 25%
-REVERSE_CHARGE_INPUT_ACCOUNT = 2647   # Ingående moms omvänd skattskyldighet
-
-
-def reverse_charge_vat(amount_excl) -> float:
-    """Virtual VAT self-assessed on a reverse-charge purchase."""
-    return round(float(amount_excl or 0) * REVERSE_CHARGE_VAT_RATE / 100.0, 2)
+# Omvänd skattskyldighet (reverse charge): the supplier invoices without VAT and
+# the buyer self-assesses it. Accounts and voucher rules live in bookkeeping.py.
+from bookkeeping import VAT_DOMESTIC
 
 
 def _fernet():
@@ -485,8 +477,14 @@ class SupplierInvoice(db.Model):
     supplier_category_id = db.Column(db.Integer, db.ForeignKey('supplier_category.id'), nullable=True)
     supplier_category = db.relationship('SupplierCategory', lazy=True)
     vat_rate = db.Column(db.Float, default=25.0)
-    # Omvänd skattskyldighet — invoice carries no VAT; 25% is self-assessed to 2614/2647
+    # Omvänd skattskyldighet — invoice carries no VAT; the buyer self-assesses it.
+    # reverse_charge stays as the "no VAT on the invoice" flag the amount checks and
+    # the payment flow read; vat_treatment picks which accounts the voucher uses.
     reverse_charge = db.Column(db.Boolean, default=False)
+    vat_treatment = db.Column(db.String(40), default=VAT_DOMESTIC)
+    # Reverse charge EU services: the separately specified service/repair part of
+    # the net amount, taxed at 12% instead of 25%.
+    service_amount_excl_vat = db.Column(db.Float, default=0.0)
     project_id = db.Column(db.Integer, db.ForeignKey('project.id'), nullable=True)
     pdf_filename = db.Column(db.String(300))
     status = db.Column(db.String(20), default='pending')  # pending, approved, booked, paid

@@ -47,9 +47,10 @@ from config import Config
 from models import (db, User, Client, Project, PurchaseOrder, POHourType,
                     TimeEntry, Expense, Invoice, MileageEntry, Settings,
                     VoucherTemplate, SupplierInvoice, PaymentFile,
-                    fiscal_year, fy_start, fy_end,
-                    REVERSE_CHARGE_VAT_RATE, REVERSE_CHARGE_OUTPUT_ACCOUNT,
-                    REVERSE_CHARGE_INPUT_ACCOUNT, reverse_charge_vat)
+                    fiscal_year, fy_start, fy_end)
+from bookkeeping import (REVERSE_CHARGE_VAT_RATE, VAT_DOMESTIC, VAT_TREATMENTS,
+                         VAT_REVERSE_CHARGE_DOMESTIC, VAT_REVERSE_CHARGE_EU_SERVICES,
+                         is_reverse_charge, supplier_invoice_rows, vat_treatment_of)
 from sqlalchemy.orm import selectinload, joinedload
 from fortnox import FortnoxClient
 from receipt_ocr import extract_receipt_data, extract_supplier_invoice_data, _normalize_bankgiro
@@ -2047,12 +2048,29 @@ def supplier_invoices_review(invoice_id):
             ocr = json.loads(inv.ocr_raw) if inv.ocr_raw else {}
             return render_template("supplier_invoices/review.html",
                 inv=inv, projects=projects, categories=categories, ocr=ocr, currencies=currencies)
-        reverse_charge = request.form.get("reverse_charge") == "1"
+        vat_treatment = request.form.get("vat_treatment", "").strip()
+        if vat_treatment not in VAT_TREATMENTS:
+            # Older form posts (and the mobile flow) still send the plain checkbox.
+            vat_treatment = (VAT_REVERSE_CHARGE_DOMESTIC
+                             if request.form.get("reverse_charge") == "1" else VAT_DOMESTIC)
+        reverse_charge = is_reverse_charge(vat_treatment)
+        service_amount = _safe_float(request.form.get("service_amount_excl_vat"))
         if reverse_charge:
             # Omvänd skattskyldighet: the invoice carries no VAT, so net == total to pay.
-            # The 25% is virtual (2614/2647) and must not inflate the payment.
+            # The self-assessed VAT is virtual and must not inflate the payment.
             vat_amt = 0.0
             amount_excl = amount_incl
+        if vat_treatment != VAT_REVERSE_CHARGE_EU_SERVICES:
+            service_amount = 0.0
+        elif service_amount < 0 or service_amount > amount_excl:
+            ocr = json.loads(inv.ocr_raw) if inv.ocr_raw else {}
+            flash(
+                f"Service/reparation (12%) måste ligga mellan 0 och beloppet {amount_excl:.2f} / "
+                f"Service/repair (12%) must be between 0 and the amount {amount_excl:.2f}",
+                "error"
+            )
+            return render_template("supplier_invoices/review.html",
+                inv=inv, projects=projects, categories=categories, ocr=ocr, currencies=currencies)
         expected_incl = round(amount_excl + vat_amt, 2)
         if abs(expected_incl - amount_incl) > 0.05:
             diff = round(abs(expected_incl - amount_incl), 2)
@@ -2105,6 +2123,8 @@ def supplier_invoices_review(invoice_id):
         inv.payment_account_type = payment_type
         inv.supplier_category_id = _safe_int(request.form.get("supplier_category_id")) or None
         inv.reverse_charge = reverse_charge
+        inv.vat_treatment = vat_treatment
+        inv.service_amount_excl_vat = service_amount
         inv.vat_rate = (REVERSE_CHARGE_VAT_RATE if reverse_charge
                         else _safe_float(request.form.get("vat_rate"), 25.0))
         inv.project_id = _safe_int(request.form.get("project_id")) or None
@@ -2368,33 +2388,17 @@ def _build_outgoing_invoice_voucher_preview(inv: Invoice) -> dict:
 
 def _build_supplier_voucher_preview(inv: SupplierInvoice) -> dict:
     """Build the Fortnox voucher payload that would be sent (for dry-run preview)."""
-    debit_acc = "6540"
-    if inv.supplier_category and inv.supplier_category.debit_account:
-        debit_acc = inv.supplier_category.debit_account
-    elif inv.account_code:
-        debit_acc = inv.account_code
-
-    vat_rate = float(inv.vat_rate or 0)
     description = f"{inv.supplier_name or 'Leverantör'} {inv.payment_ref or ''}".strip()
     rows = [
-        {"Account": debit_acc, "Debit": inv.amount_excl_vat, "Credit": 0,
-         "_label": "Kostnadskonto / Expense account"},
+        {"Account": str(r["account"]), "Debit": r["debit"], "Credit": r["credit"],
+         "_label": r["label"]}
+        for r in supplier_invoice_rows(inv)
     ]
-    if vat_rate > 0 and inv.vat_amount:
-        rows.append({"Account": "2641", "Debit": inv.vat_amount, "Credit": 0,
-                     "_label": "Debiterad ingående moms"})
-    if getattr(inv, "reverse_charge", False):
-        virtual_vat = reverse_charge_vat(inv.amount_excl_vat)
-        rows.append({"Account": str(REVERSE_CHARGE_INPUT_ACCOUNT), "Debit": virtual_vat, "Credit": 0,
-                     "_label": "Ingående moms omvänd skattskyldighet"})
-        rows.append({"Account": str(REVERSE_CHARGE_OUTPUT_ACCOUNT), "Debit": 0, "Credit": virtual_vat,
-                     "_label": "Utgående moms omvänd skattskyldighet"})
-    rows.append({"Account": "2440", "Debit": 0, "Credit": inv.amount_incl_vat,
-                 "_label": "Leverantörsskulder (betalas vid betalfil)"})
 
     payload = {
         "_endpoint": "POST /vouchers",
         "_note": "Fortnox live booking disabled — dry-run preview",
+        "_vat_treatment": vat_treatment_of(inv),
         "_pdf_attachment": inv.pdf_filename or "(none)",
         "Voucher": {
             "Description": description,
@@ -2634,6 +2638,12 @@ def init_db():
             # omvänd skattskyldighet (reverse charge)
             "ALTER TABLE supplier_invoice ADD COLUMN reverse_charge BOOLEAN DEFAULT 0",
             "ALTER TABLE expense ADD COLUMN reverse_charge BOOLEAN DEFAULT 0",
+            # VAT treatment per supplier invoice — domestic RC vs EU services RC
+            "ALTER TABLE supplier_invoice ADD COLUMN vat_treatment VARCHAR(40)",
+            "ALTER TABLE supplier_invoice ADD COLUMN service_amount_excl_vat REAL DEFAULT 0.0",
+            # everything booked before the column existed was domestic
+            "UPDATE supplier_invoice SET vat_treatment='reverse_charge_domestic' WHERE vat_treatment IS NULL AND reverse_charge=1",
+            "UPDATE supplier_invoice SET vat_treatment='domestic' WHERE vat_treatment IS NULL",
             # indexes for common filter/sort columns
             "CREATE INDEX IF NOT EXISTS ix_supplier_invoice_status ON supplier_invoice(status)",
             "CREATE INDEX IF NOT EXISTS ix_supplier_invoice_due_date ON supplier_invoice(due_date)",

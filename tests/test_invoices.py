@@ -91,8 +91,11 @@ def test_invoice_number_format(auth_client, app, db, sample_project, sample_po):
     }, follow_redirects=True)
     inv = Invoice.query.first()
     assert inv is not None
-    # March 2026 is FY2025 (fiscal year starts May)
-    assert inv.invoice_number.startswith("2025-")
+    # Invoice numbers are sequenced by the fiscal year of the *issue date* (today),
+    # not the service period — so derive the expected FY the same way the app does.
+    from models import fiscal_year
+    expected_fy = fiscal_year(date.today(), app.config["FY_START_MONTH"])
+    assert inv.invoice_number == f"{expected_fy}-001"
 
 
 def test_create_invoice_invalid_dates(auth_client, sample_project):

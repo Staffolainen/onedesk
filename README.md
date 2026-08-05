@@ -309,17 +309,54 @@ az webapp restart --name onedesk-app --resource-group onedesk-rg
 
 ---
 
-### Deploying updates
+### Deploying updates (CI/CD)
 
-```bash
-az acr build \
-  --registry onedeskregistry \
-  --image onedesk:latest \
-  --git-access-token <GITHUB_PAT> \
-  https://github.com/Staffolainen/onedesk.git
+Deploys are automated with GitHub Actions. Pushing to `main` runs the
+[`Deploy`](.github/workflows/deploy.yml) pipeline:
 
-az webapp restart --name onedesk-app --resource-group onedesk-rg
 ```
+test (pytest) → build image once in ACR (tag = git SHA)
+    → auto-deploy to homelab staging → smoke test /healthz
+    → ⏸ manual approval → promote SAME image to Azure prod → smoke test /healthz
+```
+
+The image is built **once** and the identical artifact is promoted to prod, so
+what ships is exactly what staging validated. Pull requests run the lighter
+[`CI`](.github/workflows/ci.yml) workflow (tests + image build, no deploy).
+
+**Rollback / redeploy a specific build:** run the `Deploy` workflow manually
+(*Actions → Deploy → Run workflow*) and set `image_tag` to a prior git SHA — it
+skips the build and re-promotes that existing image.
+
+#### One-time setup
+
+1. **Azure service principal** (used by the build and prod-deploy jobs):
+   ```bash
+   az ad sp create-for-rbac --name onedesk-cicd --sdk-auth \
+     --role "AcrPush" \
+     --scopes /subscriptions/<SUB_ID>/resourceGroups/onedesk-rg/providers/Microsoft.ContainerRegistry/registries/onedeskregistry
+   # also grant it Website Contributor on the web app:
+   az role assignment create --assignee <SP_APP_ID> --role "Website Contributor" \
+     --scope /subscriptions/<SUB_ID>/resourceGroups/onedesk-rg/providers/Microsoft.Web/sites/onedesk-app
+   ```
+   Paste the `--sdk-auth` JSON into a GitHub repo secret named **`AZURE_CREDENTIALS`**.
+
+2. **Self-hosted runner in the homelab** (deploys staging without exposing inbound ports):
+   - *Settings → Actions → Runners → New self-hosted runner* on the Docker host.
+   - Install it as a service and give it the label **`homelab`** (matches
+     `runs-on: [self-hosted, homelab]`).
+   - The runner needs `docker` and `az` CLI, and permission to pull from ACR
+     (`az acr login --name onedeskregistry`, or a scoped ACR pull token).
+
+3. **`.env.staging`** on the homelab host next to `docker-compose-staging.yml`
+   (never committed) — staging copies of the env vars, e.g. a staging Fortnox
+   redirect URI and `SESSION_COOKIE_SECURE=1` when behind the reverse proxy.
+   Staging listens on host port **5003**; front it with the existing
+   `*.ws.dlnd.co` proxy.
+
+4. **GitHub Environments** (*Settings → Environments*): create `staging` and
+   `production`. On **`production`**, add yourself as a **Required reviewer** —
+   this is the manual approval gate before prod.
 
 ---
 

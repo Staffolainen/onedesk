@@ -74,17 +74,33 @@
           </div>
           <div style="font-size:11px;color:var(--muted);margin-top:4px;" id="sup_vat_hint">→ 2641 Debiterad ingående moms</div>
         </div>
+        {% set treatment = inv.vat_treatment or ("reverse_charge_domestic" if inv.reverse_charge else "domestic") %}
         <div class="form-group" style="grid-column:1/-1;">
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px;">
-            <input type="checkbox" name="reverse_charge" value="1" id="sup_reverse_charge"
-                   style="accent-color:var(--accent);"
-                   {% if inv.reverse_charge %}checked{% endif %}>
-            {{ "Omvänd skattskyldighet" if g.lang == "sv" else "Reverse charge VAT" }}
+          <label class="form-label">{{ "Momshantering" if g.lang == "sv" else "VAT treatment" }}</label>
+          <select name="vat_treatment" id="sup_vat_treatment" class="form-control"
+                  onchange="onVatTreatmentChange()">
+            <option value="domestic" {% if treatment == "domestic" %}selected{% endif %}>
+              {{ "Svensk moms på fakturan" if g.lang == "sv" else "Swedish VAT on the invoice" }}
+            </option>
+            <option value="reverse_charge_domestic" {% if treatment == "reverse_charge_domestic" %}selected{% endif %}>
+              {{ "Omvänd skattskyldighet, Sverige" if g.lang == "sv" else "Reverse charge, domestic" }}
+            </option>
+            <option value="reverse_charge_eu_services" {% if treatment == "reverse_charge_eu_services" %}selected{% endif %}>
+              {{ "Omvänd skattskyldighet, tjänster från annat EU-land" if g.lang == "sv" else "Reverse charge, services from another EU country" }}
+            </option>
+          </select>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px;" id="sup_treatment_hint"></div>
+        </div>
+        <div class="form-group" id="sup_service_12_group" style="grid-column:1/-1;display:none;">
+          <label class="form-label">
+            {{ "Varav service/reparation 12%" if g.lang == "sv" else "Of which service/repair 12%" }}
           </label>
+          <input type="number" name="service_amount_excl_vat" id="sup_service_12" class="form-control"
+                 value="{{ inv.service_amount_excl_vat or '' }}" step="0.01" min="0" placeholder="0.00">
           <div style="font-size:11px;color:var(--muted);margin-top:4px;">
-            {{ "Fakturan saknar moms. 25% beräknas och bokförs på 2614/2647 — beloppet som betalas är summan."
+            {{ "Separat specificerad service/reparation bokförs på 4536 med 12% (2624). Resten går på 4535 med 25%."
                if g.lang == "sv" else
-               "Invoice carries no VAT. 25% is self-assessed to 2614/2647 — the amount paid is just the sum." }}
+               "Separately specified service/repair is booked on 4536 at 12% (2624). The rest goes to 4535 at 25%." }}
           </div>
         </div>
         <div class="form-group">
@@ -224,9 +240,31 @@ function calcSupVat(rate) {
   document.querySelector('[name=amount_excl_vat]').value = (total - vat).toFixed(2);
 }
 
+const _TREATMENT_HINTS = {
+  domestic:
+    '{{ "Momsen på fakturan bokförs på 2641." if g.lang == "sv" else "VAT on the invoice is booked to 2641." }}',
+  reverse_charge_domestic:
+    '{{ "Fakturan saknar moms. 25% beräknas och bokförs på 2614/2647 — beloppet som betalas är summan." if g.lang == "sv" else "Invoice carries no VAT. 25% is self-assessed to 2614/2647 — the amount paid is just the sum." }}',
+  reverse_charge_eu_services:
+    '{{ "Fakturan saknar moms. Kostnaden bokförs på 4535 (ruta 21), momsen på 2614 (ruta 30) och 2645 (ruta 48) — beloppet som betalas är summan." if g.lang == "sv" else "Invoice carries no VAT. Cost is booked to 4535 (box 21), VAT to 2614 (box 30) and 2645 (box 48) — the amount paid is just the sum." }}',
+};
+
+function currentVatTreatment() {
+  return document.getElementById('sup_vat_treatment').value;
+}
+
+function onVatTreatmentChange() {
+  const treatment = currentVatTreatment();
+  document.getElementById('sup_treatment_hint').textContent = _TREATMENT_HINTS[treatment] || '';
+  const svc = document.getElementById('sup_service_12_group');
+  svc.style.display = treatment === 'reverse_charge_eu_services' ? '' : 'none';
+  if (treatment !== 'reverse_charge_eu_services') document.getElementById('sup_service_12').value = '';
+  validateAmounts();
+}
+
 function validateAmounts() {
   // Under reverse charge net == total to pay by definition — the sum check does not apply.
-  if (document.getElementById('sup_reverse_charge').checked) {
+  if (currentVatTreatment().startsWith('reverse_charge')) {
     document.getElementById('amount-sum-error').style.display = 'none';
     return true;
   }
@@ -296,17 +334,26 @@ function validatePaymentMethod() {
 }
 
 (function() {
-  const rc      = document.getElementById('sup_reverse_charge');
+  const rc      = document.getElementById('sup_vat_treatment');
   const inclIn  = document.querySelector('[name=amount_incl_vat]');
   const exclIn  = document.querySelector('[name=amount_excl_vat]');
   const vatIn   = document.getElementById('sup_vat_amount');
   const vatHint = document.getElementById('sup_vat_hint');
   const vatBtns = vatIn.parentElement.querySelectorAll('button');
 
+  const _VAT_HINTS = {
+    domestic: '→ 2641 Debiterad ingående moms',
+    reverse_charge_domestic:
+      '{{ "→ 2614 / 2647 omvänd skattskyldighet 25% (virtuell moms)" if g.lang == "sv" else "→ 2614 / 2647 reverse charge 25% (virtual VAT)" }}',
+    reverse_charge_eu_services:
+      '{{ "→ 4535 / 2614 / 2645 tjänster från EU 25% (virtuell moms)" if g.lang == "sv" else "→ 4535 / 2614 / 2645 EU services 25% (virtual VAT)" }}',
+  };
+
   function syncReverseCharge() {
-    const on = rc.checked;
+    const treatment = rc.value;
+    const on = treatment.startsWith('reverse_charge');
     if (on) {
-      // No VAT on the invoice: net mirrors the total, the 25% is posted server-side.
+      // No VAT on the invoice: net mirrors the total, the VAT is posted server-side.
       vatIn.value = '';
       exclIn.value = inclIn.value;
     }
@@ -315,15 +362,14 @@ function validatePaymentMethod() {
       el.style.opacity = on ? '0.5' : '';
     });
     vatBtns.forEach(b => b.disabled = on);
-    vatHint.textContent = on
-      ? '{{ "→ 2614 / 2647 omvänd skattskyldighet 25% (virtuell moms)" if g.lang == "sv" else "→ 2614 / 2647 reverse charge 25% (virtual VAT)" }}'
-      : '→ 2641 Debiterad ingående moms';
+    vatHint.textContent = _VAT_HINTS[treatment] || _VAT_HINTS.domestic;
     validateAmounts();
   }
 
   rc.addEventListener('change', syncReverseCharge);
-  inclIn.addEventListener('input', () => { if (rc.checked) exclIn.value = inclIn.value; });
+  inclIn.addEventListener('input', () => { if (rc.value.startsWith('reverse_charge')) exclIn.value = inclIn.value; });
   syncReverseCharge();
+  onVatTreatmentChange();
 })();
 
 document.querySelector('[name=amount_incl_vat]').addEventListener('input', validateAmounts);

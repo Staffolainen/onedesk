@@ -1,0 +1,19 @@
+services:
+  onedesk-staging:
+    # Pulls a pre-built, tagged image from ACR — never builds locally.
+    # IMAGE_TAG is set by the CI deploy job (the git SHA); falls back to latest.
+    image: onedeskregistry.azurecr.io/onedesk:${IMAGE_TAG:-latest}
+    ports:
+      - "5003:5000"
+    env_file:
+      - .env.staging
+    volumes:
+      - staging_db:/app/instance
+      - staging_uploads:/app/static/uploads
+      - staging_logs:/app/logs
+    restart: unless-stopped
+
+volumes:
+  staging_db:
+  staging_uploads:
+  staging_logs:
