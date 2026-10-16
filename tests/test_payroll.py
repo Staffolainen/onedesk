@@ -13,7 +13,8 @@ import app as app_module
 from models import (Employee, Payslip, PayslipLine, SalaryType, AgiFieldCode, AgiReport,
                     PaymentFile, SupplierInvoice)
 from payroll import (salary_voucher_rows, voucher_balanced, payslip_agi_values, agi_totals,
-                     build_agi_xml, tax_voucher_rows, net_pay, normalize_personnummer,
+                     build_agi_xml, tax_payment_rows, tax_settlement_rows, net_pay,
+                     normalize_personnummer, payslip_summary, mileage_over_limit,
                      add_month, next_period, skv_due_date)
 
 PAIN = "{urn:iso:std:iso:20022:tech:xsd:pain.001.001.03}"
@@ -108,8 +109,9 @@ def test_agi_values_truncate_like_the_spreadsheet(db, seeded, staffan):
 
 def test_tax_free_allowance_is_paid_but_not_in_ag_base(db, seeded, staffan):
     p = _june_slip(db, staffan, seeded)
+    assert seeded["310"].default_rate == 2.50 and seeded["310"].unit == "km"   # 25 kr/mil
     p.lines.append(PayslipLine(salary_type_id=seeded["310"].id, description="Bilersättning",
-                               quantity=21, rate=25, amount=525, sort_order=9))
+                               quantity=210, rate=2.50, amount=525, sort_order=9))
     db.session.commit()
     assert net_pay(p) == 47547 + 525
     assert payslip_agi_values(p)["050"] == 1
@@ -124,18 +126,40 @@ def test_ag_base_follows_the_field_flag(db, seeded, staffan):
     assert agi_totals([p])["ag_base"] == 69933
 
 
-def test_tax_voucher_rounding_goes_to_3740(db, seeded, staffan):
+def test_payslip_totals_are_rounded_like_the_payout(db, seeded, staffan):
+    s = payslip_summary(_june_slip(db, staffan, seeded))
+    assert (s["cash_gross"], s["benefits"], s["tax"], s["net_pay"]) == (69933, 922, 22386, 47547)
+    assert s["cash_gross"] - s["tax"] + s["tax_free"] - s["net_deduct"] == s["net_pay"]
+    assert s["gross"] == 70855
+
+
+def test_mileage_above_skatteverket_rate_is_flagged(db, seeded, staffan):
     p = _june_slip(db, staffan, seeded)
-    rows, diff = tax_voucher_rows([p], 22262 + 22386)
+    p.lines.append(PayslipLine(salary_type_id=seeded["310"].id, description="Resa", quantity=100,
+                               rate=2.50, amount=250, sort_order=9))
+    db.session.commit()
+    assert mileage_over_limit(p) == []
+    p.lines[-1].rate = 3.00
+    assert len(mileage_over_limit(p)) == 1
+
+
+def test_tax_payment_goes_to_skattekonto(db):
+    rows = tax_payment_rows(44648)
+    assert [(r["account"], r["debit"], r["credit"]) for r in rows] == [("1630", 44648, 0), ("1930", 0, 44648)]
+
+
+def test_tax_settlement_rounding_goes_to_3740(db, seeded, staffan):
+    p = _june_slip(db, staffan, seeded)
+    rows, diff = tax_settlement_rows([p], 22262 + 22386)
     assert diff == -1
     assert [(r["account"], r["debit"], r["credit"]) for r in rows] == [
-        ("2710", 22386, 0), ("2731", 22263, 0), ("3740", 0, 1), ("1930", 0, 44648)]
+        ("2710", 22386, 0), ("2731", 22263, 0), ("3740", 0, 1), ("1630", 0, 44648)]
     assert voucher_balanced(rows)
 
 
-def test_tax_voucher_large_difference_stays_on_2731(db, seeded, staffan):
+def test_tax_settlement_large_difference_stays_on_2731(db, seeded, staffan):
     p = _june_slip(db, staffan, seeded)
-    rows, diff = tax_voucher_rows([p], 50000)
+    rows, diff = tax_settlement_rows([p], 50000)
     assert diff > 10
     assert ("2731", 50000 - 22386, 0) in [(r["account"], r["debit"], r["credit"]) for r in rows]
     assert voucher_balanced(rows)
@@ -260,8 +284,10 @@ def test_full_salary_and_tax_flow(auth_client, db, seeded, staffan, fortnox, app
     assert report.status == "generated" and report.sum_ag_fees == 22262
     auth_client.post(f"/payroll/agi/{period}/submitted")
     skv_date = _future_payday(30)
+    debit_date = skv_date + timedelta(days=2)
     auth_client.post(f"/payroll/agi/{period}/assess", data={
-        "skv_amount": "44648", "skv_date": skv_date.isoformat(), "skv_ocr": "1655902410478"})
+        "skv_amount": "44648", "skv_date": skv_date.isoformat(),
+        "skv_debit_date": debit_date.isoformat(), "skv_ocr": "1655902410478"})
     db.session.refresh(report)
     assert report.status == "approved"
 
@@ -274,11 +300,27 @@ def test_full_salary_and_tax_flow(auth_client, db, seeded, staffan, fortnox, app
     pf2 = PaymentFile.query.filter(PaymentFile.id != pf.id).one()
     auth_client.post(f"/supplier-invoices/payment-files/{pf2.id}/confirm")
     db.session.refresh(report)
-    assert report.status == "paid" and report.voucher_ref
-    tax = fortnox.posted[-1]
-    assert tax["date"] == skv_date
-    assert [(r["account"], r["debit"], r["credit"]) for r in tax["rows"]] == [
-        ("2710", 22386, 0), ("2731", 22263, 0), ("3740", 0, 1), ("1930", 0, 44648)]
+    assert report.status == "paid" and report.voucher_ref and report.settle_voucher_ref
+    payment, settlement = fortnox.posted[-2:]
+    assert payment["date"] == skv_date
+    assert [(r["account"], r["debit"], r["credit"]) for r in payment["rows"]] == [
+        ("1630", 44648, 0), ("1930", 0, 44648)]
+    assert settlement["date"] == debit_date
+    assert [(r["account"], r["debit"], r["credit"]) for r in settlement["rows"]] == [
+        ("2710", 22386, 0), ("2731", 22263, 0), ("3740", 0, 1), ("1630", 0, 44648)]
+
+
+def test_settlement_retry_books_only_the_missing_voucher(auth_client, db, seeded, staffan, fortnox):
+    p = _june_slip(db, staffan, seeded)
+    p.status = "paid"
+    r = AgiReport(period=p.agi_period, status="paid", skv_amount=44648, skv_date=date(2026, 7, 10),
+                  skv_debit_date=date(2026, 7, 12), skv_ocr="1", voucher_ref="2026-A1")
+    db.session.add(r)
+    db.session.commit()
+    auth_client.post(f"/payroll/agi/{p.agi_period}/book")
+    db.session.refresh(r)
+    assert r.voucher_ref == "2026-A1" and r.settle_voucher_ref
+    assert len(fortnox.posted) == 1 and fortnox.posted[0]["date"] == date(2026, 7, 12)
 
 
 def test_mixed_file_keeps_each_date(auth_client, db, seeded, staffan, fortnox, app):

@@ -65,7 +65,8 @@ from payroll import (KINDS, AGI_FIELD_SEED, AGI_AG_BASE_CODES, SALARY_TYPE_SEED,
                      ROUNDING_TOLERANCE, DEFAULT_ACCOUNTS as DEFAULT_PAYROLL_ACCOUNTS,
                      agi_field_selectable, payslip_summary, payslip_agi_values, net_pay,
                      salary_voucher_rows, salary_voucher_description, voucher_balanced,
-                     agi_totals, build_agi_xml, tax_voucher_rows, line_amount, add_month,
+                     agi_totals, build_agi_xml, tax_payment_rows, tax_settlement_rows, mileage_over_limit,
+                     SKV_MILEAGE_RATE_PER_KM, line_amount, add_month,
                      next_period, normalize_personnummer, skv_due_date, digits as payroll_digits)
 from payroll_pdf import generate_payslip_pdf
 
@@ -2645,8 +2646,8 @@ def payment_file_confirm(pf_id):
                   f"Fortnox posting failed: {e}", "warning")
     for r in pf.agi_reports:
         try:
-            ref = _book_agi(r)
-            flash(f"Skatt {r.period_display} bokförd, verifikat {ref} / Tax booked, voucher {ref}", "success")
+            for label, ref in _book_agi(r):
+                flash(f"{label} {r.period_display} bokförd, verifikat {ref} / booked, voucher {ref}", "success")
         except Exception as e:
             flash(f"Skatt {r.period_display}: Fortnox-bokföring misslyckades / "
                   f"Fortnox posting failed: {e}", "warning")
@@ -2863,6 +2864,7 @@ PAYROLL_SETTING_KEYS = {
     "payroll_account_ag_liability":  ("2731", "Avräkning sociala avgifter", "Employer contributions, liability"),
     "payroll_account_tax_liability": ("2710", "Personalskatt", "Employee tax liability"),
     "payroll_account_tax_payment":   ("1930", "Betalning till Skatteverket från", "Tax paid from account"),
+    "payroll_account_tax_account":   ("1630", "Skattekonto", "Tax account"),
     "payroll_account_rounding":      ("3740", "Öresavrundning", "Rounding"),
     "payroll_voucher_series":        ("A", "Verifikationsserie", "Voucher series"),
     "payroll_skv_bankgiro":          (SKV_BANKGIRO, "Skatteverkets bankgiro", "Skatteverket bankgiro"),
@@ -2984,16 +2986,34 @@ def _book_payslip(p):
 
 
 def _book_agi(r):
-    rows, _diff = tax_voucher_rows(_payslips_in_agi_period(r.period), r.skv_amount, _payroll_accounts())
-    if not voucher_balanced(rows):
-        raise Exception("Skattevoucher balanserar inte / Tax voucher does not balance")
-    ref = FortnoxClient(app.config).create_voucher(
-        rows, f"Skatt och arbetsgivaravgifter {r.period_display}", r.skv_date,
-        series=_payroll_setting("payroll_voucher_series"))
-    r.voucher_ref = ref
-    db.session.commit()
-    _audit("agi_tax_booked", f"period={r.period} voucher={ref}")
-    return ref
+    """Post whichever of the two tax vouchers is still missing. Returns [(label, ref)].
+
+    1. payment date: bank → skattekonto (1930 → 1630)
+    2. tax date:     skattekonto → personalskatt and arbetsgivaravgifter (1630 → 2710/2731)
+    Each is committed as soon as it is posted, so a failure on the second (e.g. the
+    tax date falls in a financial year not yet opened in Fortnox) can be retried alone.
+    """
+    accounts = _payroll_accounts()
+    series = _payroll_setting("payroll_voucher_series")
+    booked = []
+    if not r.voucher_ref:
+        rows = tax_payment_rows(r.skv_amount, accounts)
+        r.voucher_ref = FortnoxClient(app.config).create_voucher(
+            rows, f"Inbetalning skattekonto {r.period_display}", r.skv_date, series=series)
+        db.session.commit()
+        _audit("agi_tax_payment_booked", f"period={r.period} voucher={r.voucher_ref}")
+        booked.append(("Inbetalning skattekonto", r.voucher_ref))
+    if not r.settle_voucher_ref:
+        rows, _diff = tax_settlement_rows(_payslips_in_agi_period(r.period), r.skv_amount, accounts)
+        if not voucher_balanced(rows):
+            raise Exception("Skattevoucher balanserar inte / Tax voucher does not balance")
+        r.settle_voucher_ref = FortnoxClient(app.config).create_voucher(
+            rows, f"Skatt och arbetsgivaravgifter {r.period_display}",
+            r.skv_debit_date or skv_due_date(r.period), series=series)
+        db.session.commit()
+        _audit("agi_tax_settlement_booked", f"period={r.period} voucher={r.settle_voucher_ref}")
+        booked.append(("Skatt och arbetsgivaravgifter", r.settle_voucher_ref))
+    return booked
 
 
 def _decimal_input(value):
@@ -3194,6 +3214,13 @@ def payroll_payslip(payslip_id):
                                       "The pay date is not a banking day."))
     if not p.employee.bank_account:
         warnings.append(_payroll_lang("Den anställde saknar bankkonto.", "The employee has no bank account."))
+    for line in mileage_over_limit(p):
+        warnings.append(_payroll_lang(
+            f"”{line.description}”: över Skatteverkets skattefria "
+            f"{SKV_MILEAGE_RATE_PER_KM:.2f}".replace(".", ",") + " kr/km (25 kr/mil). "
+            "Överskjutande del är lön och ska redovisas som kontant ersättning.",
+            f"“{line.description}”: above Skatteverket's tax-free {SKV_MILEAGE_RATE_PER_KM:.2f} kr/km "
+            f"(25 kr/mil). The excess is taxable pay and belongs on a cash salary type."))
     rows = salary_voucher_rows(p, _payroll_accounts())
     salary_types_json = json.dumps({st.id: {"name": st.name, "rate": st.default_rate, "unit": st.unit}
                                     for st in salary_types}).replace("<", "\\u003c")
@@ -3373,15 +3400,17 @@ def payroll_agi(period):
     values = {p.id: payslip_agi_values(p) for p in payslips}
     codes = sorted({c for v in values.values() for c in v})
     fields = {f.code: f for f in AgiFieldCode.query.filter(AgiFieldCode.code.in_(codes)).all()} if codes else {}
-    tax_rows = diff = None
+    payment_rows = settle_rows = diff = None
     if report and report.skv_amount:
-        tax_rows, diff = tax_voucher_rows(final, report.skv_amount, _payroll_accounts())
+        payment_rows = tax_payment_rows(report.skv_amount, _payroll_accounts())
+        settle_rows, diff = tax_settlement_rows(final, report.skv_amount, _payroll_accounts())
     return render_template("payroll/agi.html", period=period,
                            period_display=f"{period[:4]}-{period[4:]}",
                            payslips=payslips, final=final, report=report, totals=totals,
                            values=values, codes=codes, fields=fields,
                            drafts=[p for p in payslips if p.status == "draft"],
-                           tax_rows=tax_rows, diff=diff, tolerance=ROUNDING_TOLERANCE,
+                           payment_rows=payment_rows, settle_rows=settle_rows, diff=diff,
+                           tolerance=ROUNDING_TOLERANCE, default_debit_date=skv_due_date(period),
                            default_ocr=_payroll_setting("payroll_skv_ocr"),
                            default_date=skv_due_date(period))
 
@@ -3459,6 +3488,7 @@ def payroll_agi_assess(period):
         return back
     amount = _safe_float(request.form.get("skv_amount"), 0.0)
     skv_date = _safe_date(request.form.get("skv_date"))
+    debit_date = _safe_date(request.form.get("skv_debit_date")) or skv_due_date(period)
     ocr = payroll_digits(request.form.get("skv_ocr"))
     if amount <= 0 or not skv_date:
         flash(_payroll_lang("Belopp och datum krävs", "Amount and date are required"), "error")
@@ -3468,6 +3498,7 @@ def payroll_agi_assess(period):
         return back
     report.skv_amount = round(amount, 2)
     report.skv_date = skv_date
+    report.skv_debit_date = debit_date
     report.skv_ocr = ocr
     report.status = "approved"
     db.session.commit()
@@ -3487,10 +3518,10 @@ def payroll_agi_assess(period):
 @admin_required
 def payroll_agi_book(period):
     report = _agi_report(period)
-    if report and report.status == "paid" and not report.voucher_ref:
+    if report and report.status == "paid" and not (report.voucher_ref and report.settle_voucher_ref):
         try:
-            ref = _book_agi(report)
-            flash(_payroll_lang(f"Bokförd, verifikat {ref}", f"Booked, voucher {ref}"), "success")
+            for label, ref in _book_agi(report):
+                flash(_payroll_lang(f"{label}: verifikat {ref}", f"{label}: voucher {ref}"), "success")
         except Exception as e:
             flash(f"Fortnox: {e}", "error")
     return redirect(url_for("payroll_agi", period=period))
@@ -3869,6 +3900,9 @@ def init_db():
             "ALTER TABLE expense ADD COLUMN internal_code_id INTEGER REFERENCES internal_code(id)",
             "ALTER TABLE mileage_entry ADD COLUMN internal_code_id INTEGER REFERENCES internal_code(id)",
             "ALTER TABLE supplier_invoice ADD COLUMN internal_code_id INTEGER REFERENCES internal_code(id)",
+            # payroll: tax paid to the skattekonto, settled on the tax date
+            "ALTER TABLE agi_report ADD COLUMN skv_debit_date DATE",
+            "ALTER TABLE agi_report ADD COLUMN settle_voucher_ref VARCHAR(50)",
             "CREATE INDEX IF NOT EXISTS ix_time_entry_internal_code ON time_entry(internal_code_id)",
             "CREATE INDEX IF NOT EXISTS ix_expense_internal_code ON expense(internal_code_id)",
             "CREATE INDEX IF NOT EXISTS ix_mileage_internal_code ON mileage_entry(internal_code_id)",

@@ -734,7 +734,8 @@ class AgiReport(db.Model):
 
     open → generated (XML downloaded) → submitted (import acknowledged) →
     approved (Skatteverket's amount and date entered, registered for payment) →
-    paid (tax voucher booked).
+    paid. Paying books two vouchers: bank → skattekonto on the payment date
+    (voucher_ref), and skattekonto → 2710/2731 on the tax date (settle_voucher_ref).
     """
     __tablename__ = "agi_report"
     id              = db.Column(db.Integer, primary_key=True)
@@ -746,10 +747,12 @@ class AgiReport(db.Model):
     sum_ag_fees     = db.Column(db.Integer)       # FK487 as filed
     sum_tax         = db.Column(db.Integer)       # FK497 as filed
     skv_amount      = db.Column(db.Float)         # what Skatteverket says to pay
-    skv_date        = db.Column(db.Date)          # payment date
+    skv_date        = db.Column(db.Date)          # payment date (bank → 1630)
+    skv_debit_date  = db.Column(db.Date)          # tax date, Skatteverket debits 1630 (normally the 12th)
     skv_ocr         = db.Column(db.String(30))
     payment_file_id = db.Column(db.Integer, db.ForeignKey("payment_file.id"), nullable=True)
-    voucher_ref     = db.Column(db.String(50))
+    voucher_ref     = db.Column(db.String(50))    # payment: 1930 → 1630
+    settle_voucher_ref = db.Column(db.String(50)) # tax date: 1630 → 2710/2731
     paid_at         = db.Column(db.DateTime)
     created_at      = db.Column(db.DateTime, default=datetime.utcnow)
 

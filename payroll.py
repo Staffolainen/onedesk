@@ -7,7 +7,8 @@ page, the PDF, the Fortnox posting and the tests all read from one source.
 Rounding follows how the books are actually kept:
   * every reported and booked amount is whole kronor, truncated toward zero —
     the same TRUNC the AGI uses, so 2710/7220 always agree with FK001/FK011;
-  * net pay is derived from those truncated rows, so the voucher balances;
+  * net pay and every total on the payslip are derived from those truncated rows,
+    so the slip, the payout and the voucher show the same kronor;
   * arbetsgivaravgift on the voucher is rounded half up (70 855 × 31,42 % = 22 263),
     while FK487 in the AGI is truncated (22 262) as Skatteverket computes it. The
     öre-level difference is cleared when the tax payment is booked.
@@ -39,10 +40,15 @@ DEFAULT_ACCOUNTS = {
     "ag_cost":         "7510",
     "ag_liability":    "2731",
     "tax_liability":   "2710",
-    "tax_payment":     "1930",
+    "tax_payment":     "1930",   # bank the Skatteverket payment leaves from
+    "tax_account":     "1630",   # skattekonto
     "rounding":        "3740",
 }
-ROUNDING_TOLERANCE = 10   # kr; a larger gap on the tax payment stays on 2731 and is flagged
+ROUNDING_TOLERANCE = 10   # kr; a larger gap on the tax settlement stays on 2731 and is flagged
+
+# Skatteverket's tax-free bilersättning, own car: 25 kr/mil = 2,50 kr/km (2023 →, unchanged 2026).
+# Anything paid above it is taxable pay and belongs on a cash löneart (FK011).
+SKV_MILEAGE_RATE_PER_KM = 2.50
 
 # Skatteverket AGI fields, schema 1.1 (teknisk beskrivning 1.1.18).
 # (code, XML element, value type, description)
@@ -180,7 +186,7 @@ SALARY_TYPE_SEED = [
     ("210", "Bilförmån",                 "benefit",         "013", "7385", "7399", None, ""),
     ("300", "Traktamente Sverige",       "tax_free",        "051", "7321", "",     None, "dagar"),
     ("301", "Traktamente utland",        "tax_free",        "051", "7323", "",     None, "dagar"),
-    ("310", "Bilersättning skattefri",   "tax_free",        "050", "7331", "",     25.0, "mil"),
+    ("310", "Bilersättning egen bil",    "tax_free",        "050", "7331", "",     SKV_MILEAGE_RATE_PER_KM, "km"),
     ("900", "Preliminär skatt",          "tax",             "001", "",     "2710", None, ""),
 ]
 
@@ -284,16 +290,17 @@ def payslip_summary(payslip) -> dict:
     """
     rows = salary_voucher_rows(payslip)
     agi  = payslip_agi_values(payslip)
-    by_kind = {k: Decimal(0) for k in KINDS}
-    for line in payslip.lines:
-        by_kind[line.salary_type.kind] += signed(line)
+    raw = _salary_rows_raw(payslip)
+    side = lambda role: sum(d - c for _a, d, c, _i, r in raw if r == role)
+    cash_gross = side("salary")
+    benefits = sum(trunc_kr(signed(l)) for l in payslip.lines if l.salary_type.kind == "benefit")
     return {
-        "cash_gross": float(by_kind["cash"] + by_kind["gross_deduction"]),
-        "benefits":   float(by_kind["benefit"]),
-        "tax_free":   float(by_kind["tax_free"]),
-        "tax":        float(-by_kind["tax"]),
-        "net_deduct": float(-by_kind["net_deduction"]),
-        "gross":      float(by_kind["cash"] + by_kind["gross_deduction"] + by_kind["benefit"]),
+        "cash_gross": cash_gross,
+        "benefits":   benefits,
+        "tax_free":   side("allowance"),
+        "tax":        -side("tax"),
+        "net_deduct": -side("deduction"),
+        "gross":      cash_gross + benefits,
         "ag_base":    ag_base(payslip),
         "ag_fee":     ag_fee(payslip),
         "net_pay":    net_pay(payslip),
@@ -344,7 +351,7 @@ def net_pay(payslip) -> int:
     """Net pay from the truncated voucher amounts, so the voucher balances."""
     total = 0
     for account, debit, credit, _info, role in _salary_rows_raw(payslip):
-        if role == "pay":
+        if role in ("salary", "allowance"):
             total += debit - credit
         elif role in ("tax", "deduction"):
             total -= credit - debit
@@ -360,10 +367,10 @@ def _salary_rows_raw(payslip):
         st = line.salary_type
         amount = signed(line)
         if st.kind in ("cash", "gross_deduction"):
-            key = (st.debit_account or emp.salary_account or "7210", "pay")
+            key = (st.debit_account or emp.salary_account or "7210", "salary")
             pooled[key] = pooled.get(key, Decimal(0)) + amount
         elif st.kind == "tax_free":
-            key = (st.debit_account or "7321", "pay")
+            key = (st.debit_account or "7321", "allowance")
             pooled[key] = pooled.get(key, Decimal(0)) + amount
         elif st.kind == "tax":
             key = (st.credit_account or DEFAULT_ACCOUNTS["tax_liability"], "tax")
@@ -396,7 +403,7 @@ def salary_voucher_rows(payslip, accounts=None) -> list:
     net = net_pay(payslip)
     if net:
         rows.append(_vrow(acc["bank"], max(-net, 0), max(net, 0), ""))
-    for role in ("pay", "tax", "deduction", "benefit"):
+    for role in ("salary", "allowance", "tax", "deduction", "benefit"):
         for account, debit, credit, info, r in raw:
             if r == role:
                 rows.append(_vrow(account, debit, credit, info))
@@ -514,8 +521,16 @@ def build_agi_xml(period, payslips, fields_by_code, company, contact, created=No
 
 # ── Tax payment ───────────────────────────────────────────────────────────────
 
-def tax_voucher_rows(payslips, skv_amount, accounts=None) -> tuple:
-    """Booking of the payment to Skatteverket: clear 2710 and 2731 against the bank.
+def tax_payment_rows(skv_amount, accounts=None) -> list:
+    """The payment itself: bank → skattekonto, dated on the payment date."""
+    acc = {**DEFAULT_ACCOUNTS, **(accounts or {})}
+    amount = round(float(skv_amount or 0), 2)
+    return [_vrow(acc["tax_account"], amount, 0, "Inbetalning skattekonto"),
+            _vrow(acc["tax_payment"], 0, amount, "Skatteverket")]
+
+
+def tax_settlement_rows(payslips, skv_amount, accounts=None) -> tuple:
+    """Skatteverket's debit of the skattekonto on the tax date: clear 2710 and 2731 against 1630.
 
     Returns (rows, difference). The difference is SKV's amount minus what the
     salary vouchers accrued; within ROUNDING_TOLERANCE it goes to öresavrundning,
@@ -537,5 +552,18 @@ def tax_voucher_rows(payslips, skv_amount, accounts=None) -> tuple:
     else:
         rows.append(_vrow(acc["ag_liability"], max(accrued + diff, 0), max(-(accrued + diff), 0),
                           "Arbetsgivaravgifter"))
-    rows.append(_vrow(acc["tax_payment"], 0, amount, "Skatteverket"))
+    rows.append(_vrow(acc["tax_account"], 0, amount, "Skattekonto"))
     return rows, diff
+
+
+def mileage_over_limit(payslip) -> list:
+    """Bilersättning lines (FK050) paid above Skatteverket's tax-free rate per km."""
+    out = []
+    for line in payslip.lines:
+        f = line.salary_type.agi_field
+        if f is not None and f.code == "050" and line.rate and line.quantity:
+            unit = (line.salary_type.unit or "km").lower()
+            per_km = float(line.rate) / 10 if unit == "mil" else float(line.rate)
+            if per_km > SKV_MILEAGE_RATE_PER_KM + 1e-9:
+                out.append(line)
+    return out

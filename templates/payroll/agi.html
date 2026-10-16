@@ -14,7 +14,8 @@
 
   <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
     {{ agi_badge(report) }}
-    {% if report and report.voucher_ref %}<span style="font-size:12px;color:var(--muted);">{{ "Verifikat" if sv else "Voucher" }} <span style="font-family:var(--mono);">{{ report.voucher_ref }}</span></span>{% endif %}
+    {% if report and report.voucher_ref %}<span style="font-size:12px;color:var(--muted);">{{ "Inbetalning" if sv else "Payment" }} <span style="font-family:var(--mono);">{{ report.voucher_ref }}</span></span>{% endif %}
+    {% if report and report.settle_voucher_ref %}<span style="font-size:12px;color:var(--muted);">· {{ "Skattedag" if sv else "Tax date" }} <span style="font-family:var(--mono);">{{ report.settle_voucher_ref }}</span></span>{% endif %}
   </div>
 
   {% if drafts %}
@@ -85,14 +86,17 @@
     {% if st in ('submitted', 'approved') and not (report and report.payment_file_id) %}
     <form method="POST" action="{{ url_for('payroll_agi_assess', period=period) }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <div class="grid-3">
+      <div class="grid-2">
         <div class="form-group"><label class="form-label">{{ "Belopp enligt Skatteverket" if sv else "Amount per Skatteverket" }}</label>
           <input type="number" step="0.01" name="skv_amount" class="form-control mono" required value="{{ report.skv_amount if report.skv_amount else '' }}" placeholder="{{ (report.sum_ag_fees or 0) + (report.sum_tax or 0) }}">
           <div style="font-size:11px;color:var(--muted);margin-top:4px;">{{ "Enligt AGI" if sv else "Per AGI" }}: {{ ((report.sum_ag_fees or 0) + (report.sum_tax or 0))|fmt_amount }}</div></div>
-        <div class="form-group"><label class="form-label">{{ "Betalningsdag" if sv else "Payment date" }}</label>
-          <input type="date" name="skv_date" class="form-control" required value="{{ (report.skv_date or default_date).isoformat() }}"></div>
         <div class="form-group"><label class="form-label">OCR</label>
           <input type="text" name="skv_ocr" class="form-control mono" required value="{{ report.skv_ocr or default_ocr }}"></div>
+        <div class="form-group"><label class="form-label">{{ "Betalningsdag (1930 → 1630)" if sv else "Payment date (1930 → 1630)" }}</label>
+          <input type="date" name="skv_date" class="form-control" required value="{{ (report.skv_date or default_date).isoformat() }}"></div>
+        <div class="form-group"><label class="form-label">{{ "Skattedag (1630 → 2710/2731)" if sv else "Tax date (1630 → 2710/2731)" }}</label>
+          <input type="date" name="skv_debit_date" class="form-control" required value="{{ (report.skv_debit_date or default_debit_date).isoformat() }}">
+          <div style="font-size:11px;color:var(--muted);margin-top:4px;">{{ "Normalt den 12:e månaden efter (17:e i januari och augusti)" if sv else "Normally the 12th of the following month (17th in January and August)" }}</div></div>
       </div>
       <button type="submit" class="btn btn-primary btn-sm">✓ {{ "Registrera betalning" if sv else "Register payment" }}</button>
       {% if st == 'approved' %}<a href="{{ url_for('payment_run') }}" class="btn btn-secondary btn-sm">{{ "Till betalningsunderlag" if sv else "To payment run" }} →</a>{% endif %}
@@ -100,11 +104,11 @@
     {% elif report and report.skv_amount %}
     <div style="font-size:13px;">
       <span style="font-family:var(--mono);font-weight:700;">{{ report.skv_amount|fmt_amount }} kr</span> ·
-      {{ report.skv_date }} · BG 5050-1055 · OCR <span style="font-family:var(--mono);">{{ report.skv_ocr }}</span>
+      {{ "betalas" if sv else "paid" }} {{ report.skv_date }} · {{ "skattedag" if sv else "tax date" }} {{ report.skv_debit_date }} · BG 5050-1055 · OCR <span style="font-family:var(--mono);">{{ report.skv_ocr }}</span>
       {% if report.payment_file %}· {{ report.payment_file.filename }}{% endif %}
     </div>
     {% if st == 'approved' %}<div style="margin-top:10px;"><a href="{{ url_for('payment_run') }}" class="btn btn-secondary btn-sm">{{ "Kvittera betalningen i betalningsunderlaget" if sv else "Acknowledge the payment in the payment run" }} →</a></div>{% endif %}
-    {% if st == 'paid' and not report.voucher_ref %}
+    {% if st == 'paid' and not (report.voucher_ref and report.settle_voucher_ref) %}
     <form method="POST" action="{{ url_for('payroll_agi_book', period=period) }}" style="margin-top:10px;">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button type="submit" class="btn btn-primary btn-sm">{{ "Bokför i Fortnox" if sv else "Book in Fortnox" }}</button>
@@ -115,13 +119,19 @@
     {% endif %}
   </div>
 
-  {% if tax_rows %}
-  <div class="card">
-    <div class="card-title">{{ "Kontering" if sv else "Voucher" }} · {{ "Skatt och arbetsgivaravgifter" if sv else "Tax and contributions" }} {{ period_display }} · {{ report.skv_date }}</div>
-    {{ voucher_table(tax_rows) }}
-    {% if diff and diff|abs > tolerance %}
-    <div style="color:var(--warning);font-size:12px;margin-top:8px;">⚠ {{ "Avviker" if sv else "Differs" }} {{ "%.2f"|format(diff) }} kr {{ "från upplupna avgifter och skatt — skillnaden ligger kvar på 2731." if sv else "from accrued contributions and tax — the difference stays on 2731." }}</div>
-    {% endif %}
+  {% if payment_rows %}
+  <div class="grid-2" style="align-items:start;">
+    <div class="card">
+      <div class="card-title">{{ "Inbetalning skattekonto" if sv else "Payment to tax account" }} · {{ report.skv_date }}</div>
+      {{ voucher_table(payment_rows) }}
+    </div>
+    <div class="card">
+      <div class="card-title">{{ "Skatt och arbetsgivaravgifter" if sv else "Tax and contributions" }} · {{ report.skv_debit_date or default_debit_date }}</div>
+      {{ voucher_table(settle_rows) }}
+      {% if diff and diff|abs > tolerance %}
+      <div style="color:var(--warning);font-size:12px;margin-top:8px;">⚠ {{ "Avviker" if sv else "Differs" }} {{ "%.2f"|format(diff) }} kr {{ "från upplupna avgifter och skatt — skillnaden ligger kvar på 2731." if sv else "from accrued contributions and tax — the difference stays on 2731." }}</div>
+      {% endif %}
+    </div>
   </div>
   {% endif %}
 </div>

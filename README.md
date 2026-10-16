@@ -417,13 +417,18 @@ Admin only. **Reskontra → Lönebesked**.
    **Kvittera** the file → the salary voucher is posted to Fortnox, dated on the pay date.
 5. **Arbetsgivardeklaration** for the payout month: create the XML, upload it at
    Skatteverket, **Kvittera import**.
-6. Enter Skatteverket's amount, date and OCR → **Registrera betalning** → it appears in the
-   payment run on that date (BG 5050-1055). **Kvittera** → tax voucher (2710 + 2731 against
-   the bank; up to 10 kr rounding to 3740).
+6. Enter Skatteverket's amount, OCR, payment date and tax date (default the 12th of the
+   following month, the 17th in January and August) → **Registrera betalning** → it appears
+   in the payment run on the payment date (BG 5050-1055). **Kvittera** books two vouchers:
+   1930 → 1630 on the payment date, and 1630 → 2710 + 2731 on the tax date (up to 10 kr
+   rounding to 3740). If the second fails — e.g. the tax date is in a financial year not yet
+   opened in Fortnox — **Bokför i Fortnox** on the AGI page retries just that one.
 
-Amounts are whole kronor, truncated like the AGI (FK011, FK001 …); the arbetsgivaravgift
-on the salary voucher is rounded, while FK487 is truncated as Skatteverket computes it —
-the krona of difference is cleared by the tax voucher. Payslip PDFs that were emailed and
+Amounts are whole kronor, truncated like the AGI (FK011, FK001 …), and the payslip's totals
+use the same rounding, so slip, payout and voucher agree. The arbetsgivaravgift on the salary
+voucher is rounded, while FK487 is truncated as Skatteverket computes it — the krona of
+difference is cleared on the tax date. Löneart 310 pays bilersättning at Skatteverket's
+tax-free maximum, 2,50 kr/km (25 kr/mil); a higher rate is flagged on the payslip. Payslip PDFs that were emailed and
 filed AGI files are kept in `instance/uploads/{payslips,agi}`.
 
 ### Invoicing
@@ -615,7 +620,8 @@ Payslip            (employee, period, pay_date, spec_nr, status draft→approved
   └── PayslipLine  (salary_type, description, quantity, rate, amount)
 SalaryType         (löneart: code, kind, agi_field, debit/credit account)
 AgiFieldCode       (Skatteverket fältkod: code, XML element, value type, ag_base)
-AgiReport          (period YYYYMM, status open→generated→submitted→approved→paid, skv amount/date/OCR)
+AgiReport          (period YYYYMM, status open→generated→submitted→approved→paid, skv amount/OCR,
+                    payment date + tax date, voucher_ref + settle_voucher_ref)
 
 TimeEntry          (project | internal_code, date, hours, hour_type, invoiced, invoice_id)
 Expense            (project | internal_code, date, merchant, amount_incl_vat, vat_rate, receipt_filename, status)
