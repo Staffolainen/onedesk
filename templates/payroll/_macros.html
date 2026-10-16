@@ -1,0 +1,37 @@
+{% macro th(labels) -%}
+{% for h in labels %}<th style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);padding:8px 10px;text-align:{{ 'right' if h[2] is defined and h[2] else 'left' }};border-bottom:1px solid var(--border);">{{ h[0] if g.lang == "sv" else h[1] }}</th>{% endfor %}
+{%- endmacro %}
+
+{% macro payslip_badge(status) -%}
+{% set labels = {"draft": ("Utkast","Draft","draft"), "approved": ("Registrerad för betalning","Registered for payment","pending"), "paid": ("Betald","Paid","paid")} %}
+{% set l = labels.get(status, (status, status, "draft")) %}
+<span class="badge badge-{{ l[2] }}">{{ l[0] if g.lang == "sv" else l[1] }}</span>
+{%- endmacro %}
+
+{% macro agi_badge(report) -%}
+{% set st = report.status if report else "open" %}
+{% set labels = {"open": ("Ej skapad","Not created","draft"), "generated": ("Fil skapad","File created","pending"), "submitted": ("Inlämnad","Submitted","sent"), "approved": ("Registrerad för betalning","Registered for payment","pending"), "paid": ("Betald","Paid","paid")} %}
+{% set l = labels.get(st, (st, st, "draft")) %}
+<span class="badge badge-{{ l[2] }}">{{ l[0] if g.lang == "sv" else l[1] }}</span>
+{%- endmacro %}
+
+{% macro voucher_table(rows, description=None, date=None) -%}
+<table style="width:100%;border-collapse:collapse;font-size:13px;">
+  <thead><tr>{{ th([("Konto","Account"), ("Transaktionsinfo","Info"), ("Debet","Debit",1), ("Kredit","Credit",1)]) }}</tr></thead>
+  <tbody>
+  {% for r in rows %}
+  <tr style="border-bottom:1px solid var(--border);">
+    <td style="padding:6px 10px;font-family:var(--mono);">{{ r.account }}</td>
+    <td style="padding:6px 10px;color:var(--muted);">{{ r.info }}</td>
+    <td style="padding:6px 10px;text-align:right;font-family:var(--mono);">{{ r.debit|fmt_amount if r.debit else "" }}</td>
+    <td style="padding:6px 10px;text-align:right;font-family:var(--mono);">{{ r.credit|fmt_amount if r.credit else "" }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+  <tfoot><tr>
+    <td colspan="2" style="padding:8px 10px;font-weight:600;text-align:right;">{{ "Summa" if g.lang == "sv" else "Total" }}</td>
+    <td style="padding:8px 10px;text-align:right;font-family:var(--mono);font-weight:700;">{{ rows|sum(attribute="debit")|fmt_amount }}</td>
+    <td style="padding:8px 10px;text-align:right;font-family:var(--mono);font-weight:700;">{{ rows|sum(attribute="credit")|fmt_amount }}</td>
+  </tr></tfoot>
+</table>
+{%- endmacro %}

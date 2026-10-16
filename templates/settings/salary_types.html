@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% from "payroll/_macros.html" import th %}
+{% block title %}{{ "Lönearter" if g.lang == "sv" else "Salary types" }}{% endblock %}
+{% block page_title %}{{ "Lönearter" if g.lang == "sv" else "Salary types" }}{% endblock %}
+
+{% block topbar_actions %}
+  <a href="{{ url_for('agi_codes') }}" class="btn btn-ghost btn-sm">{{ "Redovisningstyper" if g.lang == "sv" else "AGI fields" }}</a>
+  <a href="{{ url_for('payroll_index') }}" class="btn btn-ghost btn-sm">← {{ "Lönebesked" if g.lang == "sv" else "Payroll" }}</a>
+{% endblock %}
+
+{% macro row_inputs(t=None) %}
+  <td style="padding:4px 6px;"><input type="text" name="code" value="{{ t.code if t else '' }}" required maxlength="10" class="form-control mono" style="font-size:13px;padding:4px 6px;width:64px;"></td>
+  <td style="padding:4px 6px;"><input type="text" name="name" value="{{ t.name if t else '' }}" required class="form-control" style="font-size:13px;padding:4px 6px;min-width:160px;"></td>
+  <td style="padding:4px 6px;"><select name="kind" class="form-control" style="font-size:13px;padding:4px 6px;">
+    {% for key, k in kinds.items() %}<option value="{{ key }}" {% if t and t.kind == key %}selected{% endif %}>{{ k[3] if g.lang == "sv" else k[4] }}</option>{% endfor %}
+  </select></td>
+  <td style="padding:4px 6px;"><select name="agi_field_id" class="form-control" style="font-size:13px;padding:4px 6px;max-width:220px;">
+    <option value="">—</option>
+    {% for f in fields %}<option value="{{ f.id }}" {% if t and t.agi_field_id == f.id %}selected{% endif %}>{{ f.label }}</option>{% endfor %}
+    {% if t and t.agi_field and t.agi_field not in fields %}<option value="{{ t.agi_field.id }}" selected>{{ t.agi_field.label }}</option>{% endif %}
+  </select></td>
+  <td style="padding:4px 6px;"><input type="text" name="debit_account" value="{{ t.debit_account if t and t.debit_account else '' }}" class="form-control mono" style="font-size:13px;padding:4px 6px;width:64px;"></td>
+  <td style="padding:4px 6px;"><input type="text" name="credit_account" value="{{ t.credit_account if t and t.credit_account else '' }}" class="form-control mono" style="font-size:13px;padding:4px 6px;width:64px;"></td>
+  <td style="padding:4px 6px;"><input type="text" name="default_rate" value="{{ t.default_rate if t and t.default_rate else '' }}" class="form-control mono" style="font-size:13px;padding:4px 6px;width:64px;"></td>
+  <td style="padding:4px 6px;"><input type="text" name="unit" value="{{ t.unit if t and t.unit else '' }}" class="form-control" style="font-size:13px;padding:4px 6px;width:60px;"></td>
+  <td style="padding:4px 6px;"><input type="number" name="sort_order" value="{{ t.sort_order if t else '' }}" class="form-control mono" style="font-size:13px;padding:4px 6px;width:56px;"></td>
+{% endmacro %}
+
+{% block content %}
+<div style="max-width:1150px;margin:0 auto;">
+  <div class="card" style="margin-bottom:16px;">
+    <div style="font-size:12px;color:var(--muted);margin-bottom:14px;line-height:1.6;">
+      {{ "Typen styr tecken och kontering: kontant lön och bruttolöneavdrag bokas på debetkontot (tomt = den anställdes lönekonto), förmåner debet/kredit per rad (t.ex. 7330/7399), skatt och nettolöneavdrag på kreditkontot. Redovisningstypen avgör vilken ruta i arbetsgivardeklarationen raden hamnar i."
+         if g.lang == "sv" else
+         "The kind decides sign and booking: cash pay and gross deductions debit the debit account (blank = the employee's salary account), benefits book debit/credit per line (e.g. 7330/7399), tax and net deductions credit the credit account. The AGI field decides which box of the employer declaration the line lands in." }}
+    </div>
+    <div class="table-wrap">
+    <table style="width:100%;border-collapse:collapse;font-size:13px;min-width:1000px;">
+      <thead><tr>{{ th([("Kod","Code"), ("Namn","Name"), ("Typ","Kind"), ("Redovisningstyp (AGI)","AGI field"), ("Debet","Debit"), ("Kredit","Credit"), ("À-pris","Rate"), ("Enhet","Unit"), ("Ordn.","Sort"), ("","")]) }}</tr></thead>
+      <tbody>
+      {% for t in types %}
+      <tr style="border-bottom:1px solid var(--border);{% if not t.active %}opacity:0.5;{% endif %}">
+        <form method="POST">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="action" value="save">
+          <input type="hidden" name="st_id" value="{{ t.id }}">
+          {{ row_inputs(t) }}
+          <td style="padding:4px 6px;white-space:nowrap;"><button type="submit" class="btn btn-ghost btn-sm">{{ g.t.save }}</button>
+        </form>
+          <form method="POST" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="st_id" value="{{ t.id }}">
+            <input type="hidden" name="action" value="{{ 'deactivate' if t.active else 'activate' }}">
+            <button type="submit" class="btn btn-ghost btn-sm">{{ "⏸" if t.active else "▶" }}</button>
+          </form>
+          {% if not usage[t.id] %}
+          <form method="POST" style="display:inline;" onsubmit="return confirm('{{ 'Ta bort' if g.lang == 'sv' else 'Delete' }} {{ t.code }}?')">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="st_id" value="{{ t.id }}">
+            <input type="hidden" name="action" value="delete">
+            <button type="submit" class="btn btn-danger btn-sm">✕</button>
+          </form>
+          {% endif %}
+          </td>
+      </tr>
+      {% endfor %}
+      <tr style="background:var(--surface2);">
+        <form method="POST">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="action" value="new">
+          {{ row_inputs() }}
+          <td style="padding:4px 6px;"><button type="submit" class="btn btn-primary btn-sm">+ {{ "Lägg till" if g.lang == "sv" else "Add" }}</button></td>
+        </form>
+      </tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

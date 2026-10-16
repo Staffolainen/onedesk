@@ -15,6 +15,7 @@ Config required:
 """
 import uuid
 import re as _re
+from dataclasses import dataclass
 from datetime import date as _date, datetime as _datetime, timedelta as _timedelta
 import xml.etree.ElementTree as ET
 
@@ -234,6 +235,80 @@ def _add_pmt_inf(
                 _sub(_sub(cdt_trf, "RmtInf"), "Ustrd", ustrd_text)
 
 
+# ── Payroll transfers ─────────────────────────────────────────────────────────
+
+@dataclass
+class Transfer:
+    """A payroll payment: net salary to a bank account, or tax to Skatteverket's BG.
+
+    Unlike supplier invoices — whose date is derived from the due date — each
+    transfer carries the exact date it must execute on: the pay date on the
+    lönebesked, or the date Skatteverket gave. They are never merged into a
+    block with another date.
+    """
+    name: str
+    amount: float
+    execution_date: _date
+    purpose: str            # "SALA" (salary) or "SUPP" (tax via bankgiro)
+    account_type: str       # "bban" or "bg"
+    account: str            # account number (BBAN: without clearing) or BG number
+    clearing: str = ""
+    reference: str = ""     # OCR (bg) or free text
+    end_to_end: str = ""
+
+
+def _add_transfer_pmt_inf(cstmr, transfers, pmt_inf_id, company_name, debtor_bban, debtor_bic):
+    """One PmtInf for transfers sharing purpose, account type and execution date."""
+    first = transfers[0]
+    pmt_inf = _sub(cstmr, "PmtInf")
+    _sub(pmt_inf, "PmtInfId", pmt_inf_id)
+    _sub(pmt_inf, "PmtMtd", "TRF")
+    _sub(pmt_inf, "NbOfTxs", str(len(transfers)))
+    _sub(pmt_inf, "CtrlSum", _fmt_amount(sum(float(t.amount) for t in transfers)))
+    pmt_tp_inf = _sub(pmt_inf, "PmtTpInf")
+    _sub(_sub(pmt_tp_inf, "SvcLvl"), "Cd", "NURG")
+    _sub(_sub(pmt_tp_inf, "CtgyPurp"), "Cd", first.purpose)
+    _sub(pmt_inf, "ReqdExctnDt", first.execution_date.isoformat())
+    _sub(_sub(pmt_inf, "Dbtr"), "Nm", company_name)
+    dbtr_othr = _sub(_sub(_sub(pmt_inf, "DbtrAcct"), "Id"), "Othr")
+    _sub(dbtr_othr, "Id", debtor_bban)
+    _sub(_sub(dbtr_othr, "SchmeNm"), "Cd", "BBAN")
+    _sub(_sub(_sub(pmt_inf, "DbtrAgt"), "FinInstnId"), "BIC", debtor_bic)
+
+    for idx, t in enumerate(transfers, start=1):
+        cdt_trf = _sub(pmt_inf, "CdtTrfTxInf")
+        _sub(_sub(cdt_trf, "PmtId"), "EndToEndId", (t.end_to_end or f"{pmt_inf_id}-{idx:03d}")[:35])
+        _sub(_sub(cdt_trf, "Amt"), "InstdAmt", _fmt_amount(t.amount)).set("Ccy", "SEK")
+        clr_sys = _sub(_sub(_sub(cdt_trf, "CdtrAgt"), "FinInstnId"), "ClrSysMmbId")
+        _sub(_sub(clr_sys, "ClrSysId"), "Cd", "SESBA")
+        if t.account_type == "bg":
+            _sub(clr_sys, "MmbId", "9900")
+        else:
+            _sub(clr_sys, "MmbId", _digits_only(t.clearing))
+        _sub(_sub(cdt_trf, "Cdtr"), "Nm", (t.name or "")[:70])
+        cdtr_othr = _sub(_sub(_sub(cdt_trf, "CdtrAcct"), "Id"), "Othr")
+        if t.account_type == "bg":
+            _sub(cdtr_othr, "Id", _digits_only(t.account))
+            _sub(_sub(cdtr_othr, "SchmeNm"), "Prtry", "BGNR")
+        else:
+            _sub(cdtr_othr, "Id", _digits_only(t.clearing) + _digits_only(t.account))
+            _sub(_sub(cdtr_othr, "SchmeNm"), "Cd", "BBAN")
+        ref = _digits_only(t.reference)
+        if t.account_type == "bg" and ref and _valid_ocr(ref):
+            cdtr_ref_inf = _sub(_sub(_sub(cdt_trf, "RmtInf"), "Strd"), "CdtrRefInf")
+            _sub(_sub(_sub(cdtr_ref_inf, "Tp"), "CdOrPrtry"), "Cd", "SCOR")
+            _sub(cdtr_ref_inf, "Ref", ref)
+        elif t.reference:
+            _sub(_sub(cdt_trf, "RmtInf"), "Ustrd", t.reference[:140])
+
+
+def _group_transfers(transfers):
+    groups = {}
+    for t in transfers:
+        groups.setdefault((t.purpose, t.account_type, t.execution_date), []).append(t)
+    return [groups[k] for k in sorted(groups, key=lambda k: (k[2], k[0], k[1]))]
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def get_execution_date(invoices: list) -> _date:
@@ -253,6 +328,7 @@ def generate_pain001(
     invoices: list,
     payment_date: _date,   # used only for message ID; actual dates derived from due_date
     config: dict,
+    transfers: list = (),
 ) -> bytes:
     """
     Generate an ISO 20022 pain.001.001.03 XML payment file.
@@ -261,6 +337,8 @@ def generate_pain001(
     in that block. Use get_execution_date(invoices) to get the overall earliest
     date for storing on PaymentFile / Fortnox voucher.
     BG/PG and IBAN invoices are placed in separate PmtInf blocks.
+    Payroll ``transfers`` get one PmtInf per (purpose, account type, date), each
+    executing on its own date.
 
     Returns UTF-8 encoded XML bytes.
     """
@@ -278,9 +356,11 @@ def generate_pain001(
     bg_pg_invs = [i for i in invoices if i.payment_account_type in ("bg", "pg")]
     iban_invs  = [i for i in invoices if i.payment_account_type == "iban"]
 
-    n_txns   = len(bg_pg_invs) + len(iban_invs)
+    transfers = list(transfers)
+    n_txns   = len(bg_pg_invs) + len(iban_invs) + len(transfers)
     ctrl_sum = _fmt_amount(
         sum(float(i.amount_incl_vat or 0) for i in bg_pg_invs + iban_invs)
+        + sum(float(t.amount) for t in transfers)
     )
 
     root  = ET.Element(_t("Document"))
@@ -315,6 +395,15 @@ def generate_pain001(
             debtor_bban=debtor_bban,
             debtor_bic=debtor_bic,
             is_bg_pg=False,
+        )
+
+    for n, group in enumerate(_group_transfers(transfers), start=1):
+        _add_transfer_pmt_inf(
+            cstmr, group,
+            pmt_inf_id=f"{msg_id}-{group[0].purpose}{n}",
+            company_name=company_name,
+            debtor_bban=debtor_bban,
+            debtor_bic=debtor_bic,
         )
 
     xml_str = ET.tostring(root, encoding="unicode", xml_declaration=False)

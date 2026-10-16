@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% from "payroll/_macros.html" import th %}
+{% block title %}{{ "Anställda" if g.lang == "sv" else "Employees" }}{% endblock %}
+{% block page_title %}{{ "Anställda" if g.lang == "sv" else "Employees" }}{% endblock %}
+
+{% block topbar_actions %}
+  <a href="{{ url_for('payroll_index') }}" class="btn btn-ghost btn-sm">← {{ "Lönebesked" if g.lang == "sv" else "Payroll" }}</a>
+{% endblock %}
+
+{% block content %}
+<div style="max-width:900px;margin:0 auto;">
+  {% if employees %}
+  <div class="card" style="margin-bottom:16px;padding:0;overflow:hidden;">
+    <div class="table-wrap">
+    <table style="width:100%;border-collapse:collapse;font-size:13px;min-width:640px;">
+      <thead><tr>{{ th([("Namn","Name"), ("Personnr","Personal ID"), ("Konto","Account"), ("Lönekonto","Salary acct"), ("Arb.avg","Contrib."), ("E-post","Email"), ("","")]) }}</tr></thead>
+      <tbody>
+      {% for e in employees %}
+      <tr style="border-bottom:1px solid var(--border);{% if not e.active %}opacity:0.5;{% endif %}">
+        <td style="padding:8px 10px;font-weight:600;">{{ e.name }}</td>
+        <td style="padding:8px 10px;font-family:var(--mono);">{{ e.personnummer_display }}</td>
+        <td style="padding:8px 10px;font-family:var(--mono);">{{ e.bank_display }}</td>
+        <td style="padding:8px 10px;font-family:var(--mono);">{{ e.salary_account }}</td>
+        <td style="padding:8px 10px;font-family:var(--mono);">{{ "%.2f"|format((e.ag_rate or 0) * 100) }} %</td>
+        <td style="padding:8px 10px;color:var(--muted);">{{ e.email or "—" }}</td>
+        <td style="padding:6px 8px;text-align:right;"><a href="{{ url_for('payroll_employee_edit', employee_id=e.id) }}" class="btn btn-ghost btn-sm">{{ g.t.edit }}</a></td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </div>
+  {% endif %}
+
+  {% set e = edit %}
+  <div class="card">
+    <div class="card-title">{% if e %}{{ "Redigera" if g.lang == "sv" else "Edit" }} {{ e.name }}{% else %}{{ "Ny anställd" if g.lang == "sv" else "New employee" }}{% endif %}</div>
+    <form method="POST" action="{{ url_for('payroll_employee_edit', employee_id=e.id) if e else url_for('payroll_employees') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="grid-2">
+        <div class="form-group"><label class="form-label">{{ "Förnamn" if g.lang == "sv" else "First name" }} *</label>
+          <input type="text" name="first_name" class="form-control" required value="{{ e.first_name if e else '' }}"></div>
+        <div class="form-group"><label class="form-label">{{ "Efternamn" if g.lang == "sv" else "Last name" }} *</label>
+          <input type="text" name="last_name" class="form-control" required value="{{ e.last_name if e else '' }}"></div>
+      </div>
+      <div class="grid-2">
+        <div class="form-group"><label class="form-label">{{ "Personnummer" if g.lang == "sv" else "Personal ID number" }} *</label>
+          <input type="text" name="personnummer" class="form-control mono" required placeholder="ÅÅÅÅMMDD-NNNN" value="{{ e.personnummer if e else '' }}"></div>
+        <div class="form-group"><label class="form-label">{{ "E-post för lönebesked" if g.lang == "sv" else "Payslip email" }}</label>
+          <input type="email" name="email" class="form-control" value="{{ e.email if e and e.email else '' }}"></div>
+      </div>
+      <div class="form-group"><label class="form-label">{{ "Adress" if g.lang == "sv" else "Address" }}</label>
+        <input type="text" name="address" class="form-control" value="{{ e.address if e and e.address else '' }}"></div>
+      <div class="grid-2">
+        <div class="form-group"><label class="form-label">{{ "Postnummer" if g.lang == "sv" else "Postal code" }}</label>
+          <input type="text" name="postal_code" class="form-control" value="{{ e.postal_code if e and e.postal_code else '' }}"></div>
+        <div class="form-group"><label class="form-label">{{ "Ort" if g.lang == "sv" else "City" }}</label>
+          <input type="text" name="city" class="form-control" value="{{ e.city if e and e.city else '' }}"></div>
+      </div>
+      <div class="grid-2">
+        <div class="form-group"><label class="form-label">{{ "Clearingnummer" if g.lang == "sv" else "Clearing number" }}</label>
+          <input type="text" name="bank_clearing" class="form-control mono" placeholder="3300" value="{{ e.bank_clearing if e and e.bank_clearing else '' }}"></div>
+        <div class="form-group"><label class="form-label">{{ "Kontonummer" if g.lang == "sv" else "Account number" }}</label>
+          <input type="text" name="bank_account" class="form-control mono" value="{{ e.bank_account if e and e.bank_account else '' }}"></div>
+      </div>
+      <div class="grid-3">
+        <div class="form-group"><label class="form-label">{{ "Lönekonto" if g.lang == "sv" else "Salary account" }}</label>
+          <input type="text" name="salary_account" class="form-control mono" value="{{ e.salary_account if e else '7210' }}">
+          <div style="font-size:11px;color:var(--muted);margin-top:4px;">{{ "7220 företagsledare, 7210 tjänstemän" if g.lang == "sv" else "7220 management, 7210 salaried staff" }}</div></div>
+        <div class="form-group"><label class="form-label">{{ "Arbetsgivaravgift %" if g.lang == "sv" else "Employer contribution %" }}</label>
+          <input type="number" step="0.01" name="ag_rate_pct" class="form-control mono" value="{{ '%.2f'|format((e.ag_rate if e else 0.3142) * 100) }}"></div>
+        <div class="form-group"><label class="form-label">{{ "Skattetabell" if g.lang == "sv" else "Tax table" }}</label>
+          <input type="text" name="tax_table" class="form-control mono" value="{{ e.tax_table if e and e.tax_table else '' }}"></div>
+      </div>
+      {% if e %}
+      <div class="form-group">
+        <label class="form-label">Status</label>
+        <select name="active" class="form-control" style="max-width:180px;">
+          <option value="1" {% if e.active %}selected{% endif %}>{{ "Aktiv" if g.lang == "sv" else "Active" }}</option>
+          <option value="0" {% if not e.active %}selected{% endif %}>{{ "Inaktiv" if g.lang == "sv" else "Inactive" }}</option>
+        </select>
+      </div>
+      {% endif %}
+      <div style="display:flex;gap:8px;">
+        <button type="submit" class="btn btn-primary">{{ g.t.save }}</button>
+        {% if e %}<a href="{{ url_for('payroll_employees') }}" class="btn btn-ghost">{{ "Avbryt" if g.lang == "sv" else "Cancel" }}</a>{% endif %}
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

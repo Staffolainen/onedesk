@@ -8,6 +8,7 @@ Self-hosted Flask app for solo consultant administration — time tracking, expe
 - **Expenses** — mobile camera capture, Claude Vision OCR extracts amount/VAT/merchant, review and approve
 - **Mileage** — log km per assignment, rate resolved automatically from PO or client default
 - **Internal codes** — sales, sick leave, admin and the like: assignment-shaped targets that carry time and cost but can never be invoiced
+- **Lönebesked (payroll)** — copy last month's payslip, edit, email the PDF, pay via the payment file, AGI XML for Skatteverket, and the salary and tax vouchers in Fortnox
 - **Invoicing** — per-assignment invoices, line items grouped by month/hour-type, PDF generation, email delivery
 - **Budget tracking** — dashboard budget bars show historical cost, invoiced, uninvoiced, and PO headroom per assignment
 - **Bilingual** — Swedish/English switchable UI and invoice language per client
@@ -402,6 +403,29 @@ Internal codes are a reporting dimension only — account routing still comes fr
 expense / supplier category, so vouchers are unchanged. A code that is in use cannot
 be deleted, only deactivated, so history keeps its label.
 
+### Lönebesked (payroll)
+Admin only. **Reskontra → Lönebesked**.
+
+1. **Inställningar → Lön**: add employees (personnummer, clearing + account, salary
+   account 7220/7210, arbetsgivaravgift %), fill in the AGI contact and check the accounts.
+   Lönearter and Skatteverket's field codes (redovisningstyper, schema 1.1) are seeded
+   and editable.
+2. **Kopiera föregående till nästa månad** (or ⧉ on a single payslip) creates drafts one
+   month on with the same lines. Edit, then **Registrera betalning** — the slip locks.
+3. Email the PDF to any address from the payslip page.
+4. **Betalningsunderlag**: the net salary is paid on the pay date (pain.001, purpose SALA).
+   **Kvittera** the file → the salary voucher is posted to Fortnox, dated on the pay date.
+5. **Arbetsgivardeklaration** for the payout month: create the XML, upload it at
+   Skatteverket, **Kvittera import**.
+6. Enter Skatteverket's amount, date and OCR → **Registrera betalning** → it appears in the
+   payment run on that date (BG 5050-1055). **Kvittera** → tax voucher (2710 + 2731 against
+   the bank; up to 10 kr rounding to 3740).
+
+Amounts are whole kronor, truncated like the AGI (FK011, FK001 …); the arbetsgivaravgift
+on the salary voucher is rounded, while FK487 is truncated as Skatteverket computes it —
+the krona of difference is cleared by the tax voucher. Payslip PDFs that were emailed and
+filed AGI files are kept in `instance/uploads/{payslips,agi}`.
+
 ### Invoicing
 1. **Fakturor** → **Ny faktura** → select assignment and period
 2. All uninvoiced hours + approved billable expenses + mileage are included —
@@ -585,6 +609,13 @@ Client
                     └── name, hourly_rate, billable, sort_order
 
 InternalCode       (code, name, kind, track_time, track_cost, km_rate, active)
+
+Employee           (name, personnummer, bank clearing/account, salary_account, ag_rate)
+Payslip            (employee, period, pay_date, spec_nr, status draft→approved→paid, voucher_ref)
+  └── PayslipLine  (salary_type, description, quantity, rate, amount)
+SalaryType         (löneart: code, kind, agi_field, debit/credit account)
+AgiFieldCode       (Skatteverket fältkod: code, XML element, value type, ag_base)
+AgiReport          (period YYYYMM, status open→generated→submitted→approved→paid, skv amount/date/OCR)
 
 TimeEntry          (project | internal_code, date, hours, hour_type, invoiced, invoice_id)
 Expense            (project | internal_code, date, merchant, amount_incl_vat, vat_rate, receipt_filename, status)

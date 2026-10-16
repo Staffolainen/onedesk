@@ -540,6 +540,8 @@ class PaymentFile(db.Model):
     confirmed_at = db.Column(db.DateTime)
 
     supplier_invoices = db.relationship("SupplierInvoice", backref="payment_file", lazy=True)
+    payslips          = db.relationship("Payslip", backref="payment_file", lazy=True)
+    agi_reports       = db.relationship("AgiReport", backref="payment_file", lazy=True)
 
 
 class SupplierInvoice(_TargetMixin, db.Model):
@@ -590,3 +592,167 @@ class SupplierInvoice(_TargetMixin, db.Model):
             label = {"bg": "BG", "pg": "PG", "iban": "IBAN"}.get(self.payment_account_type, "")
             return f"{label} {self.payment_account}".strip()
         return "—"
+
+
+# ── Payroll (lönebesked) ─────────────────────────────────────────────────────
+
+class AgiFieldCode(db.Model):
+    """A Skatteverket AGI field (fältkod), e.g. 011 Kontant ersättning.
+
+    The "redovisningstyp" a löneart reports to. Seeded from schema 1.1 and editable,
+    so a new or retired field can be followed without a code change. Only fields
+    flagged ``selectable`` can be picked on a löneart — the structural ones
+    (period, spec.nr, personnummer, HU totals) are written by the generator itself.
+    """
+    __tablename__ = "agi_field_code"
+    id          = db.Column(db.Integer, primary_key=True)
+    code        = db.Column(db.String(3), unique=True, nullable=False)   # "011"
+    element     = db.Column(db.String(100), nullable=False)              # KontantErsattningUlagAG
+    value_type  = db.Column(db.String(20), default="amount")             # amount, checkbox, text
+    description = db.Column(db.String(300))
+    selectable  = db.Column(db.Boolean, default=True)
+    # Counts toward the arbetsgivaravgift base (FK011/012/013/018 ...).
+    ag_base     = db.Column(db.Boolean, default=False)
+    active      = db.Column(db.Boolean, default=True)
+
+    @property
+    def label(self):
+        return f"{self.code} – {self.description or self.element}"
+
+
+class SalaryType(db.Model):
+    """A löneart — a line type on the lönebesked.
+
+    ``kind`` decides the sign and how the line is booked (see payroll.KINDS);
+    ``agi_field`` decides which Skatteverket box it lands in. An empty
+    ``debit_account`` on a cash line falls back to the employee's salary account,
+    which is how 7220 (företagsledare) and 7210 (tjänstemän) share one löneart.
+    """
+    __tablename__ = "salary_type"
+    id              = db.Column(db.Integer, primary_key=True)
+    code            = db.Column(db.String(10), unique=True, nullable=False)   # "100"
+    name            = db.Column(db.String(200), nullable=False)
+    kind            = db.Column(db.String(20), nullable=False, default="cash")
+    agi_field_id    = db.Column(db.Integer, db.ForeignKey("agi_field_code.id"), nullable=True)
+    agi_field       = db.relationship("AgiFieldCode", lazy=True)
+    debit_account   = db.Column(db.String(10))
+    credit_account  = db.Column(db.String(10))
+    default_rate    = db.Column(db.Float)
+    unit            = db.Column(db.String(20))      # st, dagar, mil, tim
+    sort_order      = db.Column(db.Integer, default=0)
+    active          = db.Column(db.Boolean, default=True)
+
+    @property
+    def label(self):
+        return f"{self.code} {self.name}"
+
+
+class Employee(db.Model):
+    __tablename__ = "employee"
+    id              = db.Column(db.Integer, primary_key=True)
+    first_name      = db.Column(db.String(100), nullable=False)
+    last_name       = db.Column(db.String(100), nullable=False)
+    personnummer    = db.Column(db.String(12), nullable=False)    # 12 digits, ÅÅÅÅMMDDNNNN
+    address         = db.Column(db.String(200))
+    postal_code     = db.Column(db.String(10))
+    city            = db.Column(db.String(100))
+    email           = db.Column(db.String(200))                   # default payslip recipient
+    bank_clearing   = db.Column(db.String(10))
+    bank_account    = db.Column(db.String(30))
+    salary_account  = db.Column(db.String(10), default="7210")    # 7220 for företagsledare
+    ag_rate         = db.Column(db.Float, default=0.3142)          # arbetsgivaravgift
+    tax_table       = db.Column(db.String(20))                     # informational, e.g. "34"
+    active          = db.Column(db.Boolean, default=True)
+    created_at      = db.Column(db.DateTime, default=datetime.utcnow)
+
+    payslips = db.relationship("Payslip", backref="employee", lazy=True)
+
+    @property
+    def name(self):
+        return f"{self.first_name} {self.last_name}"
+
+    @property
+    def personnummer_display(self):
+        p = self.personnummer or ""
+        return f"{p[2:8]}-{p[8:]}" if len(p) == 12 else p
+
+    @property
+    def bank_display(self):
+        if not self.bank_account:
+            return "—"
+        return f"{self.bank_clearing}-{self.bank_account}" if self.bank_clearing else self.bank_account
+
+
+class Payslip(db.Model):
+    """One lönebesked: one employee, one payout.
+
+    draft → approved (registered for payment, locked) → paid (salary voucher booked).
+    The AGI period is the month of ``pay_date`` — Skatteverket reports per payout month.
+    """
+    __tablename__ = "payslip"
+    id              = db.Column(db.Integer, primary_key=True)
+    employee_id     = db.Column(db.Integer, db.ForeignKey("employee.id"), nullable=False)
+    period          = db.Column(db.String(7), nullable=False)      # "2026-06", avser perioden
+    pay_date        = db.Column(db.Date, nullable=False)
+    spec_nr         = db.Column(db.Integer, default=1)             # FK570, unique per person and AGI period
+    note            = db.Column(db.Text)
+    status          = db.Column(db.String(20), default="draft")    # draft, approved, paid
+    payment_file_id = db.Column(db.Integer, db.ForeignKey("payment_file.id"), nullable=True)
+    voucher_ref     = db.Column(db.String(50))
+    paid_at         = db.Column(db.DateTime)
+    emailed_to      = db.Column(db.String(200))
+    emailed_at      = db.Column(db.DateTime)
+    created_at      = db.Column(db.DateTime, default=datetime.utcnow)
+
+    lines = db.relationship("PayslipLine", backref="payslip", lazy=True,
+                            cascade="all, delete-orphan", order_by="PayslipLine.sort_order")
+
+    @property
+    def agi_period(self):
+        return self.pay_date.strftime("%Y%m") if self.pay_date else None
+
+    @property
+    def is_locked(self):
+        return self.status != "draft"
+
+
+class PayslipLine(db.Model):
+    __tablename__ = "payslip_line"
+    id              = db.Column(db.Integer, primary_key=True)
+    payslip_id      = db.Column(db.Integer, db.ForeignKey("payslip.id"), nullable=False)
+    salary_type_id  = db.Column(db.Integer, db.ForeignKey("salary_type.id"), nullable=False)
+    salary_type     = db.relationship("SalaryType", lazy=True)
+    description     = db.Column(db.String(200))
+    quantity        = db.Column(db.Float)
+    rate            = db.Column(db.Float)
+    amount          = db.Column(db.Float, default=0.0)     # always entered positive; kind gives the sign
+    sort_order      = db.Column(db.Integer, default=0)
+
+
+class AgiReport(db.Model):
+    """The arbetsgivardeklaration for one period and its tax payment.
+
+    open → generated (XML downloaded) → submitted (import acknowledged) →
+    approved (Skatteverket's amount and date entered, registered for payment) →
+    paid (tax voucher booked).
+    """
+    __tablename__ = "agi_report"
+    id              = db.Column(db.Integer, primary_key=True)
+    period          = db.Column(db.String(6), unique=True, nullable=False)   # "202606"
+    status          = db.Column(db.String(20), default="open")
+    xml_filename    = db.Column(db.String(200))
+    generated_at    = db.Column(db.DateTime)
+    submitted_at    = db.Column(db.DateTime)
+    sum_ag_fees     = db.Column(db.Integer)       # FK487 as filed
+    sum_tax         = db.Column(db.Integer)       # FK497 as filed
+    skv_amount      = db.Column(db.Float)         # what Skatteverket says to pay
+    skv_date        = db.Column(db.Date)          # payment date
+    skv_ocr         = db.Column(db.String(30))
+    payment_file_id = db.Column(db.Integer, db.ForeignKey("payment_file.id"), nullable=True)
+    voucher_ref     = db.Column(db.String(50))
+    paid_at         = db.Column(db.DateTime)
+    created_at      = db.Column(db.DateTime, default=datetime.utcnow)
+
+    @property
+    def period_display(self):
+        return f"{self.period[:4]}-{self.period[4:]}"

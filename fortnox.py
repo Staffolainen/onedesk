@@ -486,6 +486,39 @@ class FortnoxClient:
         logger.info("Fortnox payment voucher created — ref=%s total=%.2f", voucher_ref, total)
         return voucher_ref
 
+    def create_voucher(self, rows, description, voucher_date, series="A"):
+        """Post a balanced voucher built elsewhere (payroll). Returns "YYYY-<series><nr>".
+
+        rows: [{"account", "debit", "credit", "info"}] as built by payroll.py.
+        """
+        fy_id = self.get_financial_year_id(voucher_date)
+        if not fy_id:
+            raise Exception(f"No financial year found in Fortnox for date {voucher_date}.")
+        voucher_rows = []
+        for r in rows:
+            row = {
+                "Account": int(r["account"]),
+                "Debit": round(float(r.get("debit", 0)), 2),
+                "Credit": round(float(r.get("credit", 0)), 2),
+            }
+            if r.get("info"):
+                row["TransactionInformation"] = r["info"][:100]
+            voucher_rows.append(row)
+        voucher_data = {
+            "Description": description[:200],
+            "TransactionDate": voucher_date.isoformat(),
+            "VoucherSeries": series,
+            "VoucherRows": voucher_rows,
+        }
+        result = self._request("POST", "/vouchers", json={"Voucher": voucher_data},
+                               params={"financialyear": fy_id})
+        voucher = result.get("Voucher", {})
+        voucher_nr = voucher.get("VoucherNumber")
+        voucher_series = voucher.get("VoucherSeries", series)
+        voucher_ref = f"{voucher_date.year}-{voucher_series}{voucher_nr}" if voucher_nr else None
+        logger.info("Fortnox voucher created — ref=%s %s", voucher_ref, description)
+        return voucher_ref
+
     def create_supplier_voucher(self, voucher_rows, description, voucher_date, series="L", pdf_path=None):
         """Create a supplier voucher (bokföringsorder) in Fortnox."""
         fy_id = self.get_financial_year_id(voucher_date)

@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% from "payroll/_macros.html" import th, payslip_badge, agi_badge %}
+{% block title %}{{ "Lönebesked" if g.lang == "sv" else "Payroll" }}{% endblock %}
+{% block page_title %}{{ "Lönebesked" if g.lang == "sv" else "Payroll" }}{% endblock %}
+
+{% block topbar_actions %}
+  <a href="{{ url_for('payroll_employees') }}" class="btn btn-ghost btn-sm">{{ "Anställda" if g.lang == "sv" else "Employees" }}</a>
+  <a href="{{ url_for('salary_types') }}" class="btn btn-ghost btn-sm">{{ "Lönearter" if g.lang == "sv" else "Salary types" }}</a>
+  <a href="{{ url_for('payroll_settings') }}" class="btn btn-ghost btn-sm">{{ "Inställningar" if g.lang == "sv" else "Settings" }}</a>
+  <a href="{{ url_for('payment_run') }}" class="btn btn-secondary btn-sm">{{ "Betalningsunderlag" if g.lang == "sv" else "Payment run" }}</a>
+{% endblock %}
+
+{% block content %}
+<div style="max-width:960px;margin:0 auto;">
+
+  <div class="card" style="margin-bottom:16px;">
+    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;">
+      {% if employees %}
+      <form method="POST" action="{{ url_for('payroll_payslip_new') }}" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div>
+          <label class="form-label">{{ "Anställd" if g.lang == "sv" else "Employee" }}</label>
+          <select name="employee_id" class="form-control">
+            {% for e in employees %}<option value="{{ e.id }}">{{ e.name }}</option>{% endfor %}
+          </select>
+        </div>
+        <div>
+          <label class="form-label">{{ "Utbetalningsdag" if g.lang == "sv" else "Pay date" }}</label>
+          <input type="date" name="pay_date" class="form-control">
+        </div>
+        <button type="submit" class="btn btn-secondary">+ {{ "Nytt tomt" if g.lang == "sv" else "New blank" }}</button>
+      </form>
+      <form method="POST" action="{{ url_for('payroll_copy_latest') }}"
+            onsubmit="return confirm('{{ 'Kopiera senaste lönebesked för alla aktiva anställda till nästa månad?' if g.lang == 'sv' else 'Copy every active employee\'s latest payslip to next month?' }}')">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="btn btn-primary">⧉ {{ "Kopiera föregående till nästa månad" if g.lang == "sv" else "Copy previous to next month" }}</button>
+      </form>
+      {% else %}
+      <div style="color:var(--muted);font-size:13px;">
+        {{ "Lägg först till anställda." if g.lang == "sv" else "Add employees first." }}
+        <a href="{{ url_for('payroll_employees') }}" class="btn btn-secondary btn-sm">{{ "Anställda" if g.lang == "sv" else "Employees" }} →</a>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  {% for period, slips in periods.items() %}
+  {% set report = reports.get(period) %}
+  <div class="card" style="margin-bottom:16px;padding:0;overflow:hidden;">
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px;border-bottom:1px solid var(--border);flex-wrap:wrap;gap:8px;">
+      <div style="font-weight:700;">{{ "Utbetalningsmånad" if g.lang == "sv" else "Pay month" }} {{ period[:4] }}-{{ period[4:] }}</div>
+      <div style="display:flex;gap:10px;align-items:center;">
+        <span style="font-size:12px;color:var(--muted);">AGI</span> {{ agi_badge(report) }}
+        <a href="{{ url_for('payroll_agi', period=period) }}" class="btn btn-ghost btn-sm">{{ "Arbetsgivardeklaration" if g.lang == "sv" else "Employer declaration" }} →</a>
+      </div>
+    </div>
+    <div class="table-wrap">
+    <table style="width:100%;border-collapse:collapse;font-size:13px;min-width:640px;">
+      <thead><tr>{{ th([("Anställd","Employee"), ("Avser","Period"), ("Utbetalning","Pay date"), ("Brutto","Gross",1), ("Skatt","Tax",1), ("Netto","Net",1), ("Status","Status"), ("","")]) }}</tr></thead>
+      <tbody>
+      {% for p in slips %}
+      {% set s = summaries[p.id] %}
+      <tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:8px 10px;font-weight:600;"><a href="{{ url_for('payroll_payslip', payslip_id=p.id) }}">{{ p.employee.name }}</a></td>
+        <td style="padding:8px 10px;">{{ p.period }}</td>
+        <td style="padding:8px 10px;font-family:var(--mono);">{{ p.pay_date }}</td>
+        <td style="padding:8px 10px;text-align:right;font-family:var(--mono);">{{ s.gross|fmt_amount }}</td>
+        <td style="padding:8px 10px;text-align:right;font-family:var(--mono);">{{ s.tax|fmt_amount }}</td>
+        <td style="padding:8px 10px;text-align:right;font-family:var(--mono);font-weight:600;">{{ s.net_pay|fmt_amount }}</td>
+        <td style="padding:8px 10px;">{{ payslip_badge(p.status) }}
+          {% if p.emailed_at %}<span title="{{ p.emailed_to }}" style="font-size:11px;color:var(--muted);">✉</span>{% endif %}
+          {% if p.voucher_ref %}<span style="font-size:11px;color:var(--muted);font-family:var(--mono);">{{ p.voucher_ref }}</span>{% endif %}
+        </td>
+        <td style="padding:6px 8px;text-align:right;white-space:nowrap;">
+          <form method="POST" action="{{ url_for('payroll_payslip_copy', payslip_id=p.id) }}" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn btn-ghost btn-sm" title="{{ 'Kopiera till nästa månad' if g.lang == 'sv' else 'Copy to next month' }}">⧉</button>
+          </form>
+          <a href="{{ url_for('payroll_payslip_pdf', payslip_id=p.id) }}" target="_blank" class="btn btn-ghost btn-sm">PDF</a>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </div>
+  {% else %}
+  <div class="card" style="text-align:center;padding:48px;color:var(--muted);">
+    {{ "Inga lönebesked ännu." if g.lang == "sv" else "No payslips yet." }}
+  </div>
+  {% endfor %}
+</div>
+{% endblock %}

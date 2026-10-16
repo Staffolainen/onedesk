@@ -1,5 +1,6 @@
 import io
 import os
+import calendar
 import re
 import ssl
 import json
@@ -33,6 +34,7 @@ from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
 from functools import wraps
+from collections import OrderedDict
 
 from flask import (Flask, render_template, request, redirect, url_for,
                    flash, session, jsonify, send_file, abort, g)
@@ -48,6 +50,7 @@ from models import (db, User, Client, Project, PurchaseOrder, POHourType,
                     TimeEntry, Expense, Invoice, MileageEntry, Settings,
                     VoucherTemplate, SupplierInvoice, PaymentFile,
                     InternalCode, DEFAULT_KM_RATE,
+                    AgiFieldCode, SalaryType, Employee, Payslip, PayslipLine, AgiReport,
                     fiscal_year, fy_start, fy_end)
 from bookkeeping import (REVERSE_CHARGE_VAT_RATE, VAT_DOMESTIC, VAT_TREATMENTS,
                          VAT_REVERSE_CHARGE_DOMESTIC, VAT_REVERSE_CHARGE_EU_SERVICES,
@@ -56,7 +59,15 @@ from sqlalchemy.orm import selectinload, joinedload
 from fortnox import FortnoxClient
 from receipt_ocr import extract_receipt_data, extract_supplier_invoice_data, _normalize_bankgiro
 from pdf_generator import generate_invoice_pdf, render_invoice_html
-from payment_file_generator import generate_pain001, get_execution_date
+from payment_file_generator import (generate_pain001, get_execution_date, Transfer,
+                                    _swedish_bank_holidays as swedish_bank_holidays)
+from payroll import (KINDS, AGI_FIELD_SEED, AGI_AG_BASE_CODES, SALARY_TYPE_SEED, SKV_BANKGIRO,
+                     ROUNDING_TOLERANCE, DEFAULT_ACCOUNTS as DEFAULT_PAYROLL_ACCOUNTS,
+                     agi_field_selectable, payslip_summary, payslip_agi_values, net_pay,
+                     salary_voucher_rows, salary_voucher_description, voucher_balanced,
+                     agi_totals, build_agi_xml, tax_voucher_rows, line_amount, add_month,
+                     next_period, normalize_personnummer, skv_due_date, digits as payroll_digits)
+from payroll_pdf import generate_payslip_pdf
 
 app = Flask(__name__)
 app.config.from_object(Config)
@@ -2523,11 +2534,22 @@ def payment_run():
         SupplierInvoice.status == "booked",
         SupplierInvoice.payment_file_id == None,
     ).order_by(SupplierInvoice.due_date).all()
+    # Payroll items only for admins — the lönebesked pages are admin-only too.
+    payslip_backlog = agi_backlog = []
+    if current_user.is_admin:
+        payslip_backlog = Payslip.query.filter(
+            Payslip.status == "approved", Payslip.payment_file_id == None,
+        ).order_by(Payslip.pay_date).all()
+        agi_backlog = AgiReport.query.filter(
+            AgiReport.status == "approved", AgiReport.payment_file_id == None,
+        ).order_by(AgiReport.skv_date).all()
     pending_files = PaymentFile.query.filter_by(status="generated").order_by(PaymentFile.created_at.desc()).all()
     if request.method == "POST":
         selected_ids = [_safe_int(i) for i in request.form.getlist("invoice_ids") if i]
+        payslip_ids = [_safe_int(i) for i in request.form.getlist("payslip_ids") if i] if current_user.is_admin else []
+        agi_ids = [_safe_int(i) for i in request.form.getlist("agi_ids") if i] if current_user.is_admin else []
         payment_date = _safe_date(request.form.get("payment_date")) or date.today()
-        if not selected_ids:
+        if not (selected_ids or payslip_ids or agi_ids):
             flash("Välj minst en faktura / Select at least one invoice", "error")
             return redirect(url_for("payment_run"))
 
@@ -2535,34 +2557,55 @@ def payment_run():
             SupplierInvoice.id.in_(selected_ids),
             SupplierInvoice.status == "booked",
             SupplierInvoice.payment_file_id == None,
-        ).all()
-        if not selected:
+        ).all() if selected_ids else []
+        payslips = Payslip.query.filter(
+            Payslip.id.in_(payslip_ids), Payslip.status == "approved", Payslip.payment_file_id == None,
+        ).all() if payslip_ids else []
+        reports = AgiReport.query.filter(
+            AgiReport.id.in_(agi_ids), AgiReport.status == "approved", AgiReport.payment_file_id == None,
+        ).all() if agi_ids else []
+        if not (selected or payslips or reports):
             flash("Inga giltiga fakturor / No valid invoices", "error")
             return redirect(url_for("payment_run"))
 
+        transfers = [_payslip_transfer(p) for p in payslips] + [_agi_transfer(r) for r in reports]
+        past = [t for t in transfers if t.execution_date < date.today()]
+        if past:
+            flash("Betalningsdatum har passerat / Payment date is in the past: "
+                  + ", ".join(f"{t.name} {t.execution_date}" for t in past), "error")
+            return redirect(url_for("payment_run"))
+
         try:
-            xml_bytes = generate_pain001(selected, payment_date, app.config)
+            xml_bytes = generate_pain001(selected, payment_date, app.config, transfers=transfers)
         except Exception as e:
             flash(f"Kunde inte generera betalningsfil / Could not generate payment file: {e}", "error")
             return redirect(url_for("payment_run"))
 
-        # Save file record — use the actual ReqdExctnDt from the pain.001 as payment_date
-        execution_date = get_execution_date(selected)
-        total = sum(i.amount_incl_vat for i in selected)
+        # Save file record — use the actual ReqdExctnDt from the pain.001 as payment_date.
+        # With supplier invoices that is still their execution date (their voucher uses it);
+        # a payroll-only file takes its earliest transfer date.
+        if selected:
+            execution_date = get_execution_date(selected)
+        else:
+            execution_date = min(t.execution_date for t in transfers)
+        total = sum(i.amount_incl_vat for i in selected) + sum(t.amount for t in transfers)
         filename = f"betalning_{execution_date.isoformat()}_{secrets.token_hex(4)}.xml"
         pf = PaymentFile(
             filename=filename,
             payment_date=execution_date,
             total_amount=total,
-            invoice_count=len(selected),
+            invoice_count=len(selected) + len(transfers),
             status="generated",
         )
         db.session.add(pf)
         db.session.flush()
         for inv in selected:
             inv.payment_file_id = pf.id
+        for item in payslips + reports:
+            item.payment_file_id = pf.id
         db.session.commit()
-        _audit("payment_file_generated", f"pf_id={pf.id} file={filename} invoices={len(selected)} total={total}")
+        _audit("payment_file_generated", f"pf_id={pf.id} file={filename} invoices={len(selected)} "
+                                         f"payslips={len(payslips)} agi={len(reports)} total={total}")
 
         return send_file(
             io.BytesIO(xml_bytes),
@@ -2571,32 +2614,60 @@ def payment_run():
             mimetype="application/xml",
         )
 
-    return render_template("supplier_invoices/payment_run.html", backlog=backlog, today=date.today(), pending_files=pending_files)
+    return render_template("supplier_invoices/payment_run.html", backlog=backlog, today=date.today(),
+                           pending_files=pending_files, payslip_backlog=payslip_backlog,
+                           agi_backlog=agi_backlog, net_pay=net_pay)
 
 @app.route("/supplier-invoices/payment-files/<int:pf_id>/confirm", methods=["POST"])
 @login_required
 def payment_file_confirm(pf_id):
     pf = PaymentFile.query.get_or_404(pf_id)
+    if (pf.payslips or pf.agi_reports) and not current_user.is_admin:
+        abort(403)
     pf.status = "confirmed"
     pf.confirmed_at = datetime.utcnow()
     for inv in pf.supplier_invoices:
         inv.status = "paid"
+    for item in pf.payslips + pf.agi_reports:
+        item.status = "paid"
+        item.paid_at = datetime.utcnow()
     db.session.commit()
     _audit("payment_file_confirmed", f"pf_id={pf_id} file={pf.filename} invoices={pf.invoice_count} total={pf.total_amount}")
 
+    # Payroll vouchers — each dated on its own payment date.
+    for p in pf.payslips:
+        try:
+            ref = _book_payslip(p)
+            flash(f"Lön {p.employee.name} {p.period} bokförd, verifikat {ref} / "
+                  f"Salary booked, voucher {ref}", "success")
+        except Exception as e:
+            flash(f"Lön {p.employee.name} {p.period}: Fortnox-bokföring misslyckades / "
+                  f"Fortnox posting failed: {e}", "warning")
+    for r in pf.agi_reports:
+        try:
+            ref = _book_agi(r)
+            flash(f"Skatt {r.period_display} bokförd, verifikat {ref} / Tax booked, voucher {ref}", "success")
+        except Exception as e:
+            flash(f"Skatt {r.period_display}: Fortnox-bokföring misslyckades / "
+                  f"Fortnox posting failed: {e}", "warning")
+    if not pf.supplier_invoices:
+        return redirect(url_for("payroll_index"))
+
     # Post payment voucher: 2440 → 1930 for all invoices in this payment file
     # Voucher must be dated on the bank execution date, not the confirmation date.
-    if not pf.payment_date:
+    supplier_date = (get_execution_date(pf.supplier_invoices)
+                     if (pf.payslips or pf.agi_reports) else pf.payment_date)
+    if not supplier_date:
         flash("Betalningsfilen saknar betalningsdatum — Fortnox-bokföring hoppades över / "
               "Payment file has no payment date — Fortnox posting skipped", "warning")
         return redirect(url_for("supplier_invoices_index"))
     try:
         fortnox = FortnoxClient(app.config)
         invoice_ids = [inv.id for inv in pf.supplier_invoices]
-        voucher_ref = fortnox.create_payment_voucher(invoice_ids, pf.payment_date)
+        voucher_ref = fortnox.create_payment_voucher(invoice_ids, supplier_date)
         flash(
-            f"Betalning bekräftad — {pf.invoice_count} fakturor betalda, verifikat {voucher_ref} / "
-            f"Payment confirmed — {pf.invoice_count} invoices paid, voucher {voucher_ref}",
+            f"Betalning bekräftad — {len(invoice_ids)} fakturor betalda, verifikat {voucher_ref} / "
+            f"Payment confirmed — {len(invoice_ids)} invoices paid, voucher {voucher_ref}",
             "success",
         )
     except Exception as e:
@@ -2612,8 +2683,11 @@ def payment_file_confirm(pf_id):
 @login_required
 def payment_file_download(pf_id):
     pf = PaymentFile.query.get_or_404(pf_id)
+    if (pf.payslips or pf.agi_reports) and not current_user.is_admin:
+        abort(403)
     invs = [i for i in pf.supplier_invoices if i.payment_account]
-    xml_bytes = generate_pain001(invs, pf.payment_date, app.config)
+    transfers = [_payslip_transfer(p) for p in pf.payslips] + [_agi_transfer(r) for r in pf.agi_reports]
+    xml_bytes = generate_pain001(invs, pf.payment_date, app.config, transfers=transfers)
     return send_file(
         io.BytesIO(xml_bytes),
         as_attachment=True,
@@ -2776,6 +2850,775 @@ def fortnox_preview():
         back_url=preview.get("back_url", url_for("dashboard")),
         back_label=preview.get("back_label", "← Back"),
     )
+
+# ── Payroll (lönebesked) ──────────────────────────────────────────────────────
+# create (copy) slip → register payment → payment file → acknowledge (salary voucher)
+# AGI XML → acknowledge import → Skatteverket's amount + date → payment file →
+# acknowledge (tax voucher). Calculations live in payroll.py.
+
+PAYROLL_SETTING_KEYS = {
+    # key: (default, Swedish label, English label)
+    "payroll_account_bank":          ("1930", "Bankkonto (nettolön)", "Bank account (net pay)"),
+    "payroll_account_ag_cost":       ("7510", "Arbetsgivaravgifter, kostnad", "Employer contributions, cost"),
+    "payroll_account_ag_liability":  ("2731", "Avräkning sociala avgifter", "Employer contributions, liability"),
+    "payroll_account_tax_liability": ("2710", "Personalskatt", "Employee tax liability"),
+    "payroll_account_tax_payment":   ("1930", "Betalning till Skatteverket från", "Tax paid from account"),
+    "payroll_account_rounding":      ("3740", "Öresavrundning", "Rounding"),
+    "payroll_voucher_series":        ("A", "Verifikationsserie", "Voucher series"),
+    "payroll_skv_bankgiro":          (SKV_BANKGIRO, "Skatteverkets bankgiro", "Skatteverket bankgiro"),
+    "payroll_skv_ocr":               ("", "OCR skattekonto", "Tax account OCR"),
+    "payroll_agi_contact_name":      ("", "AGI kontaktperson", "AGI contact name"),
+    "payroll_agi_contact_phone":     ("", "AGI telefon", "AGI contact phone"),
+    "payroll_agi_contact_email":     ("", "AGI e-post", "AGI contact email"),
+}
+
+
+def _payroll_setting(key):
+    return Settings.get(key) or PAYROLL_SETTING_KEYS[key][0]
+
+
+def _payroll_accounts():
+    return {k: _payroll_setting(f"payroll_account_{k}") for k in DEFAULT_PAYROLL_ACCOUNTS}
+
+
+def _payroll_folder(sub):
+    base = os.path.join(app.root_path, "instance", "uploads", sub)
+    os.makedirs(base, exist_ok=True)
+    return base
+
+
+def _period_bounds(agi_period):
+    """"202606" → (2026-06-01, 2026-06-30)."""
+    y, m = int(agi_period[:4]), int(agi_period[4:6])
+    return date(y, m, 1), date(y, m, calendar.monthrange(y, m)[1])
+
+
+def _payslips_in_agi_period(agi_period, include_drafts=False):
+    start, end = _period_bounds(agi_period)
+    q = Payslip.query.filter(Payslip.pay_date >= start, Payslip.pay_date <= end)
+    if not include_drafts:
+        q = q.filter(Payslip.status != "draft")
+    return q.join(Employee).order_by(Employee.last_name, Employee.first_name, Payslip.spec_nr).all()
+
+
+def _agi_report(agi_period, create=False):
+    r = AgiReport.query.filter_by(period=agi_period).first()
+    if r is None and create:
+        r = AgiReport(period=agi_period, status="open")
+        db.session.add(r)
+        db.session.flush()
+    return r
+
+
+def _next_spec_nr(employee_id, pay_date, exclude_id=None):
+    start = pay_date.replace(day=1)
+    end = date(pay_date.year, pay_date.month, calendar.monthrange(pay_date.year, pay_date.month)[1])
+    q = Payslip.query.filter(Payslip.employee_id == employee_id,
+                             Payslip.pay_date >= start, Payslip.pay_date <= end)
+    if exclude_id:
+        q = q.filter(Payslip.id != exclude_id)
+    used = {p.spec_nr for p in q.all()}
+    n = 1
+    while n in used:
+        n += 1
+    return n
+
+
+def _payslip_ytd(payslip):
+    """Calendar-year totals up to and including this slip (excluding other drafts)."""
+    start = date(payslip.pay_date.year, 1, 1)
+    slips = Payslip.query.filter(
+        Payslip.employee_id == payslip.employee_id,
+        Payslip.pay_date >= start,
+        Payslip.pay_date <= payslip.pay_date,
+        db.or_(Payslip.status != "draft", Payslip.id == payslip.id),
+    ).all()
+    out = {"gross": 0.0, "tax": 0.0, "benefits": 0.0}
+    for p in slips:
+        s = payslip_summary(p)
+        out["gross"] += s["gross"]
+        out["tax"] += s["tax"]
+        out["benefits"] += s["benefits"]
+    return out
+
+
+def _payslip_transfer(p):
+    emp = p.employee
+    return Transfer(
+        name=emp.name,
+        amount=float(net_pay(p)),
+        execution_date=p.pay_date,
+        purpose="SALA",
+        account_type="bban",
+        account=emp.bank_account or "",
+        clearing=emp.bank_clearing or "",
+        reference=f"Lön {p.period}",
+        end_to_end=f"LON-{p.id}",
+    )
+
+
+def _agi_transfer(r):
+    return Transfer(
+        name="Skatteverket",
+        amount=float(r.skv_amount or 0),
+        execution_date=r.skv_date,
+        purpose="SUPP",
+        account_type="bg",
+        account=_payroll_setting("payroll_skv_bankgiro"),
+        reference=r.skv_ocr or "",
+        end_to_end=f"SKV-{r.period}",
+    )
+
+
+def _book_payslip(p):
+    """Post the salary voucher. Returns the voucher ref; raises on Fortnox errors."""
+    rows = salary_voucher_rows(p, _payroll_accounts())
+    if not voucher_balanced(rows):
+        raise Exception("Lönevoucher balanserar inte / Salary voucher does not balance")
+    ref = FortnoxClient(app.config).create_voucher(
+        rows, salary_voucher_description(p), p.pay_date, series=_payroll_setting("payroll_voucher_series"))
+    p.voucher_ref = ref
+    db.session.commit()
+    _audit("payslip_booked", f"payslip_id={p.id} voucher={ref}")
+    return ref
+
+
+def _book_agi(r):
+    rows, _diff = tax_voucher_rows(_payslips_in_agi_period(r.period), r.skv_amount, _payroll_accounts())
+    if not voucher_balanced(rows):
+        raise Exception("Skattevoucher balanserar inte / Tax voucher does not balance")
+    ref = FortnoxClient(app.config).create_voucher(
+        rows, f"Skatt och arbetsgivaravgifter {r.period_display}", r.skv_date,
+        series=_payroll_setting("payroll_voucher_series"))
+    r.voucher_ref = ref
+    db.session.commit()
+    _audit("agi_tax_booked", f"period={r.period} voucher={ref}")
+    return ref
+
+
+def _decimal_input(value):
+    """"1 149,50" → 1149.5; blank or garbage → None."""
+    text = str(value or "").replace("\u00a0", "").replace(" ", "").replace(",", ".")
+    try:
+        return float(text) if text else None
+    except ValueError:
+        return None
+
+
+def _payroll_lang(sv, en):
+    return sv if g.get("lang", "sv") == "sv" else en
+
+
+@app.route("/payroll")
+@login_required
+@admin_required
+def payroll_index():
+    payslips = (Payslip.query.options(joinedload(Payslip.employee))
+                .order_by(Payslip.pay_date.desc(), Payslip.id).all())
+    periods = OrderedDict()
+    for p in payslips:
+        periods.setdefault(p.agi_period, []).append(p)
+    reports = {r.period: r for r in AgiReport.query.all()}
+    summaries = {p.id: payslip_summary(p) for p in payslips}
+    employees = Employee.query.filter_by(active=True).order_by(Employee.last_name, Employee.first_name).all()
+    return render_template("payroll/index.html", periods=periods, reports=reports,
+                           summaries=summaries, employees=employees)
+
+
+# ── Employees ──
+
+def _employee_from_form(emp):
+    f = request.form
+    emp.first_name = (f.get("first_name") or "").strip()
+    emp.last_name = (f.get("last_name") or "").strip()
+    emp.personnummer = normalize_personnummer(f.get("personnummer"))
+    emp.address = (f.get("address") or "").strip()
+    emp.postal_code = (f.get("postal_code") or "").strip()
+    emp.city = (f.get("city") or "").strip()
+    emp.email = (f.get("email") or "").strip()
+    emp.bank_clearing = payroll_digits(f.get("bank_clearing"))
+    emp.bank_account = payroll_digits(f.get("bank_account"))
+    emp.salary_account = (f.get("salary_account") or "7210").strip()
+    emp.ag_rate = _safe_float(f.get("ag_rate_pct"), 31.42) / 100
+    emp.tax_table = (f.get("tax_table") or "").strip()
+    emp.active = f.get("active", "1") == "1"
+    if not emp.first_name or not emp.last_name:
+        raise ValueError(_payroll_lang("Namn krävs", "Name is required"))
+
+
+@app.route("/payroll/employees", methods=["GET", "POST"])
+@login_required
+@admin_required
+def payroll_employees():
+    if request.method == "POST":
+        emp = Employee()
+        try:
+            _employee_from_form(emp)
+        except ValueError as e:
+            flash(str(e), "error")
+            return redirect(url_for("payroll_employees"))
+        db.session.add(emp)
+        db.session.commit()
+        _audit("employee_create", f"employee_id={emp.id}")
+        flash(_payroll_lang("Anställd skapad", "Employee created"), "success")
+        return redirect(url_for("payroll_employees"))
+    employees = Employee.query.order_by(Employee.active.desc(), Employee.last_name, Employee.first_name).all()
+    return render_template("payroll/employees.html", employees=employees, edit=None)
+
+
+@app.route("/payroll/employees/<int:employee_id>", methods=["GET", "POST"])
+@login_required
+@admin_required
+def payroll_employee_edit(employee_id):
+    emp = Employee.query.get_or_404(employee_id)
+    if request.method == "POST":
+        try:
+            _employee_from_form(emp)
+        except ValueError as e:
+            db.session.rollback()
+            flash(str(e), "error")
+            return redirect(url_for("payroll_employee_edit", employee_id=emp.id))
+        db.session.commit()
+        _audit("employee_update", f"employee_id={emp.id}")
+        flash(_payroll_lang("Anställd sparad", "Employee saved"), "success")
+        return redirect(url_for("payroll_employees"))
+    employees = Employee.query.order_by(Employee.active.desc(), Employee.last_name, Employee.first_name).all()
+    return render_template("payroll/employees.html", employees=employees, edit=emp)
+
+
+# ── Payslips ──
+
+@app.route("/payroll/payslips/new", methods=["POST"])
+@login_required
+@admin_required
+def payroll_payslip_new():
+    emp = Employee.query.get_or_404(_safe_int(request.form.get("employee_id")))
+    pay_date = _safe_date(request.form.get("pay_date")) or date.today().replace(day=25)
+    p = Payslip(employee_id=emp.id, period=pay_date.strftime("%Y-%m"), pay_date=pay_date,
+                spec_nr=_next_spec_nr(emp.id, pay_date), status="draft")
+    db.session.add(p)
+    db.session.commit()
+    _audit("payslip_create", f"payslip_id={p.id} employee_id={emp.id}")
+    return redirect(url_for("payroll_payslip", payslip_id=p.id))
+
+
+def _copy_payslip(src):
+    """New draft for the month after ``src``, same lines."""
+    pay_date = add_month(src.pay_date)
+    p = Payslip(employee_id=src.employee_id, period=next_period(src.period), pay_date=pay_date,
+                spec_nr=_next_spec_nr(src.employee_id, pay_date), note=src.note, status="draft")
+    for line in src.lines:
+        if not line.salary_type.active:
+            continue
+        p.lines.append(PayslipLine(salary_type_id=line.salary_type_id, description=line.description,
+                                   quantity=line.quantity, rate=line.rate, amount=line.amount,
+                                   sort_order=line.sort_order))
+    db.session.add(p)
+    return p
+
+
+@app.route("/payroll/payslips/<int:payslip_id>/copy", methods=["POST"])
+@login_required
+@admin_required
+def payroll_payslip_copy(payslip_id):
+    src = Payslip.query.get_or_404(payslip_id)
+    p = _copy_payslip(src)
+    db.session.commit()
+    _audit("payslip_copy", f"from={src.id} to={p.id}")
+    flash(_payroll_lang(f"Kopierat till {p.period}", f"Copied to {p.period}"), "success")
+    return redirect(url_for("payroll_payslip", payslip_id=p.id))
+
+
+@app.route("/payroll/copy-latest", methods=["POST"])
+@login_required
+@admin_required
+def payroll_copy_latest():
+    """Copy every active employee's latest lönebesked to the following month."""
+    created = 0
+    for emp in Employee.query.filter_by(active=True).all():
+        latest = (Payslip.query.filter_by(employee_id=emp.id)
+                  .order_by(Payslip.pay_date.desc(), Payslip.id.desc()).first())
+        if latest:
+            _copy_payslip(latest)
+            created += 1
+    db.session.commit()
+    _audit("payslip_copy_latest", f"created={created}")
+    flash(_payroll_lang(f"{created} lönebesked kopierade", f"{created} payslips copied"), "success")
+    return redirect(url_for("payroll_index"))
+
+
+@app.route("/payroll/payslips/<int:payslip_id>", methods=["GET", "POST"])
+@login_required
+@admin_required
+def payroll_payslip(payslip_id):
+    p = Payslip.query.get_or_404(payslip_id)
+    if request.method == "POST":
+        if p.is_locked:
+            flash(_payroll_lang("Lönebeskedet är låst", "Payslip is locked"), "error")
+            return redirect(url_for("payroll_payslip", payslip_id=p.id))
+        f = request.form
+        p.period = (f.get("period") or p.period).strip()[:7]
+        new_pay_date = _safe_date(f.get("pay_date")) or p.pay_date
+        if new_pay_date.strftime("%Y%m") != p.pay_date.strftime("%Y%m"):
+            p.spec_nr = _next_spec_nr(p.employee_id, new_pay_date, exclude_id=p.id)
+        p.pay_date = new_pay_date
+        p.note = (f.get("note") or "").strip()
+        types = {st.id: st for st in SalaryType.query.all()}
+        p.lines.clear()
+        ids, descs = f.getlist("salary_type_id"), f.getlist("description")
+        qtys, rates, amounts = f.getlist("quantity"), f.getlist("rate"), f.getlist("amount")
+        for i, st_id in enumerate(ids):
+            st = types.get(_safe_int(st_id))
+            if not st:
+                continue
+            quantity = _decimal_input(qtys[i] if i < len(qtys) else "")
+            rate = _decimal_input(rates[i] if i < len(rates) else "")
+            amount = line_amount(quantity, rate, _decimal_input(amounts[i] if i < len(amounts) else "") or 0.0)
+            if not amount and quantity is None:
+                continue
+            p.lines.append(PayslipLine(
+                salary_type_id=st.id,
+                description=(descs[i] if i < len(descs) else "").strip() or st.name,
+                quantity=quantity, rate=rate, amount=amount, sort_order=i))
+        db.session.commit()
+        _audit("payslip_update", f"payslip_id={p.id}")
+        flash(_payroll_lang("Sparat", "Saved"), "success")
+        return redirect(url_for("payroll_payslip", payslip_id=p.id))
+
+    summary = payslip_summary(p)
+    salary_types = SalaryType.query.filter_by(active=True).order_by(SalaryType.sort_order, SalaryType.code).all()
+    agi = _agi_report(p.agi_period)
+    warnings = []
+    if p.pay_date.weekday() >= 5 or p.pay_date in swedish_bank_holidays(p.pay_date.year):
+        warnings.append(_payroll_lang("Utbetalningsdagen är inte en bankdag.",
+                                      "The pay date is not a banking day."))
+    if not p.employee.bank_account:
+        warnings.append(_payroll_lang("Den anställde saknar bankkonto.", "The employee has no bank account."))
+    rows = salary_voucher_rows(p, _payroll_accounts())
+    salary_types_json = json.dumps({st.id: {"name": st.name, "rate": st.default_rate, "unit": st.unit}
+                                    for st in salary_types}).replace("<", "\\u003c")
+    return render_template("payroll/payslip.html", p=p, summary=summary, salary_types=salary_types,
+                           salary_types_json=salary_types_json,
+                           kinds=KINDS, agi=agi, warnings=warnings, voucher_rows=rows,
+                           voucher_description=salary_voucher_description(p),
+                           balanced=voucher_balanced(rows))
+
+
+@app.route("/payroll/payslips/<int:payslip_id>/pdf")
+@login_required
+@admin_required
+def payroll_payslip_pdf(payslip_id):
+    p = Payslip.query.get_or_404(payslip_id)
+    pdf = generate_payslip_pdf(p, app.config, ytd=_payslip_ytd(p))
+    return send_file(io.BytesIO(pdf), mimetype="application/pdf",
+                     as_attachment=request.args.get("download") == "1",
+                     download_name=_payslip_filename(p))
+
+
+def _payslip_filename(p):
+    return f"Lonebesked_{secure_filename(p.employee.name)}_{p.period}.pdf"
+
+
+@app.route("/payroll/payslips/<int:payslip_id>/email", methods=["POST"])
+@login_required
+@admin_required
+def payroll_payslip_email(payslip_id):
+    p = Payslip.query.get_or_404(payslip_id)
+    to = _sanitize_header((request.form.get("to") or "").strip())
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", to):
+        flash(_payroll_lang("Ogiltig e-postadress", "Invalid email address"), "error")
+        return redirect(url_for("payroll_payslip", payslip_id=p.id))
+    pdf = generate_payslip_pdf(p, app.config, ytd=_payslip_ytd(p))
+    filename = _payslip_filename(p)
+    with open(os.path.join(_payroll_folder("payslips"), f"{p.id}_{filename}"), "wb") as fh:
+        fh.write(pdf)
+    try:
+        _send_payslip_email(p, to, pdf, filename, app.config)
+    except Exception as e:
+        app.logger.error("Payslip email failed: %s", e)
+        flash(_payroll_lang(f"Kunde inte skicka: {e}", f"Could not send: {e}"), "error")
+        return redirect(url_for("payroll_payslip", payslip_id=p.id))
+    p.emailed_to = to
+    p.emailed_at = datetime.utcnow()
+    db.session.commit()
+    _audit("payslip_emailed", f"payslip_id={p.id} to={to}")
+    flash(_payroll_lang(f"Lönebesked skickat till {to}", f"Payslip sent to {to}"), "success")
+    return redirect(url_for("payroll_payslip", payslip_id=p.id))
+
+
+def _send_payslip_email(p, to, pdf_bytes, filename, config):
+    company = _sanitize_header(config["COMPANY_NAME"])
+    msg = MIMEMultipart()
+    msg["From"] = _sanitize_header(config["SMTP_FROM"])
+    msg["To"] = to
+    msg["Subject"] = f"Lönebesked {p.period} – {company}"
+    msg.attach(MIMEText(
+        f"Hej {p.employee.first_name},\n\nBifogat finner du ditt lönebesked för {p.period} "
+        f"med utbetalning {p.pay_date.isoformat()}.\n\nMed vänliga hälsningar,\n{company}\n",
+        "plain", "utf-8"))
+    part = MIMEBase("application", "pdf")
+    part.set_payload(pdf_bytes)
+    encoders.encode_base64(part)
+    part.add_header("Content-Disposition", f'attachment; filename="{filename}"')
+    msg.attach(part)
+    with smtplib.SMTP(config["SMTP_HOST"], config["SMTP_PORT"]) as server:
+        server.starttls(context=ssl.create_default_context())
+        server.login(config["SMTP_USER"], config["SMTP_PASSWORD"])
+        server.sendmail(msg["From"], [to], msg.as_string())
+
+
+@app.route("/payroll/payslips/<int:payslip_id>/approve", methods=["POST"])
+@login_required
+@admin_required
+def payroll_payslip_approve(payslip_id):
+    """Register for payment: locks the slip and puts it in the payment run."""
+    p = Payslip.query.get_or_404(payslip_id)
+    back = redirect(url_for("payroll_payslip", payslip_id=p.id))
+    if p.status != "draft":
+        return back
+    if not p.lines:
+        flash(_payroll_lang("Lönebeskedet har inga rader", "The payslip has no lines"), "error")
+        return back
+    if not voucher_balanced(salary_voucher_rows(p, _payroll_accounts())):
+        flash(_payroll_lang("Konteringen balanserar inte", "The voucher does not balance"), "error")
+        return back
+    if net_pay(p) <= 0:
+        flash(_payroll_lang("Nettolönen måste vara positiv", "Net pay must be positive"), "error")
+        return back
+    if not (p.employee.bank_clearing and p.employee.bank_account):
+        flash(_payroll_lang("Den anställde saknar clearing- och kontonummer",
+                            "The employee has no clearing and account number"), "error")
+        return back
+    agi = _agi_report(p.agi_period)
+    if agi and agi.status not in ("open", "generated"):
+        flash(_payroll_lang(f"AGI för {agi.period_display} är redan inlämnad",
+                            f"The AGI for {agi.period_display} is already submitted"), "error")
+        return back
+    p.status = "approved"
+    db.session.commit()
+    _audit("payslip_approved", f"payslip_id={p.id} net={net_pay(p)}")
+    flash(_payroll_lang("Registrerad för betalning — finns nu i betalningsunderlaget",
+                        "Registered for payment — now in the payment run"), "success")
+    return back
+
+
+@app.route("/payroll/payslips/<int:payslip_id>/reopen", methods=["POST"])
+@login_required
+@admin_required
+def payroll_payslip_reopen(payslip_id):
+    p = Payslip.query.get_or_404(payslip_id)
+    agi = _agi_report(p.agi_period)
+    if p.status != "approved" or p.payment_file_id:
+        flash(_payroll_lang("Kan inte låsas upp — redan i en betalningsfil",
+                            "Cannot reopen — already in a payment file"), "error")
+    elif agi and agi.status not in ("open", "generated"):
+        flash(_payroll_lang("Kan inte låsas upp — AGI är inlämnad",
+                            "Cannot reopen — AGI already submitted"), "error")
+    else:
+        p.status = "draft"
+        if agi and agi.status == "generated":
+            agi.status = "open"   # the generated file no longer matches
+        db.session.commit()
+        _audit("payslip_reopened", f"payslip_id={p.id}")
+    return redirect(url_for("payroll_payslip", payslip_id=p.id))
+
+
+@app.route("/payroll/payslips/<int:payslip_id>/delete", methods=["POST"])
+@login_required
+@admin_required
+def payroll_payslip_delete(payslip_id):
+    p = Payslip.query.get_or_404(payslip_id)
+    if p.status != "draft":
+        flash(_payroll_lang("Endast utkast kan tas bort", "Only drafts can be deleted"), "error")
+        return redirect(url_for("payroll_payslip", payslip_id=p.id))
+    db.session.delete(p)
+    db.session.commit()
+    _audit("payslip_deleted", f"payslip_id={payslip_id}")
+    flash(_payroll_lang("Utkast borttaget", "Draft deleted"), "success")
+    return redirect(url_for("payroll_index"))
+
+
+@app.route("/payroll/payslips/<int:payslip_id>/book", methods=["POST"])
+@login_required
+@admin_required
+def payroll_payslip_book(payslip_id):
+    """Retry the salary voucher after a failed Fortnox posting."""
+    p = Payslip.query.get_or_404(payslip_id)
+    if p.status == "paid" and not p.voucher_ref:
+        try:
+            ref = _book_payslip(p)
+            flash(_payroll_lang(f"Bokförd, verifikat {ref}", f"Booked, voucher {ref}"), "success")
+        except Exception as e:
+            flash(f"Fortnox: {e}", "error")
+    return redirect(url_for("payroll_payslip", payslip_id=p.id))
+
+
+# ── AGI ──
+
+def _agi_view(period):
+    if not re.fullmatch(r"\d{6}", period or ""):
+        abort(404)
+    payslips = _payslips_in_agi_period(period, include_drafts=True)
+    final = [p for p in payslips if p.status != "draft"]
+    return payslips, final
+
+
+@app.route("/payroll/agi/<period>")
+@login_required
+@admin_required
+def payroll_agi(period):
+    payslips, final = _agi_view(period)
+    report = _agi_report(period)
+    totals = agi_totals(final)
+    values = {p.id: payslip_agi_values(p) for p in payslips}
+    codes = sorted({c for v in values.values() for c in v})
+    fields = {f.code: f for f in AgiFieldCode.query.filter(AgiFieldCode.code.in_(codes)).all()} if codes else {}
+    tax_rows = diff = None
+    if report and report.skv_amount:
+        tax_rows, diff = tax_voucher_rows(final, report.skv_amount, _payroll_accounts())
+    return render_template("payroll/agi.html", period=period,
+                           period_display=f"{period[:4]}-{period[4:]}",
+                           payslips=payslips, final=final, report=report, totals=totals,
+                           values=values, codes=codes, fields=fields,
+                           drafts=[p for p in payslips if p.status == "draft"],
+                           tax_rows=tax_rows, diff=diff, tolerance=ROUNDING_TOLERANCE,
+                           default_ocr=_payroll_setting("payroll_skv_ocr"),
+                           default_date=skv_due_date(period))
+
+
+@app.route("/payroll/agi/<period>/xml", methods=["POST"])
+@login_required
+@admin_required
+def payroll_agi_xml(period):
+    payslips, final = _agi_view(period)
+    back = redirect(url_for("payroll_agi", period=period))
+    if len(final) != len(payslips):
+        flash(_payroll_lang("Det finns utkast i perioden — registrera eller ta bort dem först",
+                            "There are drafts in the period — approve or delete them first"), "error")
+        return back
+    if not final:
+        flash(_payroll_lang("Inga lönebesked i perioden", "No payslips in the period"), "error")
+        return back
+    report = _agi_report(period, create=True)
+    if report.status not in ("open", "generated"):
+        # Already submitted: hand back exactly what was filed.
+        path = os.path.join(_payroll_folder("agi"), report.xml_filename or "")
+        if report.xml_filename and os.path.exists(path):
+            return send_file(path, as_attachment=True, download_name=report.xml_filename,
+                             mimetype="application/xml")
+        flash(_payroll_lang("Filen saknas", "File missing"), "error")
+        return back
+    contact = {k: _payroll_setting(f"payroll_agi_contact_{k}") for k in ("name", "phone", "email")}
+    if not all(contact.values()) or not app.config.get("COMPANY_ORG_NR"):
+        flash(_payroll_lang("Fyll i AGI-kontaktperson (namn, telefon, e-post) under Löneinställningar och COMPANY_ORG_NR",
+                            "Fill in the AGI contact (name, phone, email) in payroll settings, and COMPANY_ORG_NR"), "error")
+        return back
+    fields = {f.code: f for f in AgiFieldCode.query.all()}
+    try:
+        xml = build_agi_xml(period, final, fields,
+                            {"org_nr": app.config["COMPANY_ORG_NR"], "program": "onedesk"}, contact)
+    except ValueError as e:
+        flash(str(e), "error")
+        return back
+    totals = agi_totals(final)
+    report.xml_filename = f"AGI_{period}.xml"
+    with open(os.path.join(_payroll_folder("agi"), report.xml_filename), "wb") as fh:
+        fh.write(xml)
+    report.status = "generated"
+    report.generated_at = datetime.utcnow()
+    report.sum_ag_fees = totals["ag_fees"]
+    report.sum_tax = totals["tax"]
+    db.session.commit()
+    _audit("agi_generated", f"period={period} ag_fees={totals['ag_fees']} tax={totals['tax']}")
+    return send_file(io.BytesIO(xml), as_attachment=True, download_name=report.xml_filename,
+                     mimetype="application/xml")
+
+
+@app.route("/payroll/agi/<period>/submitted", methods=["POST"])
+@login_required
+@admin_required
+def payroll_agi_submitted(period):
+    report = _agi_report(period)
+    if report and report.status == "generated":
+        report.status = "submitted"
+        report.submitted_at = datetime.utcnow()
+        db.session.commit()
+        _audit("agi_submitted", f"period={period}")
+        flash(_payroll_lang("Import kvitterad", "Import acknowledged"), "success")
+    return redirect(url_for("payroll_agi", period=period))
+
+
+@app.route("/payroll/agi/<period>/assess", methods=["POST"])
+@login_required
+@admin_required
+def payroll_agi_assess(period):
+    """Skatteverket's amount and date → registered for payment."""
+    report = _agi_report(period)
+    back = redirect(url_for("payroll_agi", period=period))
+    if not report or report.status not in ("submitted", "approved") or report.payment_file_id:
+        return back
+    amount = _safe_float(request.form.get("skv_amount"), 0.0)
+    skv_date = _safe_date(request.form.get("skv_date"))
+    ocr = payroll_digits(request.form.get("skv_ocr"))
+    if amount <= 0 or not skv_date:
+        flash(_payroll_lang("Belopp och datum krävs", "Amount and date are required"), "error")
+        return back
+    if not ocr:
+        flash(_payroll_lang("OCR-nummer krävs", "OCR number is required"), "error")
+        return back
+    report.skv_amount = round(amount, 2)
+    report.skv_date = skv_date
+    report.skv_ocr = ocr
+    report.status = "approved"
+    db.session.commit()
+    expected = (report.sum_ag_fees or 0) + (report.sum_tax or 0)
+    _audit("agi_assessed", f"period={period} amount={amount} date={skv_date}")
+    if abs(amount - expected) > ROUNDING_TOLERANCE:
+        flash(_payroll_lang(
+            f"Obs: beloppet avviker från AGI ({expected:,.0f} kr). Skillnaden bokförs mot 2731.".replace(",", " "),
+            f"Note: the amount differs from the AGI ({expected:,.0f} kr). The difference is booked to 2731."), "warning")
+    else:
+        flash(_payroll_lang("Registrerad för betalning", "Registered for payment"), "success")
+    return back
+
+
+@app.route("/payroll/agi/<period>/book", methods=["POST"])
+@login_required
+@admin_required
+def payroll_agi_book(period):
+    report = _agi_report(period)
+    if report and report.status == "paid" and not report.voucher_ref:
+        try:
+            ref = _book_agi(report)
+            flash(_payroll_lang(f"Bokförd, verifikat {ref}", f"Booked, voucher {ref}"), "success")
+        except Exception as e:
+            flash(f"Fortnox: {e}", "error")
+    return redirect(url_for("payroll_agi", period=period))
+
+
+# ── Payroll settings, lönearter, redovisningstyper ──
+
+@app.route("/settings/payroll", methods=["GET", "POST"])
+@login_required
+@admin_required
+def payroll_settings():
+    if request.method == "POST":
+        for key in PAYROLL_SETTING_KEYS:
+            Settings.set(key, (request.form.get(key) or "").strip())
+        _audit("payroll_settings_update")
+        flash(_payroll_lang("Sparat", "Saved"), "success")
+        return redirect(url_for("payroll_settings"))
+    values = {k: _payroll_setting(k) for k in PAYROLL_SETTING_KEYS}
+    return render_template("settings/payroll.html", keys=PAYROLL_SETTING_KEYS, values=values)
+
+
+@app.route("/settings/salary-types", methods=["GET", "POST"])
+@login_required
+@admin_required
+def salary_types():
+    if request.method == "POST":
+        f = request.form
+        action = f.get("action")
+        st = SalaryType.query.get(_safe_int(f.get("st_id"))) if f.get("st_id") else None
+        if action in ("new", "save"):
+            code = (f.get("code") or "").strip()
+            name = (f.get("name") or "").strip()
+            if not code or not name or f.get("kind") not in KINDS:
+                flash(_payroll_lang("Kod, namn och typ krävs", "Code, name and kind are required"), "error")
+                return redirect(url_for("salary_types"))
+            clash = SalaryType.query.filter(SalaryType.code == code,
+                                            SalaryType.id != (st.id if st else 0)).first()
+            if clash:
+                flash(_payroll_lang(f"Löneart {code} finns redan", f"Salary type {code} already exists"), "error")
+                return redirect(url_for("salary_types"))
+            if action == "new":
+                st = SalaryType(active=True)
+                db.session.add(st)
+            if st:
+                st.code = code
+                st.name = name
+                st.kind = f.get("kind")
+                st.agi_field_id = _safe_int(f.get("agi_field_id")) or None
+                st.debit_account = (f.get("debit_account") or "").strip()
+                st.credit_account = (f.get("credit_account") or "").strip()
+                st.default_rate = _safe_float(f.get("default_rate"), 0.0) or None
+                st.unit = (f.get("unit") or "").strip()
+                st.sort_order = _safe_int(f.get("sort_order"))
+                db.session.commit()
+                _audit(f"salary_type_{action}", code)
+                flash(_payroll_lang("Löneart sparad", "Salary type saved"), "success")
+        elif action in ("activate", "deactivate") and st:
+            st.active = action == "activate"
+            db.session.commit()
+        elif action == "delete" and st:
+            if PayslipLine.query.filter_by(salary_type_id=st.id).count():
+                flash(_payroll_lang("Används — inaktivera i stället", "In use — deactivate instead"), "error")
+            else:
+                db.session.delete(st)
+                db.session.commit()
+                _audit("salary_type_delete", st.code)
+        return redirect(url_for("salary_types"))
+    types = SalaryType.query.order_by(SalaryType.sort_order, SalaryType.code).all()
+    usage = {st.id: PayslipLine.query.filter_by(salary_type_id=st.id).count() for st in types}
+    fields = (AgiFieldCode.query.filter_by(selectable=True, active=True)
+              .order_by(AgiFieldCode.code).all())
+    return render_template("settings/salary_types.html", types=types, usage=usage,
+                           kinds=KINDS, fields=fields)
+
+
+@app.route("/settings/agi-codes", methods=["GET", "POST"])
+@login_required
+@admin_required
+def agi_codes():
+    if request.method == "POST":
+        f = request.form
+        action = f.get("action")
+        if action == "new":
+            code = payroll_digits(f.get("code")).zfill(3)
+            element = (f.get("element") or "").strip()
+            if not re.fullmatch(r"\d{3}", code) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9]*", element):
+                flash(_payroll_lang("Ogiltig fältkod eller elementnamn", "Invalid field code or element"), "error")
+            elif AgiFieldCode.query.filter_by(code=code).first():
+                flash(_payroll_lang(f"Fältkod {code} finns redan", f"Field {code} already exists"), "error")
+            else:
+                vt = f.get("value_type") if f.get("value_type") in ("amount", "checkbox", "text") else "amount"
+                db.session.add(AgiFieldCode(code=code, element=element, value_type=vt,
+                                            description=(f.get("description") or "").strip(),
+                                            selectable=True, ag_base=f.get("ag_base") == "1", active=True))
+                db.session.commit()
+                _audit("agi_code_create", code)
+        else:
+            fc = AgiFieldCode.query.get(_safe_int(f.get("field_id")))
+            if fc and action == "save":
+                fc.description = (f.get("description") or "").strip()
+                fc.selectable = f.get("selectable") == "1"
+                fc.ag_base = f.get("ag_base") == "1"
+                fc.active = f.get("active") == "1"
+                db.session.commit()
+                _audit("agi_code_update", fc.code)
+        return redirect(url_for("agi_codes"))
+    codes = AgiFieldCode.query.order_by(AgiFieldCode.code).all()
+    used = {st.agi_field_id for st in SalaryType.query.all()}
+    return render_template("settings/agi_codes.html", codes=codes, used=used)
+
+
+def _seed_payroll():
+    """Seed Skatteverket's field codes and a starting set of lönearter (only when empty)."""
+    if not AgiFieldCode.query.first():
+        for code, element, vt, desc in AGI_FIELD_SEED:
+            db.session.add(AgiFieldCode(
+                code=code, element=element, value_type=vt, description=desc,
+                selectable=agi_field_selectable(code, vt),
+                ag_base=code in AGI_AG_BASE_CODES, active=True))
+        db.session.commit()
+    if not SalaryType.query.first():
+        fields = {f.code: f.id for f in AgiFieldCode.query.all()}
+        for order, (code, name, kind, agi, debit, credit, rate, unit) in enumerate(SALARY_TYPE_SEED, start=1):
+            db.session.add(SalaryType(code=code, name=name, kind=kind, agi_field_id=fields.get(agi),
+                                      debit_account=debit, credit_account=credit, default_rate=rate,
+                                      unit=unit, sort_order=order * 10, active=True))
+        db.session.commit()
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -3150,6 +3993,7 @@ def init_db():
         db.session.commit()
 
         _seed_internal_codes()
+        _seed_payroll()
 
 
 def _seed_internal_codes():

@@ -11,6 +11,7 @@
   <form method="POST">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
+    {% if backlog or payslip_backlog or agi_backlog %}
     {% if backlog %}
     <div class="card" style="margin-bottom:16px;">
       <div class="card-title">{{ g.t.sup_select_invoices }}</div>
@@ -59,7 +60,52 @@
         </tfoot>
       </table>
     </div>
+    {% endif %}
 
+    {% if payslip_backlog or agi_backlog %}
+    <div class="card" style="margin-bottom:16px;">
+      <div class="card-title">{{ "Lön och skatt" if g.lang == "sv" else "Salary and tax" }}</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:10px;">
+        {{ "Betalas exakt på sitt eget datum — utbetalningsdag respektive Skatteverkets datum."
+           if g.lang == "sv" else
+           "Each executes on its own date — the pay date, or the date Skatteverket gave." }}
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:13px;">
+        <thead>
+          <tr>
+            <th style="width:32px;padding:8px 12px;border-bottom:1px solid var(--border);"></th>
+            {% for h in [("Mottagare","Payee"), ("Avser","Reference"), ("Datum","Date"), ("Konto","Account"), ("Belopp","Amount")] %}
+            <th style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);padding:8px 12px;text-align:left;border-bottom:1px solid var(--border);">{{ h[0] if g.lang == "sv" else h[1] }}</th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+        {% for p in payslip_backlog %}
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:8px 12px;"><input type="checkbox" name="payslip_ids" value="{{ p.id }}" checked></td>
+          <td style="padding:8px 12px;font-weight:600;">{{ p.employee.name }}</td>
+          <td style="padding:8px 12px;color:var(--muted);">{{ "Lön" if g.lang == "sv" else "Salary" }} {{ p.period }}</td>
+          <td style="padding:8px 12px;font-family:var(--mono);{% if p.pay_date < today %}color:var(--danger);{% endif %}">{{ p.pay_date }}</td>
+          <td style="padding:8px 12px;font-size:12px;color:var(--muted);">{{ p.employee.bank_display }}</td>
+          <td style="padding:8px 12px;font-family:var(--mono);">{{ net_pay(p)|fmt_amount }} SEK</td>
+        </tr>
+        {% endfor %}
+        {% for r in agi_backlog %}
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:8px 12px;"><input type="checkbox" name="agi_ids" value="{{ r.id }}" checked></td>
+          <td style="padding:8px 12px;font-weight:600;">Skatteverket</td>
+          <td style="padding:8px 12px;color:var(--muted);">AGI {{ r.period_display }} · OCR {{ r.skv_ocr }}</td>
+          <td style="padding:8px 12px;font-family:var(--mono);{% if r.skv_date < today %}color:var(--danger);{% endif %}">{{ r.skv_date }}</td>
+          <td style="padding:8px 12px;font-size:12px;color:var(--muted);">BG 5050-1055</td>
+          <td style="padding:8px 12px;font-family:var(--mono);">{{ r.skv_amount|fmt_amount }} SEK</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+    {% if backlog %}
     <div class="card" style="margin-bottom:16px;">
       <div class="form-group">
         <label class="form-label">{{ g.t.sup_payment_date }}</label>
@@ -67,6 +113,7 @@
                value="{{ today.isoformat() }}" min="{{ today.isoformat() }}">
       </div>
     </div>
+    {% endif %}
 
     <div style="display:flex;gap:10px;align-items:center;">
       <button type="submit" class="btn btn-primary">

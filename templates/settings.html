@@ -49,6 +49,18 @@
     </div>
   </div>
 
+  {% if current_user.is_admin %}
+  <div class="card" style="margin-bottom:16px;">
+    <div class="card-title">{{ "Lön" if g.lang == "sv" else "Payroll" }}</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <a href="{{ url_for('payroll_employees') }}" class="btn btn-secondary btn-sm">{{ "Anställda" if g.lang == "sv" else "Employees" }}</a>
+      <a href="{{ url_for('salary_types') }}" class="btn btn-secondary btn-sm">{{ "Lönearter" if g.lang == "sv" else "Salary types" }}</a>
+      <a href="{{ url_for('agi_codes') }}" class="btn btn-secondary btn-sm">{{ "Redovisningstyper (AGI)" if g.lang == "sv" else "AGI fields" }}</a>
+      <a href="{{ url_for('payroll_settings') }}" class="btn btn-secondary btn-sm">{{ "Konton och kontaktuppgifter" if g.lang == "sv" else "Accounts and contact" }}</a>
+    </div>
+  </div>
+  {% endif %}
+
   <!-- Setup guide -->
   <div class="card">
     <div class="card-title">{{ "Kom igång" if g.lang == "sv" else "Getting started" }}</div>

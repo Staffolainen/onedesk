@@ -1,0 +1,193 @@
+{% extends "base.html" %}
+{% from "payroll/_macros.html" import th, payslip_badge, voucher_table %}
+{% block title %}{{ "Lönebesked" if g.lang == "sv" else "Payslip" }} {{ p.employee.name }} {{ p.period }}{% endblock %}
+{% block page_title %}{{ "Lönebesked" if g.lang == "sv" else "Payslip" }} · {{ p.employee.name }} · {{ p.period }}{% endblock %}
+
+{% block topbar_actions %}
+  <a href="{{ url_for('payroll_index') }}" class="btn btn-ghost btn-sm">← {{ "Lönebesked" if g.lang == "sv" else "Payroll" }}</a>
+{% endblock %}
+
+{% block content %}
+{% set sv = g.lang == "sv" %}
+{% set locked = p.is_locked %}
+<div style="max-width:1000px;margin:0 auto;">
+
+  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
+    {{ payslip_badge(p.status) }}
+    {% if p.voucher_ref %}<span style="font-size:12px;color:var(--muted);">{{ "Verifikat" if sv else "Voucher" }} <span style="font-family:var(--mono);">{{ p.voucher_ref }}</span></span>{% endif %}
+    {% if p.payment_file %}<span style="font-size:12px;color:var(--muted);">{{ "Betalningsfil" if sv else "Payment file" }} <span style="font-family:var(--mono);">{{ p.payment_file.filename }}</span></span>{% endif %}
+    {% if p.emailed_at %}<span style="font-size:12px;color:var(--muted);">✉ {{ p.emailed_to }} · {{ p.emailed_at.strftime('%Y-%m-%d %H:%M') }}</span>{% endif %}
+  </div>
+
+  {% for w in warnings %}
+  <div class="card" style="margin-bottom:12px;border-color:var(--warning);color:var(--warning);font-size:13px;padding:10px 14px;">⚠ {{ w }}</div>
+  {% endfor %}
+
+  <form method="POST" id="slip-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="card" style="margin-bottom:16px;">
+      <div class="grid-3">
+        <div class="form-group"><label class="form-label">{{ "Avser perioden" if sv else "Period" }}</label>
+          <input type="month" name="period" class="form-control" value="{{ p.period }}" {% if locked %}disabled{% endif %}></div>
+        <div class="form-group"><label class="form-label">{{ "Utbetalningsdag" if sv else "Pay date" }}</label>
+          <input type="date" name="pay_date" class="form-control" value="{{ p.pay_date.isoformat() }}" {% if locked %}disabled{% endif %}></div>
+        <div class="form-group"><label class="form-label">{{ "AGI-period / spec.nr" if sv else "AGI period / spec no." }}</label>
+          <div style="padding:8px 0;font-family:var(--mono);">{{ p.agi_period }} · {{ "%03d"|format(p.spec_nr or 1) }}</div></div>
+      </div>
+      <div style="font-size:12px;color:var(--muted);">
+        {{ p.employee.personnummer_display }} · {{ "Konto" if sv else "Account" }} {{ p.employee.bank_display }} ·
+        {{ "Lönekonto" if sv else "Salary account" }} {{ p.employee.salary_account }} ·
+        {{ "Arb.avg" if sv else "Contrib." }} {{ "%.2f"|format((p.employee.ag_rate or 0) * 100) }} %
+        {% if p.employee.tax_table %}· {{ "Skattetabell" if sv else "Tax table" }} {{ p.employee.tax_table }}{% endif %}
+        · <a href="{{ url_for('payroll_employee_edit', employee_id=p.employee.id) }}">{{ g.t.edit }}</a>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px;padding:0;overflow:hidden;">
+      <div class="table-wrap">
+      <table style="width:100%;border-collapse:collapse;font-size:13px;min-width:720px;" id="lines">
+        <thead><tr>{{ th([("Löneart","Salary type"), ("Benämning","Description"), ("Antal","Qty",1), ("À-pris","Rate",1), ("Belopp","Amount",1), ("","")]) }}</tr></thead>
+        <tbody>
+        {% for line in p.lines %}
+        {% set st = line.salary_type %}
+        <tr style="border-bottom:1px solid var(--border);">
+          {% if locked %}
+          <td style="padding:6px 10px;font-family:var(--mono);">{{ st.code }} <span style="color:var(--muted);font-family:inherit;">{{ st.name }}</span></td>
+          <td style="padding:6px 10px;">{{ line.description }}</td>
+          <td style="padding:6px 10px;text-align:right;font-family:var(--mono);">{{ line.quantity if line.quantity is not none else "" }} {{ st.unit or "" }}</td>
+          <td style="padding:6px 10px;text-align:right;font-family:var(--mono);">{{ line.rate if line.rate is not none else "" }}</td>
+          <td style="padding:6px 10px;text-align:right;font-family:var(--mono);">{{ "−" if kinds[st.kind][0] < 0 else "" }}{{ "%.2f"|format(line.amount) }}</td>
+          <td></td>
+          {% else %}
+          {% include "payroll/_line_inputs.html" %}
+          {% endif %}
+        </tr>
+        {% endfor %}
+        {% if not locked %}
+        {% for _ in range(2 if p.lines else 4) %}{% set line = None %}{% set st = None %}
+        <tr style="border-bottom:1px solid var(--border);">{% include "payroll/_line_inputs.html" %}</tr>
+        {% endfor %}
+        {% endif %}
+        </tbody>
+      </table>
+      </div>
+      {% if not locked %}
+      <div style="padding:10px 14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <button type="button" class="btn btn-ghost btn-sm" onclick="addRow()">+ {{ "Rad" if sv else "Row" }}</button>
+        <span style="font-size:11px;color:var(--muted);">{{ "Belopp anges alltid positivt — lönearten ger tecknet (avdrag och skatt dras av). Antal × à-pris räknas om vid sparning." if sv else "Always enter amounts as positive — the salary type gives the sign. Qty × rate is recalculated on save." }}</span>
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="card" style="margin-bottom:16px;">
+      <div class="form-group" style="margin-bottom:0;"><label class="form-label">{{ "Meddelande på lönebeskedet" if sv else "Note on the payslip" }}</label>
+        <input type="text" name="note" class="form-control" value="{{ p.note or '' }}" {% if locked %}disabled{% endif %}></div>
+    </div>
+    {% if not locked %}
+    <div style="margin-bottom:24px;"><button type="submit" class="btn btn-primary">{{ g.t.save }}</button></div>
+    {% endif %}
+  </form>
+
+  <div class="grid-2" style="align-items:start;">
+    <div class="card">
+      <div class="card-title">{{ "Sammanställning" if sv else "Summary" }}</div>
+      <table style="width:100%;font-size:13px;">
+        {% for label, val in [
+          (("Kontant bruttolön","Cash gross pay"), summary.cash_gross),
+          (("Förmåner","Benefits"), summary.benefits),
+          (("Skatteavdrag","Tax withheld"), -summary.tax),
+          (("Skattefria ersättningar","Tax-free allowances"), summary.tax_free),
+          (("Nettolöneavdrag","Net deductions"), -summary.net_deduct),
+        ] %}{% if val %}
+        <tr><td style="padding:3px 0;">{{ label[0] if sv else label[1] }}</td>
+            <td style="padding:3px 0;text-align:right;font-family:var(--mono);">{{ "%.2f"|format(val) }}</td></tr>
+        {% endif %}{% endfor %}
+        <tr style="border-top:1px solid var(--border);"><td style="padding:6px 0;font-weight:700;">{{ "Att utbetala" if sv else "Net pay" }}</td>
+            <td style="padding:6px 0;text-align:right;font-family:var(--mono);font-weight:700;">{{ summary.net_pay|fmt_amount }}</td></tr>
+        <tr><td style="padding:3px 0;color:var(--muted);">{{ "Arbetsgivaravgift" if sv else "Employer contribution" }} ({{ summary.ag_base|fmt_amount }} × {{ "%.2f"|format((p.employee.ag_rate or 0) * 100) }} %)</td>
+            <td style="padding:3px 0;text-align:right;font-family:var(--mono);color:var(--muted);">{{ summary.ag_fee|fmt_amount }}</td></tr>
+      </table>
+      <div class="card-title" style="margin-top:16px;">AGI</div>
+      <div style="font-size:13px;font-family:var(--mono);">
+        {% for code, val in summary.agi.items() %}<div>FK{{ code }}: {{ val }}</div>{% else %}<div style="color:var(--muted);">—</div>{% endfor %}
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">{{ "Kontering" if sv else "Voucher" }} · {{ voucher_description }} · {{ p.pay_date }}</div>
+      {{ voucher_table(voucher_rows) }}
+      {% if not balanced %}<div style="color:var(--danger);font-size:12px;margin-top:8px;">⚠ {{ "Balanserar inte" if sv else "Does not balance" }}</div>{% endif %}
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px;">
+    <div class="card-title">{{ "Åtgärder" if sv else "Actions" }}</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px;">
+      <a href="{{ url_for('payroll_payslip_pdf', payslip_id=p.id) }}" target="_blank" class="btn btn-secondary btn-sm">PDF</a>
+      <form method="POST" action="{{ url_for('payroll_payslip_copy', payslip_id=p.id) }}" style="display:inline;">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="btn btn-secondary btn-sm">⧉ {{ "Kopiera till nästa månad" if sv else "Copy to next month" }}</button>
+      </form>
+      {% if p.status == "draft" %}
+      <form method="POST" action="{{ url_for('payroll_payslip_approve', payslip_id=p.id) }}" style="display:inline;"
+            onsubmit="return confirm('{{ 'Registrera för betalning? Lönebeskedet låses.' if sv else 'Register for payment? The payslip will be locked.' }}')">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="btn btn-primary btn-sm">✓ {{ "Registrera betalning" if sv else "Register payment" }}</button>
+      </form>
+      <form method="POST" action="{{ url_for('payroll_payslip_delete', payslip_id=p.id) }}" style="display:inline;"
+            onsubmit="return confirm('{{ 'Ta bort utkastet?' if sv else 'Delete the draft?' }}')">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="btn btn-danger btn-sm">✕</button>
+      </form>
+      {% elif p.status == "approved" and not p.payment_file_id %}
+      <a href="{{ url_for('payment_run') }}" class="btn btn-primary btn-sm">{{ "Till betalningsunderlag" if sv else "To payment run" }} →</a>
+      <form method="POST" action="{{ url_for('payroll_payslip_reopen', payslip_id=p.id) }}" style="display:inline;">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="btn btn-ghost btn-sm">↺ {{ "Lås upp" if sv else "Reopen" }}</button>
+      </form>
+      {% elif p.status == "approved" %}
+      <a href="{{ url_for('payment_run') }}" class="btn btn-secondary btn-sm">{{ "Kvittera betalningen i betalningsunderlaget" if sv else "Acknowledge the payment in the payment run" }} →</a>
+      {% elif p.status == "paid" and not p.voucher_ref %}
+      <form method="POST" action="{{ url_for('payroll_payslip_book', payslip_id=p.id) }}" style="display:inline;">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="btn btn-primary btn-sm">{{ "Bokför i Fortnox" if sv else "Book in Fortnox" }}</button>
+      </form>
+      {% endif %}
+      <a href="{{ url_for('payroll_agi', period=p.agi_period) }}" class="btn btn-ghost btn-sm">AGI {{ p.agi_period }} →</a>
+    </div>
+    <form method="POST" action="{{ url_for('payroll_payslip_email', payslip_id=p.id) }}" style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div style="flex:1;min-width:220px;">
+        <label class="form-label">{{ "Skicka lönebesked (PDF) till" if sv else "Email payslip (PDF) to" }}</label>
+        <input type="email" name="to" class="form-control" required value="{{ p.emailed_to or p.employee.email or '' }}">
+      </div>
+      <button type="submit" class="btn btn-secondary">✉ {{ "Skicka" if sv else "Send" }}</button>
+    </form>
+  </div>
+</div>
+
+{% if not locked %}
+<template id="row-tpl"><tr style="border-bottom:1px solid var(--border);">{% set line = None %}{% set st = None %}{% include "payroll/_line_inputs.html" %}</tr></template>
+<script>
+  const TYPES = {{ salary_types_json|safe }};
+  function onType(sel) {
+    const t = TYPES[sel.value]; if (!t) return;
+    const tr = sel.closest('tr');
+    const desc = tr.querySelector('[name=description]');
+    if (!desc.value) desc.value = t.name;
+    const rate = tr.querySelector('[name=rate]');
+    if (!rate.value && t.rate) rate.value = t.rate;
+    tr.querySelector('.unit').textContent = t.unit || '';
+  }
+  function recalc(el) {
+    const tr = el.closest('tr');
+    const q = parseFloat(tr.querySelector('[name=quantity]').value.replace(',', '.'));
+    const r = parseFloat(tr.querySelector('[name=rate]').value.replace(',', '.'));
+    if (!isNaN(q) && !isNaN(r)) tr.querySelector('[name=amount]').value = (q * r).toFixed(2);
+  }
+  function addRow() {
+    document.querySelector('#lines tbody').appendChild(document.getElementById('row-tpl').content.cloneNode(true));
+  }
+</script>
+{% endif %}
+{% endblock %}

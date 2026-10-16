@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% from "payroll/_macros.html" import th, payslip_badge, agi_badge, voucher_table %}
+{% block title %}AGI {{ period_display }}{% endblock %}
+{% block page_title %}{{ "Arbetsgivardeklaration" if g.lang == "sv" else "Employer declaration" }} · {{ period_display }}{% endblock %}
+
+{% block topbar_actions %}
+  <a href="{{ url_for('payroll_index') }}" class="btn btn-ghost btn-sm">← {{ "Lönebesked" if g.lang == "sv" else "Payroll" }}</a>
+{% endblock %}
+
+{% block content %}
+{% set sv = g.lang == "sv" %}
+{% set st = report.status if report else "open" %}
+<div style="max-width:960px;margin:0 auto;">
+
+  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
+    {{ agi_badge(report) }}
+    {% if report and report.voucher_ref %}<span style="font-size:12px;color:var(--muted);">{{ "Verifikat" if sv else "Voucher" }} <span style="font-family:var(--mono);">{{ report.voucher_ref }}</span></span>{% endif %}
+  </div>
+
+  {% if drafts %}
+  <div class="card" style="margin-bottom:12px;border-color:var(--warning);color:var(--warning);font-size:13px;padding:10px 14px;">
+    ⚠ {{ "Utkast i perioden — registrera betalning eller ta bort dem innan AGI-filen skapas:" if sv else "Drafts in the period — register payment or delete them before creating the AGI file:" }}
+    {% for p in drafts %}<a href="{{ url_for('payroll_payslip', payslip_id=p.id) }}">{{ p.employee.name }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+  </div>
+  {% endif %}
+
+  <div class="card" style="margin-bottom:16px;padding:0;overflow:hidden;">
+    <div class="table-wrap">
+    <table style="width:100%;border-collapse:collapse;font-size:13px;min-width:600px;">
+      <thead><tr>
+        {{ th([("Betalningsmottagare","Payee"), ("Spec","Spec")]) }}
+        {% for c in codes %}<th title="{{ fields[c].description if fields.get(c) else '' }}" style="font-family:var(--mono);font-size:9px;letter-spacing:1px;color:var(--muted);padding:8px 10px;text-align:right;border-bottom:1px solid var(--border);">FK{{ c }}</th>{% endfor %}
+        {{ th([("Status","Status")]) }}
+      </tr></thead>
+      <tbody>
+      {% for p in payslips %}
+      <tr style="border-bottom:1px solid var(--border);{% if p.status == 'draft' %}opacity:0.55;{% endif %}">
+        <td style="padding:8px 10px;"><a href="{{ url_for('payroll_payslip', payslip_id=p.id) }}">{{ p.employee.name }}</a>
+          <span style="color:var(--muted);font-family:var(--mono);font-size:12px;">{{ p.employee.personnummer }}</span></td>
+        <td style="padding:8px 10px;font-family:var(--mono);">{{ "%03d"|format(p.spec_nr or 1) }}</td>
+        {% for c in codes %}<td style="padding:8px 10px;text-align:right;font-family:var(--mono);">{{ values[p.id].get(c, "") }}</td>{% endfor %}
+        <td style="padding:8px 10px;">{{ payslip_badge(p.status) }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="3" style="padding:16px;color:var(--muted);">{{ "Inga lönebesked med utbetalning denna månad." if sv else "No payslips paid out this month." }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    <div style="display:flex;gap:24px;flex-wrap:wrap;padding:12px 14px;font-size:13px;border-top:1px solid var(--border);">
+      <div>{{ "Underlag arbetsgivaravgifter" if sv else "Contribution base" }}: <strong style="font-family:var(--mono);">{{ totals.ag_base|fmt_amount }}</strong></div>
+      <div>FK487: <strong style="font-family:var(--mono);">{{ totals.ag_fees|fmt_amount }}</strong></div>
+      <div>FK497: <strong style="font-family:var(--mono);">{{ totals.tax|fmt_amount }}</strong></div>
+      <div>{{ "Att betala" if sv else "To pay" }}: <strong style="font-family:var(--mono);">{{ totals.total|fmt_amount }}</strong></div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:16px;">
+    <div class="card-title">1. {{ "AGI-fil" if sv else "AGI file" }}</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+      <form method="POST" action="{{ url_for('payroll_agi_xml', period=period) }}" style="display:inline;">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="btn {% if st == 'open' %}btn-primary{% else %}btn-secondary{% endif %} btn-sm" {% if drafts or not final %}disabled{% endif %}>
+          ↓ {% if st in ('open', 'generated') %}{{ "Skapa AGI-fil" if sv else "Create AGI file" }}{% else %}{{ "Ladda ner inlämnad fil" if sv else "Download filed file" }}{% endif %}
+        </button>
+      </form>
+      {% if st == "generated" %}
+      <form method="POST" action="{{ url_for('payroll_agi_submitted', period=period) }}" style="display:inline;"
+            onsubmit="return confirm('{{ 'Har filen importerats och skickats in hos Skatteverket?' if sv else 'Has the file been imported and submitted at Skatteverket?' }}')">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="btn btn-primary btn-sm">✓ {{ "Kvittera import" if sv else "Acknowledge import" }}</button>
+      </form>
+      {% endif %}
+      {% if report and report.generated_at %}<span style="font-size:12px;color:var(--muted);">{{ "Skapad" if sv else "Created" }} {{ report.generated_at.strftime('%Y-%m-%d %H:%M') }}</span>{% endif %}
+      {% if report and report.submitted_at %}<span style="font-size:12px;color:var(--muted);">· {{ "Inlämnad" if sv else "Submitted" }} {{ report.submitted_at.strftime('%Y-%m-%d %H:%M') }}</span>{% endif %}
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-top:10px;line-height:1.6;">
+      {{ "Testa gärna filen i Skatteverkets tjänst ”Testa arbetsgivardeklaration” och ladda sedan upp den i e-tjänsten Arbetsgivardeklaration (Lämna via fil). Lönebesked i perioden kan inte låsas upp när importen är kvitterad." if sv else
+         "Optionally validate the file in Skatteverket's test service, then upload it in the Arbetsgivardeklaration e-service (submit by file). Payslips in the period cannot be reopened once the import is acknowledged." }}
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:16px;{% if st not in ('submitted', 'approved', 'paid') %}opacity:0.55;{% endif %}">
+    <div class="card-title">2. {{ "Betalning till Skatteverket" if sv else "Payment to Skatteverket" }}</div>
+    {% if st in ('submitted', 'approved') and not (report and report.payment_file_id) %}
+    <form method="POST" action="{{ url_for('payroll_agi_assess', period=period) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="grid-3">
+        <div class="form-group"><label class="form-label">{{ "Belopp enligt Skatteverket" if sv else "Amount per Skatteverket" }}</label>
+          <input type="number" step="0.01" name="skv_amount" class="form-control mono" required value="{{ report.skv_amount if report.skv_amount else '' }}" placeholder="{{ (report.sum_ag_fees or 0) + (report.sum_tax or 0) }}">
+          <div style="font-size:11px;color:var(--muted);margin-top:4px;">{{ "Enligt AGI" if sv else "Per AGI" }}: {{ ((report.sum_ag_fees or 0) + (report.sum_tax or 0))|fmt_amount }}</div></div>
+        <div class="form-group"><label class="form-label">{{ "Betalningsdag" if sv else "Payment date" }}</label>
+          <input type="date" name="skv_date" class="form-control" required value="{{ (report.skv_date or default_date).isoformat() }}"></div>
+        <div class="form-group"><label class="form-label">OCR</label>
+          <input type="text" name="skv_ocr" class="form-control mono" required value="{{ report.skv_ocr or default_ocr }}"></div>
+      </div>
+      <button type="submit" class="btn btn-primary btn-sm">✓ {{ "Registrera betalning" if sv else "Register payment" }}</button>
+      {% if st == 'approved' %}<a href="{{ url_for('payment_run') }}" class="btn btn-secondary btn-sm">{{ "Till betalningsunderlag" if sv else "To payment run" }} →</a>{% endif %}
+    </form>
+    {% elif report and report.skv_amount %}
+    <div style="font-size:13px;">
+      <span style="font-family:var(--mono);font-weight:700;">{{ report.skv_amount|fmt_amount }} kr</span> ·
+      {{ report.skv_date }} · BG 5050-1055 · OCR <span style="font-family:var(--mono);">{{ report.skv_ocr }}</span>
+      {% if report.payment_file %}· {{ report.payment_file.filename }}{% endif %}
+    </div>
+    {% if st == 'approved' %}<div style="margin-top:10px;"><a href="{{ url_for('payment_run') }}" class="btn btn-secondary btn-sm">{{ "Kvittera betalningen i betalningsunderlaget" if sv else "Acknowledge the payment in the payment run" }} →</a></div>{% endif %}
+    {% if st == 'paid' and not report.voucher_ref %}
+    <form method="POST" action="{{ url_for('payroll_agi_book', period=period) }}" style="margin-top:10px;">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit" class="btn btn-primary btn-sm">{{ "Bokför i Fortnox" if sv else "Book in Fortnox" }}</button>
+    </form>
+    {% endif %}
+    {% else %}
+    <div style="font-size:13px;color:var(--muted);">{{ "Tillgängligt när importen är kvitterad." if sv else "Available once the import is acknowledged." }}</div>
+    {% endif %}
+  </div>
+
+  {% if tax_rows %}
+  <div class="card">
+    <div class="card-title">{{ "Kontering" if sv else "Voucher" }} · {{ "Skatt och arbetsgivaravgifter" if sv else "Tax and contributions" }} {{ period_display }} · {{ report.skv_date }}</div>
+    {{ voucher_table(tax_rows) }}
+    {% if diff and diff|abs > tolerance %}
+    <div style="color:var(--warning);font-size:12px;margin-top:8px;">⚠ {{ "Avviker" if sv else "Differs" }} {{ "%.2f"|format(diff) }} kr {{ "från upplupna avgifter och skatt — skillnaden ligger kvar på 2731." if sv else "from accrued contributions and tax — the difference stays on 2731." }}</div>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

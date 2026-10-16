@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% from "payroll/_macros.html" import th %}
+{% block title %}{{ "Redovisningstyper" if g.lang == "sv" else "AGI fields" }}{% endblock %}
+{% block page_title %}{{ "Redovisningstyper (Skatteverkets fältkoder)" if g.lang == "sv" else "AGI fields (Skatteverket field codes)" }}{% endblock %}
+
+{% block topbar_actions %}
+  <a href="{{ url_for('salary_types') }}" class="btn btn-ghost btn-sm">← {{ "Lönearter" if g.lang == "sv" else "Salary types" }}</a>
+{% endblock %}
+
+{% block content %}
+<div style="max-width:1000px;margin:0 auto;">
+  <div class="card" style="margin-bottom:16px;">
+    <div style="font-size:12px;color:var(--muted);margin-bottom:14px;line-height:1.6;">
+      {{ "Fältkoderna följer Skatteverkets XML-schema 1.1 för arbetsgivardeklaration på individnivå. ”Väljbar” styr om koden kan kopplas till en löneart; ”Arb.avg” om beloppet ingår i underlaget för arbetsgivaravgifter. Elementnamnet måste stämma exakt med schemat."
+         if g.lang == "sv" else
+         "Field codes follow Skatteverket's XML schema 1.1 for the employer declaration. “Selectable” decides whether a salary type can use the code; “Contrib.” whether the amount is part of the employer contribution base. The element name must match the schema exactly." }}
+    </div>
+    <div class="table-wrap">
+    <table style="width:100%;border-collapse:collapse;font-size:13px;min-width:820px;">
+      <thead><tr>{{ th([("Fältkod","Code"), ("XML-element","XML element"), ("Typ","Type"), ("Beskrivning","Description"), ("Väljbar","Selectable"), ("Arb.avg","Contrib."), ("Aktiv","Active"), ("","")]) }}</tr></thead>
+      <tbody>
+      {% for c in codes %}
+      <tr style="border-bottom:1px solid var(--border);{% if not c.active %}opacity:0.5;{% endif %}">
+        <form method="POST">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="action" value="save">
+          <input type="hidden" name="field_id" value="{{ c.id }}">
+          <td style="padding:4px 8px;font-family:var(--mono);font-weight:600;">{{ c.code }}{% if c.id in used %} <span title="{{ 'Används av löneart' if g.lang == 'sv' else 'Used by a salary type' }}" style="color:var(--accent);">●</span>{% endif %}</td>
+          <td style="padding:4px 8px;font-family:var(--mono);font-size:12px;">{{ c.element }}</td>
+          <td style="padding:4px 8px;font-size:12px;color:var(--muted);">{{ c.value_type }}</td>
+          <td style="padding:4px 6px;"><input type="text" name="description" value="{{ c.description or '' }}" class="form-control" style="font-size:13px;padding:4px 6px;"></td>
+          <td style="padding:4px 8px;text-align:center;"><input type="checkbox" name="selectable" value="1" {% if c.selectable %}checked{% endif %}></td>
+          <td style="padding:4px 8px;text-align:center;"><input type="checkbox" name="ag_base" value="1" {% if c.ag_base %}checked{% endif %}></td>
+          <td style="padding:4px 8px;text-align:center;"><input type="checkbox" name="active" value="1" {% if c.active %}checked{% endif %}></td>
+          <td style="padding:4px 6px;"><button type="submit" class="btn btn-ghost btn-sm">{{ g.t.save }}</button></td>
+        </form>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">{{ "Ny fältkod" if g.lang == "sv" else "New field code" }}</div>
+    <form method="POST">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="new">
+      <div class="grid-3">
+        <div class="form-group"><label class="form-label">{{ "Fältkod" if g.lang == "sv" else "Code" }}</label>
+          <input type="text" name="code" class="form-control mono" maxlength="3" required placeholder="019"></div>
+        <div class="form-group"><label class="form-label">XML-element</label>
+          <input type="text" name="element" class="form-control mono" required placeholder="AvdragUtgiftArbetet"></div>
+        <div class="form-group"><label class="form-label">{{ "Typ" if g.lang == "sv" else "Type" }}</label>
+          <select name="value_type" class="form-control">
+            <option value="amount">{{ "Belopp" if g.lang == "sv" else "Amount" }}</option>
+            <option value="checkbox">{{ "Kryssruta" if g.lang == "sv" else "Checkbox" }}</option>
+          </select></div>
+      </div>
+      <div class="form-group"><label class="form-label">{{ "Beskrivning" if g.lang == "sv" else "Description" }}</label>
+        <input type="text" name="description" class="form-control"></div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:12px;">
+        <input type="checkbox" name="ag_base" value="1"> {{ "Ingår i underlag för arbetsgivaravgifter" if g.lang == "sv" else "Part of the employer contribution base" }}
+      </label>
+      <button type="submit" class="btn btn-primary">+ {{ "Lägg till" if g.lang == "sv" else "Add" }}</button>
+    </form>
+  </div>
+</div>
+{% endblock %}
