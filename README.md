@@ -7,6 +7,7 @@ Self-hosted Flask app for solo consultant administration — time tracking, expe
 - **Time tracking** — week matrix view, log hours by assignment and PO hour type, monthly summary
 - **Expenses** — mobile camera capture, Claude Vision OCR extracts amount/VAT/merchant, review and approve
 - **Mileage** — log km per assignment, rate resolved automatically from PO or client default
+- **Internal codes** — sales, sick leave, admin and the like: assignment-shaped targets that carry time and cost but can never be invoiced
 - **Invoicing** — per-assignment invoices, line items grouped by month/hour-type, PDF generation, email delivery
 - **Budget tracking** — dashboard budget bars show historical cost, invoiced, uninvoiced, and PO headroom per assignment
 - **Bilingual** — Swedish/English switchable UI and invoice language per client
@@ -376,8 +377,9 @@ skips the build and re-promotes that existing image.
 ### Time tracking
 1. Go to **Tidrapportering**
 2. Enter hours directly in the weekly matrix
-3. Select PO hour type per row (Normal, Restid, etc.)
-4. Hit ↵ to save a row — rows are locked once the invoice is approved
+3. Pick a target in the first column — a client assignment, or an internal code under **Internt**
+4. Select PO hour type per row (Normal, Restid, etc.); internal rows have no hour type
+5. Hit ↵ to save a row — rows are locked once the invoice is approved
 
 ### Expenses
 1. On mobile: **Utlägg** → **📷 Nytt utlägg** → take a photo
@@ -385,12 +387,25 @@ skips the build and re-promotes that existing image.
 3. Review, correct if needed, approve
 
 ### Mileage
-1. Go to **Reseersättning** → fill in date, assignment and km
-2. Rate is resolved automatically: PO rate → client default → 25 SEK/km
+1. Go to **Reseersättning** → fill in date, target and km
+2. Rate is resolved automatically: PO rate → client default → 25 SEK/km,
+   or the internal code's own rate when the target is an internal code
+
+### Internal codes
+1. **Inställningar** → **Interna koder** → add a code (e.g. `SALES` / Försäljning)
+2. Pick whether it accepts time, costs, or both, and optionally its own km rate
+3. The code then appears under **Internt** in the target dropdown on the time grid,
+   mileage, expense review and supplier invoice review
+4. **Internrapport** sums hours and cost per code for the fiscal year
+
+Internal codes are a reporting dimension only — account routing still comes from the
+expense / supplier category, so vouchers are unchanged. A code that is in use cannot
+be deleted, only deactivated, so history keeps its label.
 
 ### Invoicing
 1. **Fakturor** → **Ny faktura** → select assignment and period
-2. All uninvoiced hours + approved billable expenses + mileage are included
+2. All uninvoiced hours + approved billable expenses + mileage are included —
+   anything tagged to an internal code is excluded by construction
 3. Review the proforma — approve to lock entries and generate PDF
 4. Send by email
 
@@ -569,9 +584,12 @@ Client
               └── POHourTypes (1:many)
                     └── name, hourly_rate, billable, sort_order
 
-TimeEntry          (project, date, hours, hour_type, invoiced, invoice_id)
-Expense            (project, date, merchant, amount_incl_vat, vat_rate, receipt_filename, status)
-MileageEntry       (project, date, km, km_rate, status)
+InternalCode       (code, name, kind, track_time, track_cost, km_rate, active)
+
+TimeEntry          (project | internal_code, date, hours, hour_type, invoiced, invoice_id)
+Expense            (project | internal_code, date, merchant, amount_incl_vat, vat_rate, receipt_filename, status)
+MileageEntry       (project | internal_code, date, km, km_rate, status)
+SupplierInvoice    (project | internal_code, supplier, amounts, vat_treatment, status)
 
 Invoice
   ├── client_id, project_id      (one invoice per assignment)
@@ -594,6 +612,19 @@ Same chain for km rate: `PurchaseOrder.km_rate` → `Client.km_rate` → 25.0 SE
 **Invoice line grouping** (`Invoice.line_groups()`) — time entries are grouped by `(year, month, po_id, hour_type_name, rate)`. The primary label is `YYYY MMM  HourType`. The PO number is added in parentheses only when the same month+hour_type spans multiple POs — i.e. disambiguation on demand.
 
 **Entry locking** — when an invoice is approved, all linked `TimeEntry.invoiced`, `Expense.status`, and `MileageEntry.status` are set to locked. Locked entries are read-only in the time matrix.
+
+**Internal codes are the second kind of target** — time, expenses, mileage and supplier
+invoices each point at *either* a `Project` or an `InternalCode`, never both. Forms post one
+combined `target` select whose value is `p:<id>` / `i:<id>`, parsed by `_parse_target()`.
+Because every invoicing query filters on `project_id`, internal rows are excluded by
+construction rather than by a rule someone has to remember; `billable` is forced off on save
+as a second line of defence. Codes never affect account routing — that stays with the
+expense / supplier category.
+
+Upgrading an existing database rebuilds `time_entry` (SQLite cannot drop a `NOT NULL` with
+`ALTER TABLE`) and moves pre-v1.2 `Sjuk` / `Semester` / `VAB` rows onto the seeded codes,
+detaching them from the client assignment they were parked on. Already-invoiced rows are
+left alone.
 
 **Fiscal year** — configurable start month (default May). Invoice numbers are `YYYY-NNN` where YYYY is the fiscal year. March 2026 with FY_START_MONTH=5 → invoice number `2025-NNN`.
 

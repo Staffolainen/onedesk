@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "partials/target.html" import target_select, target_cell %}
 {% block title %}{{ "Granska utlägg" if g.lang == "sv" else "Review Expense" }}{% endblock %}
 {% block page_title %}{{ "Granska utlägg" if g.lang == "sv" else "Review Expense" }}{% endblock %}
 
@@ -153,13 +154,9 @@
 
       <div class="grid-2">
         <div class="form-group">
-          <label class="form-label">{{ "Uppdrag (valfritt)" if g.lang == "sv" else "Assignment (optional)" }}</label>
-          <select name="project_id" class="form-control">
-            <option value="">— {{ "Inget uppdrag" if g.lang == "sv" else "No assignment" }} —</option>
-            {% for p in projects %}
-            <option value="{{ p.id }}">{{ p.client.name }} / {{ p.name }}</option>
-            {% endfor %}
-          </select>
+          <label class="form-label">{{ "Uppdrag / intern kod (valfritt)" if g.lang == "sv" else "Assignment / internal code (optional)" }}</label>
+          {{ target_select(projects, internal_codes, name="target", allow_none=True,
+                           select_id="exp-target") }}
         </div>
         <div class="form-group">
           <label class="form-label">{{ "Betalat av" if g.lang == "sv" else "Paid by" }}</label>
@@ -198,6 +195,29 @@
 {% endblock %}
 
 {% block scripts %}
+<script>
+// An internal code can never be invoiced, so "billable" is forced off and locked
+// while one is selected. The server enforces the same rule on save.
+(function () {
+  const target = document.getElementById('exp-target');
+  const yes    = document.getElementById('billable_yes');
+  const no     = document.getElementById('billable_no');
+  if (!target || !yes || !no) return;
+
+  function syncBillable() {
+    const opt = target.options[target.selectedIndex];
+    const internal = opt && opt.dataset.internal === '1';
+    if (internal) {
+      no.checked = true;
+      yes.checked = false;
+    }
+    yes.disabled = internal;
+    yes.closest('label').style.opacity = internal ? 0.45 : 1;
+  }
+  target.addEventListener('change', syncBillable);
+  syncBillable();
+})();
+</script>
 <script>
 document.querySelector('form').addEventListener('submit', function(e) {
   const clicked = document.activeElement;

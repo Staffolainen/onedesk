@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block title %}{{ "Internrapport" if g.lang == "sv" else "Internal Report" }}{% endblock %}
+{% block page_title %}{{ "Interna koder – tid och kostnad" if g.lang == "sv" else "Internal codes – time and cost" }}{% endblock %}
+
+{% block topbar_actions %}
+  {% if current_user.is_admin %}
+  <a href="{{ url_for('internal_codes') }}" class="btn btn-ghost btn-sm">{{ "Administrera koder" if g.lang == "sv" else "Manage codes" }}</a>
+  {% endif %}
+{% endblock %}
+
+{% block content %}
+
+<div style="display:flex;align-items:center;gap:16px;margin-bottom:24px;flex-wrap:wrap;">
+  <a href="{{ url_for('internal_report', fy=prev_fy) }}" class="btn btn-ghost btn-sm">←</a>
+  <div>
+    <h2 style="font-size:20px;font-weight:800;">{{ "Räkenskapsår" if g.lang == "sv" else "Fiscal year" }} {{ fy }}</h2>
+    <div style="font-family:var(--mono);font-size:11px;color:var(--muted);">
+      {{ period_start }} – {{ period_end }}
+    </div>
+  </div>
+  <a href="{{ url_for('internal_report', fy=next_fy) }}" class="btn btn-ghost btn-sm">→</a>
+
+  <form method="GET" style="display:flex;gap:8px;align-items:flex-end;margin-left:auto;">
+    <div>
+      <label class="form-label" style="font-size:11px;">{{ "Från" if g.lang == "sv" else "From" }}</label>
+      <input type="date" name="from" value="{{ period_start.isoformat() }}" class="form-control" style="font-size:13px;padding:5px 8px;">
+    </div>
+    <div>
+      <label class="form-label" style="font-size:11px;">{{ "Till" if g.lang == "sv" else "To" }}</label>
+      <input type="date" name="to" value="{{ period_end.isoformat() }}" class="form-control" style="font-size:13px;padding:5px 8px;">
+    </div>
+    <button type="submit" class="btn btn-secondary btn-sm">{{ "Visa" if g.lang == "sv" else "Show" }}</button>
+  </form>
+</div>
+
+{% if rows %}
+<div class="card" style="padding:0;overflow:hidden;margin-bottom:16px;">
+  <div class="table-wrap">
+    <table class="data-table" style="min-width:820px;">
+      <thead>
+        <tr>
+          <th>{{ "Kod" if g.lang == "sv" else "Code" }}</th>
+          <th class="right">{{ g.t.hours }}</th>
+          <th class="right">{{ "Mil" if g.lang == "sv" else "Mileage" }}</th>
+          <th class="right">{{ g.t.expenses }}</th>
+          <th class="right">{{ "Lev.fakt." if g.lang == "sv" else "Supplier inv." }}</th>
+          <th class="right">{{ "Kostnad totalt" if g.lang == "sv" else "Total cost" }}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td>
+            <span class="internal-tag">{{ r.code.code }}</span>
+            <span style="font-weight:600;">{{ r.code.name }}</span>
+            {% if not r.code.active %}
+            <span class="badge badge-draft" style="margin-left:6px;">{{ "inaktiv" if g.lang == "sv" else "inactive" }}</span>
+            {% endif %}
+          </td>
+          <td class="right mono" style="font-weight:700;">
+            {% if r.hours %}{{ "%.2f"|format(r.hours) }}{% else %}<span style="color:var(--border);">–</span>{% endif %}
+          </td>
+          <td class="right mono">
+            {% if r.mileage_cost %}
+              {{ r.mileage_cost|round|int|fmt_amount }}
+              <span style="color:var(--muted);font-size:11px;"> · {{ "%.0f"|format(r.mileage_km) }} km</span>
+            {% else %}<span style="color:var(--border);">–</span>{% endif %}
+          </td>
+          <td class="right mono">
+            {% if r.expense_cost %}
+              {{ r.expense_cost|round|int|fmt_amount }}
+              <span style="color:var(--muted);font-size:11px;"> · {{ r.expense_count }} st</span>
+            {% else %}<span style="color:var(--border);">–</span>{% endif %}
+          </td>
+          <td class="right mono">
+            {% if r.supplier_cost %}
+              {{ r.supplier_cost|round|int|fmt_amount }}
+              <span style="color:var(--muted);font-size:11px;"> · {{ r.supplier_count }} st</span>
+            {% else %}<span style="color:var(--border);">–</span>{% endif %}
+          </td>
+          <td class="right mono" style="font-weight:700;">
+            {% if r.total_cost %}{{ r.total_cost|round|int|fmt_amount }}{% else %}<span style="color:var(--border);">–</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:center;">
+    <div style="font-weight:800;font-size:16px;">{{ "Totalt internt" if g.lang == "sv" else "Internal total" }}</div>
+    <div style="text-align:right;">
+      <div style="font-family:var(--mono);font-size:24px;font-weight:800;">{{ totals.total_cost|round|int|fmt_amount }} SEK</div>
+      <div style="font-family:var(--mono);font-size:12px;color:var(--muted);">
+        {{ "%.2f"|format(totals.hours) }} h · {{ "kostnad exkl. moms" if g.lang == "sv" else "cost excl. VAT" }}
+      </div>
+    </div>
+  </div>
+</div>
+{% else %}
+<div class="card" style="text-align:center;padding:60px;">
+  <div style="font-size:40px;margin-bottom:16px;opacity:0.3;">◷</div>
+  <p style="color:var(--muted);">{{ "Ingen intern tid eller kostnad i perioden" if g.lang == "sv" else "No internal time or cost in this period" }}</p>
+</div>
+{% endif %}
+
+{% endblock %}

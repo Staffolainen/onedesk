@@ -7,7 +7,8 @@ from werkzeug.security import generate_password_hash
 from sqlalchemy.pool import StaticPool
 
 from app import app as flask_app, init_db, limiter as _limiter
-from models import db as _db, User, Client, Project, PurchaseOrder, POHourType, TimeEntry, Invoice
+from models import (db as _db, User, Client, Project, PurchaseOrder, POHourType,
+                    TimeEntry, Invoice, InternalCode)
 
 
 @pytest.fixture(scope="session")
@@ -113,3 +114,20 @@ def sample_po(db, sample_project):
     db.session.add(ht)
     db.session.commit()
     return po
+
+
+@pytest.fixture
+def sample_internal_code(db):
+    c = InternalCode(
+        code="SALES",
+        name="Försäljning",
+        kind="sales",
+        track_time=True,
+        track_cost=True,
+        km_rate=19.0,
+        sort_order=1,
+        active=True,
+    )
+    db.session.add(c)
+    db.session.commit()
+    return c

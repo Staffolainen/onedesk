@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+{% block title %}{{ "Interna koder" if g.lang == "sv" else "Internal Codes" }}{% endblock %}
+{% block page_title %}{{ "Interna koder / Internal Codes" }}{% endblock %}
+
+{% block topbar_actions %}
+  <a href="{{ url_for('internal_report') }}" class="btn btn-ghost btn-sm">{{ "Rapport" if g.lang == "sv" else "Report" }} →</a>
+  <a href="{{ url_for('settings') }}" class="btn btn-ghost btn-sm">← {{ g.t.back }}</a>
+{% endblock %}
+
+{% block content %}
+<div style="max-width:900px;margin:0 auto;">
+
+  <div class="card" style="margin-bottom:16px;">
+    <div class="card-title">{{ "Aktiva koder / Active codes" }}</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:16px;line-height:1.6;">
+      {{ "En intern kod fungerar som ett uppdrag, men kan aldrig faktureras. Tid och kostnader (mil, parkering, utlägg, leverantörsfakturor) kan bokföras mot koden och följs upp i rapporten. Bokföringskonton styrs som vanligt av utgifts- respektive leverantörskategori."
+         if g.lang == "sv" else
+         "An internal code works like an assignment, but can never be invoiced. Time and costs (mileage, parking, expenses, supplier invoices) can be booked against it and followed up in the report. Account routing still comes from the expense / supplier category as usual." }}
+    </div>
+
+    {% if codes %}
+    <div style="overflow-x:auto;">
+    <table style="width:100%;border-collapse:collapse;font-size:13px;min-width:760px;">
+      <thead>
+        <tr>
+          {% for h in [("Kod","Code"), ("Namn","Name"), ("Typ","Kind"), ("Tid","Time"), ("Kost.","Cost"), ("Kr/km","Kr/km"), ("Ordn.","Sort"), ("","")] %}
+          <th style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);padding:8px 10px;text-align:left;border-bottom:1px solid var(--border);">{{ h[0] if g.lang == "sv" else h[1] }}</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+      {% for c in codes %}
+      {% set u = usage[c.id] %}
+      <tr style="border-bottom:1px solid var(--border);{% if not c.active %}opacity:0.5;{% endif %}">
+        <form method="POST">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="action" value="save">
+          <input type="hidden" name="code_id" value="{{ c.id }}">
+          <td style="padding:6px 10px;">
+            <input type="text" name="code" value="{{ c.code }}" maxlength="20"
+                   class="form-control mono" style="font-size:13px;padding:4px 8px;width:90px;text-transform:uppercase;">
+          </td>
+          <td style="padding:6px 10px;">
+            <input type="text" name="name" value="{{ c.name }}" class="form-control" style="font-size:13px;padding:4px 8px;">
+          </td>
+          <td style="padding:6px 10px;">
+            <select name="kind" class="form-control" style="font-size:13px;padding:4px 8px;">
+              {% for key, sv, en in kinds %}
+              <option value="{{ key }}" {% if c.kind == key %}selected{% endif %}>{{ sv if g.lang == "sv" else en }}</option>
+              {% endfor %}
+            </select>
+          </td>
+          <td style="padding:6px 10px;text-align:center;">
+            <input type="checkbox" name="track_time" value="1" {% if c.track_time %}checked{% endif %}
+                   style="accent-color:var(--accent);width:14px;height:14px;"
+                   title="{{ 'Väljbar i tidrapporten' if g.lang == 'sv' else 'Selectable in the time grid' }}">
+          </td>
+          <td style="padding:6px 10px;text-align:center;">
+            <input type="checkbox" name="track_cost" value="1" {% if c.track_cost %}checked{% endif %}
+                   style="accent-color:var(--accent);width:14px;height:14px;"
+                   title="{{ 'Väljbar för utlägg, mil och leverantörsfakturor' if g.lang == 'sv' else 'Selectable for expenses, mileage and supplier invoices' }}">
+          </td>
+          <td style="padding:6px 10px;">
+            <input type="number" name="km_rate" value="{{ c.km_rate or '' }}" step="0.1" min="0"
+                   class="form-control mono" style="font-size:13px;padding:4px 8px;width:70px;"
+                   placeholder="{{ default_km_rate }}">
+          </td>
+          <td style="padding:6px 10px;">
+            <input type="number" name="sort_order" value="{{ c.sort_order or 0 }}"
+                   class="form-control mono" style="font-size:13px;padding:4px 8px;width:60px;">
+          </td>
+          <td style="padding:6px 8px;text-align:right;white-space:nowrap;">
+            <button type="submit" class="btn btn-ghost btn-sm">{{ g.t.save }}</button>
+        </form>
+        {% if c.active %}
+        <form method="POST" style="display:inline;">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="action" value="deactivate">
+          <input type="hidden" name="code_id" value="{{ c.id }}">
+          <button type="submit" class="btn btn-ghost btn-sm"
+                  title="{{ 'Inaktivera' if g.lang == 'sv' else 'Deactivate' }}">⏸</button>
+        </form>
+        {% else %}
+        <form method="POST" style="display:inline;">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="action" value="activate">
+          <input type="hidden" name="code_id" value="{{ c.id }}">
+          <button type="submit" class="btn btn-ghost btn-sm"
+                  title="{{ 'Aktivera' if g.lang == 'sv' else 'Activate' }}">▶</button>
+        </form>
+        {% endif %}
+        {% if u.total == 0 %}
+        <form method="POST" style="display:inline;" onsubmit="return confirm('{{ ('Ta bort ' + c.code + '?') if g.lang == 'sv' else ('Delete ' + c.code + '?') }}')">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="action" value="delete">
+          <input type="hidden" name="code_id" value="{{ c.id }}">
+          <button type="submit" class="btn btn-danger btn-sm">✕</button>
+        </form>
+        {% else %}
+        <span style="font-size:11px;color:var(--muted);padding-left:6px;"
+              title="{{ 'Används av %d poster' % u.total if g.lang == 'sv' else '%d rows use this code' % u.total }}">{{ u.total }}</span>
+        {% endif %}
+          </td>
+      </tr>
+      {% if c.description %}
+      <tr style="border-bottom:1px solid var(--border);">
+        <td></td>
+        <td colspan="7" style="padding:0 10px 8px;font-size:12px;color:var(--muted);">{{ c.description }}</td>
+      </tr>
+      {% endif %}
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% else %}
+    <p style="color:var(--muted);font-size:13px;">{{ "Inga interna koder ännu." if g.lang == "sv" else "No internal codes yet." }}</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <div class="card-title">{{ "Lägg till kod / Add code" }}</div>
+    <form method="POST">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="new">
+      <div class="grid-2">
+        <div class="form-group">
+          <label class="form-label">{{ "Kod" if g.lang == "sv" else "Code" }} *</label>
+          <input type="text" name="code" class="form-control mono" required maxlength="20"
+                 style="max-width:140px;text-transform:uppercase;"
+                 placeholder="{{ 'SALES' }}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">{{ "Namn" if g.lang == "sv" else "Name" }} *</label>
+          <input type="text" name="name" class="form-control" required
+                 placeholder="{{ 'T.ex. Försäljning' if g.lang == 'sv' else 'e.g. Sales' }}">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">{{ g.t.description }}</label>
+        <input type="text" name="description" class="form-control"
+               placeholder="{{ 'Valfri beskrivning' if g.lang == 'sv' else 'Optional description' }}">
+      </div>
+      <div class="grid-2">
+        <div class="form-group">
+          <label class="form-label">{{ "Typ" if g.lang == "sv" else "Kind" }}</label>
+          <select name="kind" class="form-control">
+            {% for key, sv, en in kinds %}
+            <option value="{{ key }}" {% if key == "other" %}selected{% endif %}>{{ sv if g.lang == "sv" else en }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">{{ "Kr/km (valfritt)" if g.lang == "sv" else "Kr/km (optional)" }}</label>
+          <input type="number" name="km_rate" step="0.1" min="0" class="form-control mono"
+                 style="max-width:110px;" placeholder="{{ default_km_rate }}">
+        </div>
+      </div>
+      <div class="form-group" style="display:flex;gap:20px;align-items:center;">
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;">
+          <input type="checkbox" name="track_time" value="1" checked style="accent-color:var(--accent);width:14px;height:14px;">
+          {{ "Kan tidrapporteras" if g.lang == "sv" else "Accepts time" }}
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;">
+          <input type="checkbox" name="track_cost" value="1" checked style="accent-color:var(--accent);width:14px;height:14px;">
+          {{ "Kan bära kostnader" if g.lang == "sv" else "Accepts costs" }}
+        </label>
+      </div>
+      <button type="submit" class="btn btn-primary">+ {{ "Lägg till" if g.lang == "sv" else "Add" }}</button>
+    </form>
+  </div>
+
+</div>
+{% endblock %}

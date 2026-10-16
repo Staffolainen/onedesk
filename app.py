@@ -47,6 +47,7 @@ from config import Config
 from models import (db, User, Client, Project, PurchaseOrder, POHourType,
                     TimeEntry, Expense, Invoice, MileageEntry, Settings,
                     VoucherTemplate, SupplierInvoice, PaymentFile,
+                    InternalCode, DEFAULT_KM_RATE,
                     fiscal_year, fy_start, fy_end)
 from bookkeeping import (REVERSE_CHARGE_VAT_RATE, VAT_DOMESTIC, VAT_TREATMENTS,
                          VAT_REVERSE_CHARGE_DOMESTIC, VAT_REVERSE_CHARGE_EU_SERVICES,
@@ -368,6 +369,59 @@ def _safe_date(value):
         return None
 
 
+# ── Assignment / internal-code target ─────────────────────────────────────────
+# Time, expenses, mileage and supplier invoices each hang off *either* a client
+# assignment or an internal code, never both. The forms post one combined select
+# named "target", whose value is "p:<project id>" or "i:<internal code id>".
+
+def _parse_target(form=None):
+    """Read the combined target select and return (project_id, internal_code_id).
+
+    At most one is non-None. Falls back to a bare ``project_id`` field so links and
+    any form still posting the old field keep working.
+    """
+    form = request.form if form is None else form
+    raw = (form.get("target") or "").strip()
+    if raw.startswith("i:"):
+        return None, (_safe_int(raw[2:]) or None)
+    if raw.startswith("p:"):
+        return (_safe_int(raw[2:]) or None), None
+    if raw:
+        # A plain integer: legacy callers meant a project.
+        return (_safe_int(raw) or None), None
+    return (_safe_int(form.get("project_id")) or None), None
+
+
+def _target_options(include_inactive_project=None, include_inactive_code=None, for_cost=False):
+    """Assignments and internal codes for the combined select, in display order.
+
+    ``for_cost`` restricts internal codes to those that accept costs; the time grid
+    passes False and filters on ``track_time`` instead. An inactive row that an
+    existing record already points at is included so editing never silently drops it.
+    """
+    projects = (Project.query
+        .join(Client)
+        .filter(Project.active == True)
+        .order_by(Client.name, Project.name)
+        .all())
+    if include_inactive_project and not any(p.id == include_inactive_project for p in projects):
+        extra = Project.query.get(include_inactive_project)
+        if extra:
+            projects.append(extra)
+
+    q = InternalCode.query.filter_by(active=True)
+    if for_cost:
+        q = q.filter_by(track_cost=True)
+    else:
+        q = q.filter_by(track_time=True)
+    codes = q.order_by(InternalCode.sort_order, InternalCode.code).all()
+    if include_inactive_code and not any(c.id == include_inactive_code for c in codes):
+        extra = InternalCode.query.get(include_inactive_code)
+        if extra:
+            codes.append(extra)
+    return projects, codes
+
+
 _PAYMENT_PATTERNS = {
     "bg":   re.compile(r"^\d{3,4}-\d{4}$"),
     "pg":   re.compile(r"^\d{1,7}-\d$"),
@@ -443,7 +497,7 @@ def dashboard():
     today = date.today()
     month_start = today.replace(day=1)
 
-    # This month's hours per client
+    # This month's hours per client, plus internal hours broken out by code
     monthly_entries = (TimeEntry.query
         .join(Project).join(Client)
         .filter(TimeEntry.entry_date >= month_start)
@@ -453,6 +507,16 @@ def dashboard():
     for e in monthly_entries:
         cname = e.project.client.name
         hours_by_client[cname] = hours_by_client.get(cname, 0) + e.hours
+
+    monthly_internal = (TimeEntry.query
+        .join(InternalCode)
+        .filter(TimeEntry.entry_date >= month_start)
+        .options(selectinload(TimeEntry.internal_code))
+        .all())
+    hours_by_internal = {}
+    for e in monthly_internal:
+        hours_by_internal[e.internal_code.label] = \
+            hours_by_internal.get(e.internal_code.label, 0) + e.hours
 
     # Pending expenses
     pending_expenses = Expense.query.filter_by(status="pending").count()
@@ -547,6 +611,7 @@ def dashboard():
 
     return render_template("dashboard.html",
         hours_by_client=hours_by_client,
+        hours_by_internal=hours_by_internal,
         pending_expenses=pending_expenses,
         open_invoices=open_invoices,
         recent_entries=recent_entries,
@@ -814,15 +879,18 @@ def time_index():
         .order_by(TimeEntry.entry_date)
         .all())
 
-    # Build matrix rows ordered by first appearance
+    # Build matrix rows ordered by first appearance. A row is one target — an
+    # assignment or an internal code — plus its hour/time type.
     seen_keys = []
     matrix = {}
     for e in entries:
-        key = (e.project_id, e.hour_type_id, e.time_type)
+        key = (e.project_id, e.internal_code_id, e.hour_type_id, e.time_type)
         if key not in matrix:
             seen_keys.append(key)
             matrix[key] = {
-                "project": e.project,
+                "target": e,                     # any entry of the row; carries the labels
+                "target_key": e.target_key,
+                "is_internal": e.is_internal,
                 "hour_type_id": e.hour_type_id,
                 "time_type": e.time_type or "Normal",
                 "display_type": e.display_type,
@@ -835,10 +903,13 @@ def time_index():
 
     matrix_rows = [matrix[k] for k in seen_keys]
     total_hours = sum(e.hours for e in entries)
-    projects = Project.query.filter_by(active=True).join(Client).order_by(Client.name, Project.name).all()
+    internal_hours = sum(e.hours for e in entries if e.is_internal)
+    projects, internal_codes = _target_options()
 
-    # Build project → PO hour types map for JS-driven add-row dropdown
-    hour_types_map = {}
+    # Build target → PO hour types map for the JS-driven add-row dropdown, keyed by
+    # the same "p:<id>" / "i:<id>" values the select uses. Internal codes never have
+    # PO hour types, so they map to an empty list.
+    hour_types_map = {f"i:{c.id}": [] for c in internal_codes}
     for p in projects:
         active_po = None
         for po in p.purchase_orders:
@@ -848,12 +919,12 @@ def time_index():
                 if active_po is None or (po.valid_from or date.min) > (active_po.valid_from or date.min):
                     active_po = po
         if active_po:
-            hour_types_map[p.id] = [
+            hour_types_map[f"p:{p.id}"] = [
                 {"key": f"ht_{ht.id}", "name": ht.name}
                 for ht in active_po.hour_types if ht.active
             ]
         else:
-            hour_types_map[p.id] = []
+            hour_types_map[f"p:{p.id}"] = []
 
     # Swedish public holidays for the year(s) covering the displayed week
     import holidays as _holidays
@@ -866,7 +937,9 @@ def time_index():
         work_dates=work_dates,
         matrix_rows=matrix_rows,
         total_hours=total_hours,
+        internal_hours=internal_hours,
         projects=projects,
+        internal_codes=internal_codes,
         today=today,
         current_week_start=current_week_start,
         prev_week=(week_start - timedelta(days=7)).isoformat(),
@@ -878,18 +951,23 @@ def time_index():
 @app.route("/time/save-row", methods=["POST"])
 @login_required
 def time_save_row():
-    project_id_str = request.form.get("project_id", "").strip()
     week = request.form.get("week")
+    project_id, internal_code_id = _parse_target()
 
-    if not project_id_str:
-        flash("Välj ett uppdrag / Select an assignment", "error")
+    if not project_id and not internal_code_id:
+        flash("Välj ett uppdrag eller en intern kod / Select an assignment or internal code", "error")
         return redirect(url_for("time_index", week=week))
 
-    project_id = int(project_id_str)
+    if internal_code_id:
+        code = InternalCode.query.get(internal_code_id)
+        if not code or not code.active or not code.track_time:
+            flash("Ogiltig intern kod / Invalid internal code", "error")
+            return redirect(url_for("time_index", week=week))
 
-    # Resolve hour type — either a PO hour type or an internal type string
+    # Resolve hour type — either a PO hour type or a free-text type string.
     # Existing rows pass hour_type_id (int) or time_type (str) directly.
-    # New rows from the add-row form pass type_key like "ht_123" or "it_Sjuk".
+    # New rows from the add-row form pass type_key like "ht_123".
+    # Internal codes carry no PO, so they never get an hour_type_id.
     hour_type_id = None
     time_type = None
 
@@ -901,12 +979,13 @@ def time_save_row():
         hour_type_id = int(hour_type_id_raw)
     elif type_key.startswith("ht_"):
         hour_type_id = int(type_key[3:])
-    elif type_key.startswith("it_"):
-        time_type = type_key[3:]
     elif time_type_raw:
         time_type = time_type_raw
     else:
         time_type = "Normal"
+
+    if internal_code_id:
+        hour_type_id = None   # PO hour types belong to client assignments only
 
     description = request.form.get("description", "").strip()
 
@@ -920,16 +999,15 @@ def time_save_row():
         except (ValueError, AttributeError):
             continue
 
+        q = TimeEntry.query.filter(
+            TimeEntry.project_id == project_id,
+            TimeEntry.internal_code_id == internal_code_id,
+            TimeEntry.entry_date == entry_date,
+        )
         if hour_type_id:
-            existing = TimeEntry.query.filter_by(
-                project_id=project_id,
-                entry_date=entry_date,
-                hour_type_id=hour_type_id,
-            ).first()
+            existing = q.filter(TimeEntry.hour_type_id == hour_type_id).first()
         else:
-            existing = TimeEntry.query.filter(
-                TimeEntry.project_id == project_id,
-                TimeEntry.entry_date == entry_date,
+            existing = q.filter(
                 TimeEntry.hour_type_id == None,
                 TimeEntry.time_type == time_type,
             ).first()
@@ -941,6 +1019,7 @@ def time_save_row():
             elif not existing:
                 db.session.add(TimeEntry(
                     project_id=project_id,
+                    internal_code_id=internal_code_id,
                     entry_date=entry_date,
                     hours=hours,
                     hour_type_id=hour_type_id,
@@ -957,18 +1036,16 @@ def time_save_row():
         from datetime import timedelta
         ws = datetime.strptime(week_str, "%Y-%m-%d").date()
         we = ws + timedelta(days=6)
+        wq = TimeEntry.query.filter(
+            TimeEntry.project_id == project_id,
+            TimeEntry.internal_code_id == internal_code_id,
+            TimeEntry.entry_date >= ws,
+            TimeEntry.entry_date <= we,
+        )
         if hour_type_id:
-            existing_entries = TimeEntry.query.filter(
-                TimeEntry.project_id == project_id,
-                TimeEntry.entry_date >= ws,
-                TimeEntry.entry_date <= we,
-                TimeEntry.hour_type_id == hour_type_id,
-            ).all()
+            existing_entries = wq.filter(TimeEntry.hour_type_id == hour_type_id).all()
         else:
-            existing_entries = TimeEntry.query.filter(
-                TimeEntry.project_id == project_id,
-                TimeEntry.entry_date >= ws,
-                TimeEntry.entry_date <= we,
+            existing_entries = wq.filter(
                 TimeEntry.hour_type_id == None,
                 TimeEntry.time_type == time_type,
             ).all()
@@ -1009,9 +1086,15 @@ def time_monthly():
 
     by_project = {}
     for e in entries:
-        key = e.project_id
+        key = e.target_key
         if key not in by_project:
-            by_project[key] = {"project": e.project, "entries": [], "total": 0}
+            by_project[key] = {
+                "target": e,
+                "is_internal": e.is_internal,
+                "rate": e.effective_rate,
+                "entries": [],
+                "total": 0,
+            }
         by_project[key]["entries"].append(e)
         by_project[key]["total"] += e.hours
 
@@ -1036,9 +1119,13 @@ def expenses_index():
     q = Expense.query.order_by(Expense.expense_date.desc())
     if status_filter:
         q = q.filter_by(status=status_filter)
+    if request.args.get("target") == "internal":
+        q = q.filter(Expense.internal_code_id != None)
     expenses = q.all()
-    projects = Project.query.filter_by(active=True).join(Client).order_by(Client.name).all()
-    return render_template("expenses/index.html", expenses=expenses, projects=projects, status_filter=status_filter)
+    projects, internal_codes = _target_options(for_cost=True)
+    return render_template("expenses/index.html", expenses=expenses, projects=projects,
+                           internal_codes=internal_codes, status_filter=status_filter,
+                           target_filter=request.args.get("target", ""))
 
 @app.route("/expenses/capture", methods=["GET", "POST"])
 @limiter.limit("10 per minute")
@@ -1075,7 +1162,7 @@ def expenses_review():
         return redirect(url_for("expenses_capture"))
 
     from models import ExpenseCategory
-    projects = Project.query.filter_by(active=True).join(Client).order_by(Client.name).all()
+    projects, internal_codes = _target_options(for_cost=True)
     categories = ExpenseCategory.query.filter_by(active=True).order_by(ExpenseCategory.sort_order, ExpenseCategory.name).all()
 
     if request.method == "POST":
@@ -1108,8 +1195,10 @@ def expenses_review():
             flash("Ogiltigt datum / Invalid date", "error")
             return redirect(url_for("expenses_review"))
 
+        project_id, internal_code_id = _parse_target()
         exp = Expense(
-            project_id=_safe_int(request.form.get("project_id")) or None,
+            project_id=project_id,
+            internal_code_id=internal_code_id,
             expense_category_id=_safe_int(request.form.get("expense_category_id")) or None,
             expense_date=expense_date,
             merchant=request.form.get("merchant", ""),
@@ -1119,7 +1208,8 @@ def expenses_review():
             vat_amount=vat_amount,
             vat_rate=vat_rate,
             reverse_charge=reverse_charge,
-            billable=request.form.get("billable") == "1",
+            # An internal code is never invoiced, so the cost can never be billable.
+            billable=(request.form.get("billable") == "1") and not internal_code_id,
             paid_by=request.form.get("paid_by", "personal"),
             receipt_filename=pending["receipt_filename"],
             status="approved",
@@ -1148,7 +1238,8 @@ def expenses_review():
         return redirect(url_for("expenses_index"))
 
     return render_template("expenses/review.html",
-        pending=pending, projects=projects, categories=categories,
+        pending=pending, projects=projects, internal_codes=internal_codes,
+        categories=categories,
         ocr=pending.get("ocr_data", {}))
 
 @app.route("/expenses/<int:exp_id>/delete", methods=["POST"])
@@ -1172,32 +1263,40 @@ def expenses_delete(exp_id):
 @app.route("/mileage", methods=["GET", "POST"])
 @login_required
 def mileage_index():
-    projects = Project.query.filter_by(active=True).join(Client).order_by(Client.name).all()
+    projects, internal_codes = _target_options(for_cost=True)
     if request.method == "POST":
-        project_id = _safe_int(request.form.get("project_id")) or None
+        project_id, internal_code_id = _parse_target()
         entry_date = _safe_date(request.form.get("entry_date"))
         if not entry_date:
             flash("Ogiltigt datum / Invalid date", "error")
             return redirect(url_for("mileage_index"))
+        if not project_id and not internal_code_id:
+            flash("Välj ett uppdrag eller en intern kod / Select an assignment or internal code", "error")
+            return redirect(url_for("mileage_index"))
         km = _safe_float(request.form.get("km"), 0.0)
-        # Resolve km rate: PO for that date → client default
+        # Resolve km rate: PO for that date → client default, or the internal code's
+        # own rate. A value typed into the form always wins.
         km_rate = None
         if project_id:
             project = Project.query.get(project_id)
-            km_rate = project.get_km_rate(entry_date)
-        # Allow manual override
+            km_rate = project.get_km_rate(entry_date) if project else None
+        elif internal_code_id:
+            code = InternalCode.query.get(internal_code_id)
+            km_rate = code.get_km_rate() if code else None
         km_rate_override = request.form.get("km_rate", "").strip()
         if km_rate_override:
             km_rate = _safe_float(km_rate_override, km_rate)
         if not km_rate:
-            km_rate = 25.0
+            km_rate = DEFAULT_KM_RATE
         m = MileageEntry(
             project_id=project_id,
+            internal_code_id=internal_code_id,
             entry_date=entry_date,
             km=km,
             km_rate=km_rate,
             description=request.form.get("description", ""),
-            billable=request.form.get("billable") == "1",
+            # Internal mileage is a company cost, never resold.
+            billable=(request.form.get("billable") == "1") and not internal_code_id,
             status="approved",
         )
         db.session.add(m)
@@ -1205,7 +1304,8 @@ def mileage_index():
         flash("Reseersättning sparad / Mileage saved", "success")
         return redirect(url_for("mileage_index"))
     entries = MileageEntry.query.order_by(MileageEntry.entry_date.desc()).all()
-    return render_template("mileage/index.html", entries=entries, projects=projects, today=date.today())
+    return render_template("mileage/index.html", entries=entries, projects=projects,
+                           internal_codes=internal_codes, today=date.today())
 
 @app.route("/mileage/<int:entry_id>/delete", methods=["POST"])
 @login_required
@@ -1278,6 +1378,7 @@ def invoices_new():
         # Gather uninvoiced time entries for this assignment
         entries = (TimeEntry.query
             .filter(TimeEntry.project_id == project_id,
+                    TimeEntry.internal_code_id == None,
                     TimeEntry.entry_date >= period_start,
                     TimeEntry.entry_date <= period_end,
                     TimeEntry.invoiced == False)
@@ -1288,6 +1389,7 @@ def invoices_new():
         expenses = (Expense.query
             .filter(
                 Expense.project_id == project_id,
+                Expense.internal_code_id == None,
                 Expense.billable == True,
                 Expense.status == "approved",
                 Expense.invoice_id == None,
@@ -1299,6 +1401,7 @@ def invoices_new():
         mileage = (MileageEntry.query
             .filter(
                 MileageEntry.project_id == project_id,
+                MileageEntry.internal_code_id == None,
                 MileageEntry.billable == True,
                 MileageEntry.status == "approved",
                 MileageEntry.invoice_id == None,
@@ -1607,11 +1710,13 @@ def settings():
     users = User.query.order_by(User.display_name).all() if current_user.is_admin else []
     expense_cats = ExpenseCategory.query.filter_by(active=True).order_by(ExpenseCategory.sort_order, ExpenseCategory.name).all()
     supplier_cats = SupplierCategory.query.filter_by(active=True).order_by(SupplierCategory.sort_order, SupplierCategory.name).all()
+    internal_codes = InternalCode.query.filter_by(active=True).order_by(InternalCode.sort_order, InternalCode.code).all()
     return render_template("settings.html",
         fortnox_connected=fortnox_connected,
         users=users,
         expense_categories=expense_cats,
         supplier_categories=supplier_cats,
+        internal_codes=internal_codes,
         currencies=_get_currencies())
 
 # ── User management ───────────────────────────────────────────────────────────
@@ -1661,6 +1766,180 @@ def user_edit(user_id):
         flash("Användare uppdaterad / User updated", "success")
         return redirect(url_for("settings") + "#users")
     return render_template("users/form.html", user=user)
+
+# ── Internal code reporting ───────────────────────────────────────────────────
+
+@app.route("/internal")
+@login_required
+def internal_report():
+    """Time and cost per internal code over a period, defaulting to the fiscal year.
+
+    Costs are summed excluding VAT, matching how assignment budgets are reported.
+    Mileage has no VAT, so its amount is used as-is.
+    """
+    today = date.today()
+    fy = _safe_int(request.args.get("fy")) or fiscal_year(today, app.config["FY_START_MONTH"])
+    period_start = _safe_date(request.args.get("from")) or fy_start(fy, app.config["FY_START_MONTH"])
+    period_end   = _safe_date(request.args.get("to"))   or fy_end(fy, app.config["FY_START_MONTH"])
+
+    codes = InternalCode.query.order_by(InternalCode.sort_order, InternalCode.code).all()
+    rows = []
+    for c in codes:
+        hours = sum(e.hours for e in TimeEntry.query.filter(
+            TimeEntry.internal_code_id == c.id,
+            TimeEntry.entry_date >= period_start,
+            TimeEntry.entry_date <= period_end).all())
+
+        expenses = Expense.query.filter(
+            Expense.internal_code_id == c.id,
+            Expense.status != "pending",
+            Expense.expense_date >= period_start,
+            Expense.expense_date <= period_end).all()
+        expense_cost = sum(e.amount_excl_vat or 0.0 for e in expenses)
+
+        mileage = MileageEntry.query.filter(
+            MileageEntry.internal_code_id == c.id,
+            MileageEntry.entry_date >= period_start,
+            MileageEntry.entry_date <= period_end).all()
+        mileage_cost = sum(m.amount for m in mileage)
+        mileage_km   = sum(m.km for m in mileage)
+
+        suppliers = SupplierInvoice.query.filter(
+            SupplierInvoice.internal_code_id == c.id,
+            SupplierInvoice.invoice_date >= period_start,
+            SupplierInvoice.invoice_date <= period_end).all()
+        supplier_cost = sum(si.amount_excl_vat or 0.0 for si in suppliers)
+
+        total_cost = expense_cost + mileage_cost + supplier_cost
+        if not hours and not total_cost:
+            continue
+        rows.append({
+            "code": c,
+            "hours": round(hours, 2),
+            "expense_cost": round(expense_cost, 2),
+            "expense_count": len(expenses),
+            "mileage_cost": round(mileage_cost, 2),
+            "mileage_km": round(mileage_km, 1),
+            "supplier_cost": round(supplier_cost, 2),
+            "supplier_count": len(suppliers),
+            "total_cost": round(total_cost, 2),
+        })
+
+    totals = {
+        "hours":      round(sum(r["hours"] for r in rows), 2),
+        "total_cost": round(sum(r["total_cost"] for r in rows), 2),
+    }
+    return render_template("internal/report.html",
+        rows=rows, totals=totals, fy=fy,
+        period_start=period_start, period_end=period_end,
+        prev_fy=fy - 1, next_fy=fy + 1)
+
+
+# ── Internal time/cost codes ──────────────────────────────────────────────────
+
+INTERNAL_CODE_KINDS = [
+    ("sales",   "Försäljning",    "Sales"),
+    ("absence", "Frånvaro",       "Absence"),
+    ("admin",   "Administration", "Administration"),
+    ("other",   "Övrigt",         "Other"),
+]
+
+
+@app.route("/settings/internal-codes", methods=["GET", "POST"])
+@login_required
+@admin_required
+def internal_codes():
+    if request.method == "POST":
+        action = request.form.get("action")
+
+        if action == "new":
+            code = (request.form.get("code") or "").strip().upper()
+            name = (request.form.get("name") or "").strip()
+            if not code or not name:
+                flash("Kod och namn krävs / Code and name are required", "error")
+                return redirect(url_for("internal_codes"))
+            if InternalCode.query.filter(db.func.upper(InternalCode.code) == code).first():
+                flash(f"Koden {code} finns redan / Code {code} already exists", "error")
+                return redirect(url_for("internal_codes"))
+            db.session.add(InternalCode(
+                code=code,
+                name=name,
+                description=(request.form.get("description") or "").strip(),
+                kind=request.form.get("kind", "other"),
+                track_time=request.form.get("track_time") == "1",
+                track_cost=request.form.get("track_cost") == "1",
+                km_rate=_safe_float(request.form.get("km_rate"), 0.0) or None,
+                sort_order=_safe_int(request.form.get("sort_order")) or (InternalCode.query.count() + 1),
+                active=True,
+            ))
+            db.session.commit()
+            _audit("internal_code_create", code)
+            flash("Intern kod skapad / Internal code created", "success")
+
+        elif action == "save":
+            c = InternalCode.query.get(_safe_int(request.form.get("code_id")))
+            if c:
+                new_code = (request.form.get("code") or c.code).strip().upper()
+                clash = InternalCode.query.filter(
+                    db.func.upper(InternalCode.code) == new_code,
+                    InternalCode.id != c.id,
+                ).first()
+                if clash:
+                    flash(f"Koden {new_code} finns redan / Code {new_code} already exists", "error")
+                    return redirect(url_for("internal_codes"))
+                c.code        = new_code
+                c.name        = (request.form.get("name") or c.name).strip()
+                c.description = (request.form.get("description") or "").strip()
+                c.kind        = request.form.get("kind", c.kind)
+                c.track_time  = request.form.get("track_time") == "1"
+                c.track_cost  = request.form.get("track_cost") == "1"
+                c.km_rate     = _safe_float(request.form.get("km_rate"), 0.0) or None
+                c.sort_order  = _safe_int(request.form.get("sort_order"), c.sort_order)
+                db.session.commit()
+                _audit("internal_code_update", c.code)
+                flash("Intern kod sparad / Internal code saved", "success")
+
+        elif action in ("deactivate", "activate"):
+            c = InternalCode.query.get(_safe_int(request.form.get("code_id")))
+            if c:
+                c.active = (action == "activate")
+                db.session.commit()
+                _audit(f"internal_code_{action}", c.code)
+                flash("Intern kod uppdaterad / Internal code updated", "success")
+
+        elif action == "delete":
+            # Only ever deletable while nothing points at it; otherwise deactivate,
+            # so historical time and costs keep their label.
+            c = InternalCode.query.get(_safe_int(request.form.get("code_id")))
+            if c:
+                if _internal_code_usage(c)["total"]:
+                    flash("Koden används – inaktivera i stället / Code is in use – deactivate instead", "error")
+                else:
+                    db.session.delete(c)
+                    db.session.commit()
+                    _audit("internal_code_delete", c.code)
+                    flash("Intern kod borttagen / Internal code deleted", "success")
+
+        return redirect(url_for("internal_codes"))
+
+    codes = InternalCode.query.order_by(InternalCode.sort_order, InternalCode.code).all()
+    usage = {c.id: _internal_code_usage(c) for c in codes}
+    return render_template("settings/internal_codes.html",
+        codes=codes, usage=usage, kinds=INTERNAL_CODE_KINDS,
+        default_km_rate=DEFAULT_KM_RATE)
+
+
+def _internal_code_usage(code):
+    """How many rows of each kind point at this code — drives the delete guard."""
+    counts = {
+        "time":      TimeEntry.query.filter_by(internal_code_id=code.id).count(),
+        "expenses":  Expense.query.filter_by(internal_code_id=code.id).count(),
+        "mileage":   MileageEntry.query.filter_by(internal_code_id=code.id).count(),
+        "suppliers": SupplierInvoice.query.filter_by(internal_code_id=code.id).count(),
+    }
+    counts["total"] = sum(counts.values())
+    return counts
+
 
 # ── Expense categories ────────────────────────────────────────────────────────
 
@@ -1819,6 +2098,7 @@ def settings_backup():
         "exported_at": datetime.utcnow().isoformat(),
         "data": {
             "clients":         _model_rows(Client),
+            "internal_codes":  _model_rows(InternalCode),
             "projects":        _model_rows(Project),
             "purchase_orders": _model_rows(PurchaseOrder),
             "po_hour_types":   _model_rows(POHourType),
@@ -1870,12 +2150,15 @@ def settings_restore():
         Invoice.query.delete()
         Project.query.delete()
         Client.query.delete()
+        InternalCode.query.delete()
         Settings.query.delete()
         User.query.delete()
         db.session.flush()
 
         # Restore in parent-first order
         _restore_rows(Client, d.get("clients", []),
+                      datetime_cols=("created_at",))
+        _restore_rows(InternalCode, d.get("internal_codes", []),
                       datetime_cols=("created_at",))
         _restore_rows(Project, d.get("projects", []),
                       date_cols=("start_date", "end_date"),
@@ -2002,7 +2285,10 @@ def supplier_invoices_upload():
 def supplier_invoices_review(invoice_id):
     from models import SupplierCategory
     inv = SupplierInvoice.query.get_or_404(invoice_id)
-    projects = Project.query.filter_by(active=True).join(Client).order_by(Client.name).all()
+    projects, internal_codes = _target_options(
+        include_inactive_project=inv.project_id,
+        include_inactive_code=inv.internal_code_id,
+        for_cost=True)
     categories = SupplierCategory.query.filter_by(active=True).order_by(SupplierCategory.sort_order, SupplierCategory.name).all()
     currencies = _get_currencies()
 
@@ -2030,24 +2316,28 @@ def supplier_invoices_review(invoice_id):
             flash("Fakturadatum krävs (YYYY-MM-DD) / Invoice date is required (YYYY-MM-DD)", "error")
             ocr = json.loads(inv.ocr_raw) if inv.ocr_raw else {}
             return render_template("supplier_invoices/review.html",
-                inv=inv, projects=projects, categories=categories, ocr=ocr, currencies=currencies)
+                inv=inv, projects=projects, internal_codes=internal_codes,
+                categories=categories, ocr=ocr, currencies=currencies)
         if not inv.due_date:
             flash("Förfallodatum krävs (YYYY-MM-DD) / Due date is required (YYYY-MM-DD)", "error")
             ocr = json.loads(inv.ocr_raw) if inv.ocr_raw else {}
             return render_template("supplier_invoices/review.html",
-                inv=inv, projects=projects, categories=categories, ocr=ocr, currencies=currencies)
+                inv=inv, projects=projects, internal_codes=internal_codes,
+                categories=categories, ocr=ocr, currencies=currencies)
 
         # Validate amounts
         if amount_incl <= 0:
             flash("Belopp inkl. moms måste vara större än noll / Amount incl. VAT must be greater than zero", "error")
             ocr = json.loads(inv.ocr_raw) if inv.ocr_raw else {}
             return render_template("supplier_invoices/review.html",
-                inv=inv, projects=projects, categories=categories, ocr=ocr, currencies=currencies)
+                inv=inv, projects=projects, internal_codes=internal_codes,
+                categories=categories, ocr=ocr, currencies=currencies)
         if vat_amt < 0:
             flash("Momsbelopp kan inte vara negativt / VAT amount cannot be negative", "error")
             ocr = json.loads(inv.ocr_raw) if inv.ocr_raw else {}
             return render_template("supplier_invoices/review.html",
-                inv=inv, projects=projects, categories=categories, ocr=ocr, currencies=currencies)
+                inv=inv, projects=projects, internal_codes=internal_codes,
+                categories=categories, ocr=ocr, currencies=currencies)
         vat_treatment = request.form.get("vat_treatment", "").strip()
         if vat_treatment not in VAT_TREATMENTS:
             # Older form posts (and the mobile flow) still send the plain checkbox.
@@ -2070,7 +2360,8 @@ def supplier_invoices_review(invoice_id):
                 "error"
             )
             return render_template("supplier_invoices/review.html",
-                inv=inv, projects=projects, categories=categories, ocr=ocr, currencies=currencies)
+                inv=inv, projects=projects, internal_codes=internal_codes,
+                categories=categories, ocr=ocr, currencies=currencies)
         expected_incl = round(amount_excl + vat_amt, 2)
         if abs(expected_incl - amount_incl) > 0.05:
             diff = round(abs(expected_incl - amount_incl), 2)
@@ -2083,7 +2374,8 @@ def supplier_invoices_review(invoice_id):
             )
             ocr = json.loads(inv.ocr_raw) if inv.ocr_raw else {}
             return render_template("supplier_invoices/review.html",
-                inv=inv, projects=projects, categories=categories, ocr=ocr, currencies=currencies)
+                inv=inv, projects=projects, internal_codes=internal_codes,
+                categories=categories, ocr=ocr, currencies=currencies)
 
         payment_ref     = request.form.get("payment_ref", "").strip()
         payment_type    = request.form.get("payment_type", "bg")
@@ -2096,7 +2388,8 @@ def supplier_invoices_review(invoice_id):
             flash(msg, "error")
             ocr = json.loads(inv.ocr_raw) if inv.ocr_raw else {}
             return render_template("supplier_invoices/review.html",
-                inv=inv, projects=projects, categories=categories, ocr=ocr, currencies=currencies)
+                inv=inv, projects=projects, internal_codes=internal_codes,
+                categories=categories, ocr=ocr, currencies=currencies)
 
         if not payment_ref:
             return _re_render(
@@ -2127,7 +2420,7 @@ def supplier_invoices_review(invoice_id):
         inv.service_amount_excl_vat = service_amount
         inv.vat_rate = (REVERSE_CHARGE_VAT_RATE if reverse_charge
                         else _safe_float(request.form.get("vat_rate"), 25.0))
-        inv.project_id = _safe_int(request.form.get("project_id")) or None
+        inv.project_id, inv.internal_code_id = _parse_target()
         inv.status = "approved"
         db.session.commit()
 
@@ -2171,7 +2464,8 @@ def supplier_invoices_review(invoice_id):
 
     ocr = json.loads(inv.ocr_raw) if inv.ocr_raw else {}
     return render_template("supplier_invoices/review.html",
-        inv=inv, projects=projects, categories=categories, ocr=ocr, currencies=currencies)
+        inv=inv, projects=projects, internal_codes=internal_codes,
+                categories=categories, ocr=ocr, currencies=currencies)
 
 @app.route("/supplier-invoices/<int:invoice_id>/book", methods=["POST"])
 @login_required
@@ -2601,9 +2895,68 @@ Best regards,
 
 # ── Init ──────────────────────────────────────────────────────────────────────
 
+def _relax_time_entry_project_nullability():
+    """Drop the NOT NULL on time_entry.project_id, rebuilding the table if needed.
+
+    Internal time has no assignment, so project_id must be nullable. Databases
+    created before internal codes existed declare it NOT NULL, and SQLite cannot
+    relax a column constraint with ALTER TABLE — the table has to be rebuilt.
+
+    The new table is created from the model metadata, so it always matches the
+    current schema, and rows are copied across the columns the two have in common.
+    Indexes are dropped with the old table; the CREATE INDEX IF NOT EXISTS
+    statements in the migration list below put them back.
+    """
+    from sqlalchemy import text, MetaData
+
+    with db.engine.connect() as conn:
+        cols = conn.execute(text("PRAGMA table_info(time_entry)")).fetchall()
+        if not cols:
+            return  # fresh database — create_all() already used the current schema
+        # PRAGMA table_info columns: (cid, name, type, notnull, dflt_value, pk)
+        needs_rebuild = any(c[1] == "project_id" and c[3] == 1 for c in cols)
+        if not needs_rebuild:
+            return
+        old_names = {c[1] for c in cols}
+
+    # Copy the sibling tables across first so the new table's foreign keys can
+    # resolve their targets; only the new table is actually created.
+    meta = MetaData()
+    for table in db.metadata.tables.values():
+        if table.name != "time_entry":
+            table.to_metadata(meta)
+    tmp = TimeEntry.__table__.to_metadata(meta, name="time_entry__new")
+    shared = [c.name for c in tmp.columns if c.name in old_names]
+    col_list = ", ".join(f'"{c}"' for c in shared)
+
+    with db.engine.connect() as conn:
+        conn.execute(text("PRAGMA foreign_keys=OFF"))
+        try:
+            tmp.create(bind=conn)
+            conn.execute(text(
+                f'INSERT INTO time_entry__new ({col_list}) SELECT {col_list} FROM time_entry'))
+            conn.execute(text("DROP TABLE time_entry"))
+            conn.execute(text("ALTER TABLE time_entry__new RENAME TO time_entry"))
+            conn.commit()
+            print("Rebuilt time_entry: project_id is now nullable")
+        except Exception as e:
+            conn.rollback()
+            print(f"time_entry rebuild skipped: {e}")
+            try:
+                conn.execute(text("DROP TABLE IF EXISTS time_entry__new"))
+                conn.commit()
+            except Exception:
+                pass
+        finally:
+            conn.execute(text("PRAGMA foreign_keys=ON"))
+
+
 def init_db():
     with app.app_context():
         db.create_all()
+        # Must run before the ALTER statements below: it rebuilds time_entry from
+        # the current model, so the internal_code_id ALTER then no-ops harmlessly.
+        _relax_time_entry_project_nullability()
         # Incremental column migrations for existing databases
         from sqlalchemy import text
         migrations = [
@@ -2668,6 +3021,15 @@ def init_db():
             # auth lookup indexes
             "CREATE INDEX IF NOT EXISTS ix_user_ad_oid ON user(ad_oid)",
             "CREATE INDEX IF NOT EXISTS ix_user_email ON user(email)",
+            # v1.2 internal time/cost codes — a target that can never be invoiced
+            "ALTER TABLE time_entry ADD COLUMN internal_code_id INTEGER REFERENCES internal_code(id)",
+            "ALTER TABLE expense ADD COLUMN internal_code_id INTEGER REFERENCES internal_code(id)",
+            "ALTER TABLE mileage_entry ADD COLUMN internal_code_id INTEGER REFERENCES internal_code(id)",
+            "ALTER TABLE supplier_invoice ADD COLUMN internal_code_id INTEGER REFERENCES internal_code(id)",
+            "CREATE INDEX IF NOT EXISTS ix_time_entry_internal_code ON time_entry(internal_code_id)",
+            "CREATE INDEX IF NOT EXISTS ix_expense_internal_code ON expense(internal_code_id)",
+            "CREATE INDEX IF NOT EXISTS ix_mileage_internal_code ON mileage_entry(internal_code_id)",
+            "CREATE INDEX IF NOT EXISTS ix_supplier_invoice_internal_code ON supplier_invoice(internal_code_id)",
             # additional filter indexes
             "CREATE INDEX IF NOT EXISTS ix_expense_project_status ON expense(project_id, status)",
             "CREATE INDEX IF NOT EXISTS ix_mileage_project ON mileage_entry(project_id)",
@@ -2786,6 +3148,61 @@ def init_db():
             if not SupplierCategory.query.filter_by(name=name).first():
                 db.session.add(SupplierCategory(name=name, debit_account=account, sort_order=order))
         db.session.commit()
+
+        _seed_internal_codes()
+
+
+def _seed_internal_codes():
+    """Seed the starting set of internal codes and adopt pre-v1.2 internal time.
+
+    Before internal codes existed, non-billable time was logged as a ``time_type``
+    string on an entry that still pointed at a client assignment. Those rows are
+    moved onto the matching code and detached from the assignment, so they stop
+    counting toward that client and can never be picked up by an invoice.
+    Entries already tied to an invoice are left alone — rewriting a billed row
+    would change an invoice after the fact.
+    """
+    # (code, name, kind, legacy time_type this replaces)
+    seeds = [
+        ("SALES",  "Försäljning",    "sales",   None),
+        ("SJUK",   "Sjukfrånvaro",   "absence", "Sjuk"),
+        ("SEM",    "Semester",       "absence", "Semester"),
+        ("VAB",    "VAB",            "absence", "VAB"),
+        ("ADMIN",  "Administration", "admin",   None),
+        ("UTB",    "Utbildning",     "admin",   None),
+    ]
+    created = {}
+    for order, (code, name, kind, _legacy) in enumerate(seeds, start=1):
+        existing = InternalCode.query.filter_by(code=code).first()
+        if existing is None:
+            existing = InternalCode(
+                code=code, name=name, kind=kind,
+                track_time=True, track_cost=True,
+                sort_order=order, active=True,
+            )
+            db.session.add(existing)
+        created[code] = existing
+    db.session.commit()
+
+    moved = 0
+    for code, _name, _kind, legacy in seeds:
+        if not legacy:
+            continue
+        target = created[code]
+        rows = (TimeEntry.query
+                .filter(TimeEntry.internal_code_id == None,
+                        TimeEntry.hour_type_id == None,
+                        TimeEntry.time_type == legacy,
+                        TimeEntry.invoiced == False,
+                        TimeEntry.invoice_id == None)
+                .all())
+        for row in rows:
+            row.internal_code_id = target.id
+            row.project_id = None
+            moved += 1
+    if moved:
+        db.session.commit()
+        print(f"Migrated {moved} internal time entries onto internal codes")
 
 if __name__ == "__main__":
     init_db()

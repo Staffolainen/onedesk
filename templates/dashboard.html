@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "partials/target.html" import target_cell %}
 {% block title %}{{ g.t.dashboard }}{% endblock %}
 {% block page_title %}{{ g.t.dashboard }}{% endblock %}
 
@@ -54,9 +55,24 @@
         </div>
       </div>
       {% endfor %}
-    {% else %}
+    {% elif not hours_by_internal %}
       <p style="color:var(--muted);font-size:13px;">{{ "Inga timmar loggade ännu" if g.lang == "sv" else "No hours logged yet" }}</p>
     {% endif %}
+
+    {% if hours_by_internal %}
+    <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border);">
+      <div style="font-size:11px;font-family:var(--mono);text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);margin-bottom:10px;">
+        {{ "Internt – faktureras ej" if g.lang == "sv" else "Internal – not invoiced" }}
+      </div>
+      {% for label, h in hours_by_internal.items() %}
+      <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
+        <span style="font-size:13px;">{{ label }}</span>
+        <span style="font-family:var(--mono);font-size:12px;color:var(--muted);">{{ "%.1f"|format(h) }} h</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
     <div style="margin-top:16px;">
       <a href="{{ url_for('time_index') }}" class="btn btn-secondary btn-sm">
         {{ "Logga tid" if g.lang == "sv" else "Log time" }}
@@ -201,7 +217,7 @@
         <tr>
           <td class="mono">{{ e.entry_date }}</td>
           <td>
-            <span style="color:var(--muted);">{{ e.project.client.name }}</span><span style="color:var(--border);padding:0 5px;">/</span><span style="font-weight:600;">{{ e.project.name }}</span>
+            {{ target_cell(e) }}
           </td>
           <td style="color:var(--muted);font-size:12px;">{{ e.description or "—" }}</td>
           <td class="right mono" style="font-weight:700;">{{ "%.2f"|format(e.hours) }}</td>

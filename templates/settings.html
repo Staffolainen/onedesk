@@ -126,6 +126,48 @@
   </div>
   {% endif %}
 
+  <!-- Internal time/cost codes -->
+  <div id="internal-codes" class="card" style="margin-bottom:16px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+      <div class="card-title" style="margin-bottom:0;">{{ "Interna koder / Internal codes" }}</div>
+      <div style="display:flex;gap:6px;">
+        <a href="{{ url_for('internal_report') }}" class="btn btn-ghost btn-sm">{{ "Rapport" if g.lang == "sv" else "Report" }}</a>
+        {% if current_user.is_admin %}
+        <a href="{{ url_for('internal_codes') }}" class="btn btn-ghost btn-sm">{{ g.t.edit }}</a>
+        {% endif %}
+      </div>
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px;">
+      {{ "Interna koder fungerar som uppdrag men kan aldrig faktureras – försäljning, sjukfrånvaro, administration. Tid och kostnader kan bokföras mot dem."
+         if g.lang == "sv" else
+         "Internal codes work like assignments but can never be invoiced – sales, sick leave, administration. Time and costs can be booked against them." }}
+    </div>
+    {% if internal_codes %}
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead>
+        <tr>
+          <th style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);padding:6px 10px;text-align:left;border-bottom:1px solid var(--border);">{{ "Kod" if g.lang == "sv" else "Code" }}</th>
+          <th style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);padding:6px 10px;text-align:left;border-bottom:1px solid var(--border);">{{ "Namn" if g.lang == "sv" else "Name" }}</th>
+          <th style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--muted);padding:6px 10px;text-align:left;border-bottom:1px solid var(--border);">{{ "Tid / Kostnad" if g.lang == "sv" else "Time / Cost" }}</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for c in internal_codes %}
+      <tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:6px 10px;"><span class="internal-tag">{{ c.code }}</span></td>
+        <td style="padding:6px 10px;">{{ c.name }}</td>
+        <td style="padding:6px 10px;color:var(--muted);font-size:12px;">
+          {{ "✓" if c.track_time else "–" }} / {{ "✓" if c.track_cost else "–" }}
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p style="color:var(--muted);font-size:13px;">{{ "Inga interna koder konfigurerade." if g.lang == "sv" else "No internal codes configured." }}</p>
+    {% endif %}
+  </div>
+
   <!-- Expense categories -->
   <div id="expense-categories" class="card" style="margin-bottom:16px;">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">

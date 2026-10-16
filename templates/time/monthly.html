@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "partials/target.html" import target_cell %}
 {% block title %}{{ "Månadsrapport" if g.lang == "sv" else "Monthly Report" }}{% endblock %}
 {% block page_title %}{{ "Månadsrapport" if g.lang == "sv" else "Monthly Report" }}{% endblock %}
 
@@ -23,14 +24,18 @@
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
       <div>
         <div style="font-size:17px;font-weight:700;">
-          <span style="font-weight:400;color:var(--muted);">{{ group.project.client.name }}</span><span style="color:var(--border);padding:0 8px;">/</span>{{ group.project.name }}
+          {{ target_cell(group.target) }}
         </div>
       </div>
       <div style="text-align:right;">
         <div style="font-family:var(--mono);font-size:22px;font-weight:700;">{{ "%.2f"|format(group.total) }} h</div>
         <div style="font-family:var(--mono);font-size:11px;color:var(--muted);">
-          × {{ "%.0f"|format(group.project.client.hourly_rate) }} =
-          <strong style="color:var(--text);">{{ (group.total * group.project.client.hourly_rate)|round|int|fmt_amount }} SEK</strong>
+          {% if group.is_internal %}
+          {{ "internt – faktureras ej" if g.lang == "sv" else "internal – not invoiced" }}
+          {% else %}
+          × {{ "%.0f"|format(group.target.project.client.hourly_rate) }} =
+          <strong style="color:var(--text);">{{ (group.total * group.target.project.client.hourly_rate)|round|int|fmt_amount }} SEK</strong>
+          {% endif %}
         </div>
       </div>
     </div>
@@ -71,9 +76,14 @@
   <!-- Total summary -->
   {% set grand_total_h = namespace(v=0) %}
   {% set grand_total_sek = namespace(v=0) %}
+  {% set internal_h = namespace(v=0) %}
   {% for pid, group in by_project.items() %}
     {% set grand_total_h.v = grand_total_h.v + group.total %}
-    {% set grand_total_sek.v = grand_total_sek.v + (group.total * group.project.client.hourly_rate) %}
+    {% if group.is_internal %}
+      {% set internal_h.v = internal_h.v + group.total %}
+    {% else %}
+      {% set grand_total_sek.v = grand_total_sek.v + (group.total * group.target.project.client.hourly_rate) %}
+    {% endif %}
   {% endfor %}
 
   <div class="card" style="border-color:var(--accent);background:rgba(255,71,87,0.04);">
@@ -81,7 +91,12 @@
       <div style="font-weight:800;font-size:16px;">{{ "Totalt" if g.lang == "sv" else "Total" }}</div>
       <div style="text-align:right;">
         <div style="font-family:var(--mono);font-size:24px;font-weight:800;color:var(--accent);">{{ grand_total_sek.v|round|int|fmt_amount }} SEK</div>
-        <div style="font-family:var(--mono);font-size:12px;color:var(--muted);">{{ "%.2f"|format(grand_total_h.v) }} h exkl. moms</div>
+        <div style="font-family:var(--mono);font-size:12px;color:var(--muted);">
+          {{ "%.2f"|format(grand_total_h.v) }} h exkl. moms
+          {% if internal_h.v %}
+          · {{ "%.2f"|format(internal_h.v) }} h {{ "internt" if g.lang == "sv" else "internal" }}
+          {% endif %}
+        </div>
       </div>
     </div>
     <div style="margin-top:16px;">

@@ -211,6 +211,16 @@
     .badge-billable { background: rgba(251,191,36,0.12);  color: var(--warning); }
     .badge-internal { background: rgba(102,102,102,0.12); color: var(--muted); }
 
+    /* Internal time/cost code marker — same family as .badge, monospaced so the
+       short codes line up down a column. */
+    .internal-tag {
+      display: inline-block; padding: 1px 6px; border-radius: 4px;
+      background: rgba(78,119,150,0.14); color: var(--accent-h);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
+      margin-right: 6px;
+    }
+
     /* ── Grids ── */
     .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
     .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
@@ -267,6 +277,7 @@
       <div class="nav-dropdown">
         <a href="{{ url_for('expenses_index') }}" class="nav-link {% if 'expense' in request.endpoint %}active{% endif %}">{{ "Utläggsrapport" if g.lang == "sv" else "Expense report" }}</a>
         <a href="{{ url_for('mileage_index') }}" class="nav-link {% if 'mileage' in request.endpoint %}active{% endif %}">{{ "Reseräkning" if g.lang == "sv" else "Mileage" }}</a>
+        <a href="{{ url_for('internal_report') }}" class="nav-link {% if 'internal' in request.endpoint %}active{% endif %}">{{ "Internrapport" if g.lang == "sv" else "Internal report" }}</a>
       </div>
     </div>
 
@@ -308,6 +319,7 @@
   <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:var(--muted);padding:8px 12px 2px;">{{ "Utlägg" if g.lang == "sv" else "Expenses" }}</div>
   <a href="{{ url_for('expenses_index') }}" class="nav-link {% if 'expense' in request.endpoint %}active{% endif %}" style="padding-left:20px;">{{ "Utläggsrapport" if g.lang == "sv" else "Expense report" }}</a>
   <a href="{{ url_for('mileage_index') }}" class="nav-link {% if 'mileage' in request.endpoint %}active{% endif %}" style="padding-left:20px;">{{ "Reseräkning" if g.lang == "sv" else "Mileage" }}</a>
+  <a href="{{ url_for('internal_report') }}" class="nav-link {% if 'internal' in request.endpoint %}active{% endif %}" style="padding-left:20px;">{{ "Internrapport" if g.lang == "sv" else "Internal report" }}</a>
   <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:var(--muted);padding:8px 12px 2px;">Reskontra</div>
   <a href="{{ url_for('invoices_list') }}" class="nav-link {% if 'invoice' in request.endpoint and 'supplier' not in request.endpoint %}active{% endif %}" style="padding-left:20px;">{{ g.t.invoices }}</a>
   <a href="{{ url_for('supplier_invoices_index') }}" class="nav-link {% if 'supplier' in request.endpoint or 'payment' in request.endpoint %}active{% endif %}" style="padding-left:20px;">{{ "Leverantörsfakturor" if g.lang == "sv" else "Supplier invoices" }}</a>

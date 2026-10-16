@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "partials/target.html" import target_select, target_cell %}
 {% block title %}{{ g.t.sup_review_title }}{% endblock %}
 {% block page_title %}{{ g.t.sup_review_title }}{% endblock %}
 
@@ -163,14 +164,8 @@
       </div>
       <div class="form-group">
         <label class="form-label">{{ g.t.sup_assignment }}</label>
-        <select name="project_id" class="form-control">
-          <option value="">—</option>
-          {% for p in projects %}
-          <option value="{{ p.id }}" {% if inv.project_id == p.id %}selected{% endif %}>
-            {{ p.client.name }} / {{ p.name }}
-          </option>
-          {% endfor %}
-        </select>
+        {{ target_select(projects, internal_codes, name="target",
+                         selected=inv.target_key, allow_none=True) }}
       </div>
     </div>
 

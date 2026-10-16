@@ -1,0 +1,58 @@
+{#
+  Shared widgets for the "assignment or internal code" dimension.
+
+  Every place that books time or cost picks one target: a client assignment, or an
+  internal code that can never be invoiced. Both live in one <select name="target">
+  with values "p:<project id>" / "i:<internal code id>", parsed by _parse_target().
+#}
+
+{% macro target_select(projects, codes, selected="", name="target", required=False,
+                       allow_none=False, none_label="", select_id="", attrs="") %}
+<select name="{{ name }}" class="form-control"
+        {% if select_id %}id="{{ select_id }}"{% endif %}
+        {% if required %}required{% endif %} {{ attrs|safe }}>
+  {% if allow_none %}
+  <option value="">— {{ none_label or ("Inget uppdrag" if g.lang == "sv" else "No assignment") }} —</option>
+  {% elif not selected %}
+  <option value="">{{ "Välj…" if g.lang == "sv" else "Select…" }}</option>
+  {% endif %}
+
+  {% if projects %}
+  <optgroup label="{{ 'Uppdrag' if g.lang == 'sv' else 'Assignments' }}">
+    {% for p in projects %}
+    <option value="p:{{ p.id }}"
+            data-kmrate="{{ p.get_km_rate() }}"
+            {% if selected == "p:" ~ p.id %}selected{% endif %}>
+      {{ p.client.name }} / {{ p.name }}
+    </option>
+    {% endfor %}
+  </optgroup>
+  {% endif %}
+
+  {% if codes %}
+  <optgroup label="{{ 'Internt (faktureras aldrig)' if g.lang == 'sv' else 'Internal (never invoiced)' }}">
+    {% for c in codes %}
+    <option value="i:{{ c.id }}"
+            data-kmrate="{{ c.get_km_rate() }}"
+            data-internal="1"
+            {% if selected == "i:" ~ c.id %}selected{% endif %}>
+      {{ c.code }} – {{ c.name }}
+    </option>
+    {% endfor %}
+  </optgroup>
+  {% endif %}
+</select>
+{% endmacro %}
+
+
+{# One table cell naming what a row is booked against. #}
+{% macro target_cell(row) %}
+  {% if row.internal_code_id and row.internal_code %}
+    <span class="internal-tag">{{ row.internal_code.code }}</span>
+    <span style="font-weight:600;">{{ row.internal_code.name }}</span>
+  {% elif row.project_id and row.project %}
+    <span style="color:var(--muted);">{{ row.project.client.name }}</span><span style="color:var(--border);padding:0 5px;">/</span><span style="font-weight:600;">{{ row.project.name }}</span>
+  {% else %}
+    <span style="color:var(--muted);">—</span>
+  {% endif %}
+{% endmacro %}

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "partials/target.html" import target_select, target_cell %}
 {% block title %}{{ g.t.mileage }}{% endblock %}
 {% block page_title %}{{ g.t.mileage }}{% endblock %}
 
@@ -28,8 +29,8 @@
             <tr>
               <td class="mono" style="white-space:nowrap;">{{ m.entry_date }}</td>
               <td style="font-size:12px;">
-                {% if m.project %}
-                  <span style="color:var(--muted);">{{ m.project.client.name }}</span><span style="color:var(--border);padding:0 5px;">/</span><span style="font-weight:600;">{{ m.project.name }}</span>
+                {% if m.project_id or m.internal_code_id %}
+                  {{ target_cell(m) }}
                 {% else %}—{% endif %}
               </td>
               <td style="color:var(--muted);font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
@@ -85,15 +86,9 @@
       </div>
 
       <div class="form-group">
-        <label class="form-label">{{ g.t.project }} *</label>
-        <select name="project_id" id="mile-project" class="form-control" required onchange="updateRate(this)">
-          <option value="">— {{ "Välj uppdrag" if g.lang == "sv" else "Select assignment" }} —</option>
-          {% for p in projects %}
-          <option value="{{ p.id }}" data-kmrate="{{ p.client.km_rate }}">
-            {{ p.client.name }} / {{ p.name }}
-          </option>
-          {% endfor %}
-        </select>
+        <label class="form-label">{{ "Uppdrag / intern kod" if g.lang == "sv" else "Assignment / internal code" }} *</label>
+        {{ target_select(projects, internal_codes, name="target", required=True,
+                         select_id="mile-target", attrs='onchange="updateRate(this)"') }}
       </div>
 
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
@@ -133,19 +128,34 @@
 
 {% block scripts %}
 <script>
-const projectRates = {
-  {% for p in projects %}
-  "{{ p.id }}": {{ p.client.km_rate }},
-  {% endfor %}
-};
+// The rate comes off the selected option's data-kmrate, which the shared
+// target_select macro fills from the PO/client rate or the internal code's own.
 function updateRate(sel) {
-  const rate = projectRates[sel.value];
+  const opt   = sel.options[sel.selectedIndex];
+  const rate  = opt ? opt.dataset.kmrate : "";
+  const internal = opt && opt.dataset.internal === "1";
   const input = document.getElementById('mile-rate');
-  if (rate) {
-    input.placeholder = rate + ' ({{ "kundpris" if g.lang == "sv" else "client rate" }})';
+  const billable = document.getElementById('mile-billable');
+
+  if (rate && parseFloat(rate) > 0) {
+    const source = internal
+      ? '{{ "internpris" if g.lang == "sv" else "internal rate" }}'
+      : '{{ "kundpris" if g.lang == "sv" else "client rate" }}';
+    input.placeholder = rate + ' (' + source + ')';
   } else {
     input.placeholder = '{{ "Auto" }}';
   }
+
+  // Internal mileage is never resold, so billable is off and locked.
+  if (billable) {
+    if (internal) {
+      billable.checked = false;
+      billable.disabled = true;
+    } else {
+      billable.disabled = false;
+    }
+  }
 }
+updateRate(document.getElementById('mile-target'));
 </script>
 {% endblock %}

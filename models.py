@@ -12,6 +12,9 @@ from sqlalchemy.engine import Engine
 # the buyer self-assesses it. Accounts and voucher rules live in bookkeeping.py.
 from bookkeeping import VAT_DOMESTIC
 
+# Fallback mileage rate when neither a PO, a client nor an internal code sets one.
+DEFAULT_KM_RATE = 25.0
+
 
 def _fernet():
     from cryptography.fernet import Fernet
@@ -150,6 +153,77 @@ class SupplierCategory(db.Model):
     active        = db.Column(db.Boolean, default=True)
 
 
+class InternalCode(db.Model):
+    """An internal time/cost code — behaves like an assignment, but can never be invoiced.
+
+    Sales, sick leave, vacation, admin: real hours and real costs that belong to the
+    company rather than to a client. Entries booked against a code carry
+    ``project_id = NULL``, and every invoicing query filters on ``project_id``, so
+    internal work stays out of invoices by construction. ``billable`` is forced off
+    on the way in as a second line of defence.
+
+    Purely a reporting dimension — the code never changes account routing. Vouchers
+    are built from the expense/supplier category exactly as they are for client work.
+    """
+    __tablename__ = "internal_code"
+    id          = db.Column(db.Integer, primary_key=True)
+    code        = db.Column(db.String(20), unique=True, nullable=False)   # e.g. SALES
+    name        = db.Column(db.String(200), nullable=False)
+    description = db.Column(db.Text)
+    # Groups codes in reporting: absence is excluded from "internal work" totals.
+    kind        = db.Column(db.String(20), default="other")   # sales, absence, admin, other
+    track_time  = db.Column(db.Boolean, default=True)
+    track_cost  = db.Column(db.Boolean, default=True)
+    km_rate     = db.Column(db.Float)   # internal mileage rate; falls back to DEFAULT_KM_RATE
+    sort_order  = db.Column(db.Integer, default=0)
+    active      = db.Column(db.Boolean, default=True)
+    created_at  = db.Column(db.DateTime, default=datetime.utcnow)
+
+    time_entries    = db.relationship("TimeEntry", backref="internal_code", lazy=True)
+    expenses        = db.relationship("Expense", backref="internal_code", lazy=True)
+    mileage_entries = db.relationship("MileageEntry", backref="internal_code", lazy=True)
+    supplier_invoices = db.relationship("SupplierInvoice", backref="internal_code", lazy=True)
+
+    KINDS = ("sales", "absence", "admin", "other")
+
+    @property
+    def label(self):
+        return f"{self.code} – {self.name}"
+
+    def get_km_rate(self):
+        return self.km_rate or DEFAULT_KM_RATE
+
+
+class _TargetMixin:
+    """Shared read helpers for rows that hang off either an assignment or an internal code.
+
+    Exactly one of ``project_id`` / ``internal_code_id`` is set; the routes enforce
+    that, and these helpers never assume which one it is.
+    """
+
+    @property
+    def is_internal(self):
+        return self.internal_code_id is not None
+
+    @property
+    def target_label(self):
+        """Human label for whatever this row is booked against."""
+        if self.internal_code_id and self.internal_code:
+            return self.internal_code.label
+        if self.project_id and self.project:
+            return f"{self.project.client.name} / {self.project.name}"
+        return "—"
+
+    @property
+    def target_key(self):
+        """Value used by the combined assignment/internal-code <select>."""
+        if self.internal_code_id:
+            return f"i:{self.internal_code_id}"
+        if self.project_id:
+            return f"p:{self.project_id}"
+        return ""
+
+
 class Client(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(200), nullable=False)
@@ -251,7 +325,7 @@ class Project(db.Model):
         po = self.get_active_po(for_date)
         if po is not None and po.km_rate is not None:
             return po.km_rate
-        return self.client.km_rate or 25.0
+        return self.client.km_rate or DEFAULT_KM_RATE
 
 
 class PurchaseOrder(db.Model):
@@ -289,9 +363,12 @@ class POHourType(db.Model):
     time_entries = db.relationship("TimeEntry", back_populates="hour_type", lazy=True)
 
 
-class TimeEntry(db.Model):
+class TimeEntry(_TargetMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    project_id = db.Column(db.Integer, db.ForeignKey("project.id"), nullable=False)
+    # Exactly one of project_id / internal_code_id is set. project_id became
+    # nullable when internal codes arrived — internal time has no assignment.
+    project_id = db.Column(db.Integer, db.ForeignKey("project.id"), nullable=True)
+    internal_code_id = db.Column(db.Integer, db.ForeignKey("internal_code.id"), nullable=True)
     entry_date = db.Column(db.Date, nullable=False, default=date.today)
     hours = db.Column(db.Float, nullable=False)
     time_type = db.Column(db.String(50), default="Normal")
@@ -304,15 +381,21 @@ class TimeEntry(db.Model):
 
     @property
     def display_type(self):
+        if self.internal_code_id:
+            return self.internal_code.name if self.internal_code else (self.time_type or "Internt")
         return self.hour_type.name if self.hour_type_id and self.hour_type else (self.time_type or "Normal")
 
     @property
     def effective_rate(self):
+        """Hourly rate this entry is worth. Internal time has no rate — it is never sold."""
+        if self.internal_code_id or not self.project:
+            return 0.0
         return self.project.get_hourly_rate(self.entry_date, self.hour_type)
 
-class Expense(db.Model):
+class Expense(_TargetMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     project_id = db.Column(db.Integer, db.ForeignKey("project.id"), nullable=True)
+    internal_code_id = db.Column(db.Integer, db.ForeignKey("internal_code.id"), nullable=True)
     expense_date = db.Column(db.Date, nullable=False, default=date.today)
     merchant = db.Column(db.String(200))
     description = db.Column(db.Text)
@@ -425,10 +508,11 @@ class Invoice(db.Model):
         return result
 
 
-class MileageEntry(db.Model):
+class MileageEntry(_TargetMixin, db.Model):
     __tablename__ = "mileage_entry"
     id = db.Column(db.Integer, primary_key=True)
     project_id = db.Column(db.Integer, db.ForeignKey("project.id"), nullable=True)
+    internal_code_id = db.Column(db.Integer, db.ForeignKey("internal_code.id"), nullable=True)
     entry_date = db.Column(db.Date, nullable=False, default=date.today)
     km = db.Column(db.Float, nullable=False)
     km_rate = db.Column(db.Float, nullable=False)
@@ -458,7 +542,7 @@ class PaymentFile(db.Model):
     supplier_invoices = db.relationship("SupplierInvoice", backref="payment_file", lazy=True)
 
 
-class SupplierInvoice(db.Model):
+class SupplierInvoice(_TargetMixin, db.Model):
     """An incoming invoice from a supplier, managed through upload → OCR → payment flow."""
     __tablename__ = "supplier_invoice"
     id = db.Column(db.Integer, primary_key=True)
@@ -486,6 +570,7 @@ class SupplierInvoice(db.Model):
     # the net amount, taxed at 12% instead of 25%.
     service_amount_excl_vat = db.Column(db.Float, default=0.0)
     project_id = db.Column(db.Integer, db.ForeignKey('project.id'), nullable=True)
+    internal_code_id = db.Column(db.Integer, db.ForeignKey('internal_code.id'), nullable=True)
     pdf_filename = db.Column(db.String(300))
     status = db.Column(db.String(20), default='pending')  # pending, approved, booked, paid
     fortnox_voucher_nr = db.Column(db.String(50))
