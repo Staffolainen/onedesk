@@ -2982,7 +2982,25 @@ def _book_payslip(p):
     p.voucher_ref = ref
     db.session.commit()
     _audit("payslip_booked", f"payslip_id={p.id} voucher={ref}")
+    if ref:
+        _send_payslip_to_fortnox_inbox(p, ref)
     return ref
+
+
+def _send_payslip_to_fortnox_inbox(p, voucher_ref):
+    """File the payslip in Fortnox's inbox, named after its voucher like other attachments.
+
+    Never raises — the voucher is already booked; a missed PDF is logged and can be
+    attached by hand.
+    """
+    try:
+        name = f"{voucher_ref} - {_payslip_filename(p)}"
+        path = os.path.join(_payroll_folder("payslips"), name)
+        with open(path, "wb") as fh:
+            fh.write(generate_payslip_pdf(p, app.config, ytd=_payslip_ytd(p)))
+        _email_pdf_to_fortnox_inbox(path, name, voucher_ref, app.config)
+    except Exception as e:
+        app.logger.error("Payslip to Fortnox inbox failed — payslip=%s voucher=%s: %s", p.id, voucher_ref, e)
 
 
 def _book_agi(r):

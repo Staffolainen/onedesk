@@ -414,7 +414,8 @@ Admin only. **Reskontra → Lönebesked**.
    month on with the same lines. Edit, then **Registrera betalning** — the slip locks.
 3. Email the PDF to any address from the payslip page.
 4. **Betalningsunderlag**: the net salary is paid on the pay date (pain.001, purpose SALA).
-   **Kvittera** the file → the salary voucher is posted to Fortnox, dated on the pay date.
+   **Kvittera** the file → the salary voucher is posted to Fortnox, dated on the pay date,
+   and the payslip PDF is emailed to the Fortnox inbox as `<voucher> - Lonebesked_<name>_<period>.pdf`.
 5. **Arbetsgivardeklaration** for the payout month: create the XML, upload it at
    Skatteverket, **Kvittera import**.
 6. Enter Skatteverket's amount, OCR, payment date and tax date (default the 12th of the

@@ -323,6 +323,19 @@ def test_settlement_retry_books_only_the_missing_voucher(auth_client, db, seeded
     assert len(fortnox.posted) == 1 and fortnox.posted[0]["date"] == date(2026, 7, 12)
 
 
+def test_booking_files_payslip_in_fortnox_inbox_named_by_voucher(auth_client, db, seeded, staffan,
+                                                                   fortnox, monkeypatch):
+    sent = []
+    monkeypatch.setattr(app_module, "_email_pdf_to_fortnox_inbox",
+                        lambda path, name, ref, config: sent.append((open(path, "rb").read(4), name, ref)))
+    p = _june_slip(db, staffan, seeded)
+    p.status = "paid"
+    db.session.commit()
+    auth_client.post(f"/payroll/payslips/{p.id}/book")
+    db.session.refresh(p)
+    assert sent == [(b"%PDF", f"{p.voucher_ref} - Lonebesked_Staffan_Edlund_2026-06.pdf", p.voucher_ref)]
+
+
 def test_mixed_file_keeps_each_date(auth_client, db, seeded, staffan, fortnox, app):
     """Supplier invoices keep their due-date logic; the salary keeps its pay date."""
     app.config.update(COMPANY_BBAN="65011234567")
