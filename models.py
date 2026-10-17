@@ -696,7 +696,7 @@ class Payslip(db.Model):
     pay_date        = db.Column(db.Date, nullable=False)
     spec_nr         = db.Column(db.Integer, default=1)             # FK570, unique per person and AGI period
     note            = db.Column(db.Text)
-    status          = db.Column(db.String(20), default="draft")    # draft, approved, paid
+    status          = db.Column(db.String(20), default="draft")    # draft, approved, paid, historical (sideloaded)
     payment_file_id = db.Column(db.Integer, db.ForeignKey("payment_file.id"), nullable=True)
     voucher_ref     = db.Column(db.String(50))
     paid_at         = db.Column(db.DateTime)

@@ -3,7 +3,7 @@
 {%- endmacro %}
 
 {% macro payslip_badge(status) -%}
-{% set labels = {"draft": ("Utkast","Draft","draft"), "approved": ("Registrerad för betalning","Registered for payment","pending"), "paid": ("Betald","Paid","paid")} %}
+{% set labels = {"draft": ("Utkast","Draft","draft"), "approved": ("Registrerad för betalning","Registered for payment","pending"), "paid": ("Betald","Paid","paid"), "historical": ("Historisk","Historical","sent")} %}
 {% set l = labels.get(status, (status, status, "draft")) %}
 <span class="badge badge-{{ l[2] }}">{{ l[0] if g.lang == "sv" else l[1] }}</span>
 {%- endmacro %}

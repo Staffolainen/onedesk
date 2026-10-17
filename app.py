@@ -2897,7 +2897,8 @@ def _period_bounds(agi_period):
 
 def _payslips_in_agi_period(agi_period, include_drafts=False):
     start, end = _period_bounds(agi_period)
-    q = Payslip.query.filter(Payslip.pay_date >= start, Payslip.pay_date <= end)
+    q = Payslip.query.filter(Payslip.pay_date >= start, Payslip.pay_date <= end,
+                             Payslip.status != "historical")   # already declared outside onedesk
     if not include_drafts:
         q = q.filter(Payslip.status != "draft")
     return q.join(Employee).order_by(Employee.last_name, Employee.first_name, Payslip.spec_nr).all()
@@ -3365,6 +3366,33 @@ def payroll_payslip_reopen(payslip_id):
             agi.status = "open"   # the generated file no longer matches
         db.session.commit()
         _audit("payslip_reopened", f"payslip_id={p.id}")
+    return redirect(url_for("payroll_payslip", payslip_id=p.id))
+
+
+@app.route("/payroll/payslips/<int:payslip_id>/historical", methods=["POST"])
+@login_required
+@admin_required
+def payroll_payslip_historical(payslip_id):
+    """Mark a sideloaded slip as already paid, booked and declared outside onedesk (or undo that).
+
+    Historical slips count towards the year-to-date totals and serve as copy sources,
+    but never reach a payment file, a Fortnox voucher or an AGI file.
+    """
+    p = Payslip.query.get_or_404(payslip_id)
+    if p.status == "draft":
+        if not p.lines:
+            flash(_payroll_lang("Lönebeskedet har inga rader", "The payslip has no lines"), "error")
+        else:
+            p.status = "historical"
+            db.session.commit()
+            _audit("payslip_historical", f"payslip_id={p.id}")
+            flash(_payroll_lang("Markerad som historisk — räknas i ackumulerat, ingen betalning, bokföring eller AGI",
+                                "Marked historical — counts towards year-to-date, no payment, voucher or AGI"),
+                  "success")
+    elif p.status == "historical":
+        p.status = "draft"
+        db.session.commit()
+        _audit("payslip_historical_undone", f"payslip_id={p.id}")
     return redirect(url_for("payroll_payslip", payslip_id=p.id))
 
 

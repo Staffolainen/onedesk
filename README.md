@@ -432,6 +432,11 @@ difference is cleared on the tax date. Löneart 310 pays bilersättning at Skatt
 tax-free maximum, 2,50 kr/km (25 kr/mil); a higher rate is flagged on the payslip. Payslip PDFs that were emailed and
 filed AGI files are kept in `instance/uploads/{payslips,agi}`.
 
+**Earlier payslips** (paid outside onedesk) can be sideloaded so *Ackumulerat* is right:
+create the slip, enter its lines and press **Historisk**. A historical slip counts towards
+the year-to-date totals and can be copied, but never reaches a payment file, a voucher or
+an AGI file. **Gör till utkast igen** undoes it.
+
 ### Invoicing
 1. **Fakturor** → **Ny faktura** → select assignment and period
 2. All uninvoiced hours + approved billable expenses + mileage are included —

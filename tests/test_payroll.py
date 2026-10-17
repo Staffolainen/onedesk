@@ -391,3 +391,23 @@ def test_payroll_pages_render(auth_client, db, seeded, staffan):
         assert auth_client.get(url).status_code == 200, url
     pdf = auth_client.get(f"/payroll/payslips/{p.id}/pdf")
     assert pdf.status_code == 200 and pdf.data[:4] == b"%PDF"
+
+
+def test_historical_slip_counts_in_ytd_but_nowhere_else(auth_client, db, seeded, staffan):
+    old = _june_slip(db, staffan, seeded, pay_date=date(2026, 5, 25))
+    auth_client.post(f"/payroll/payslips/{old.id}/historical")
+    db.session.refresh(old)
+    assert old.status == "historical" and old.is_locked
+
+    new = _june_slip(db, staffan, seeded)
+    ytd = app_module._payslip_ytd(new)
+    assert ytd["gross"] == 2 * payslip_summary(new)["gross"]
+    assert ytd["tax"] == 2 * 22386
+
+    assert app_module._payslips_in_agi_period(old.agi_period, include_drafts=True) == []
+    assert auth_client.get("/payroll").status_code == 200
+    assert auth_client.get(f"/payroll/payslips/{old.id}").status_code == 200
+
+    auth_client.post(f"/payroll/payslips/{old.id}/historical")
+    db.session.refresh(old)
+    assert old.status == "draft"

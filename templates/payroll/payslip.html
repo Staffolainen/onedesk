@@ -139,6 +139,11 @@
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button type="submit" class="btn btn-danger btn-sm">✕</button>
       </form>
+      <form method="POST" action="{{ url_for('payroll_payslip_historical', payslip_id=p.id) }}" style="display:inline;"
+            onsubmit="return confirm('{{ 'Markera som historisk? Lönen är redan utbetald, bokförd och redovisad utanför onedesk — beskedet räknas bara i ackumulerat.' if sv else 'Mark historical? Already paid, booked and declared outside onedesk — the slip only counts towards year-to-date.' }}')">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="btn btn-ghost btn-sm" title="{{ 'För att läsa in tidigare lönebesked' if sv else 'For sideloading earlier payslips' }}">⤓ {{ "Historisk" if sv else "Historical" }}</button>
+      </form>
       {% elif p.status == "approved" and not p.payment_file_id %}
       <a href="{{ url_for('payment_run') }}" class="btn btn-primary btn-sm">{{ "Till betalningsunderlag" if sv else "To payment run" }} →</a>
       <form method="POST" action="{{ url_for('payroll_payslip_reopen', payslip_id=p.id) }}" style="display:inline;">
@@ -147,13 +152,20 @@
       </form>
       {% elif p.status == "approved" %}
       <a href="{{ url_for('payment_run') }}" class="btn btn-secondary btn-sm">{{ "Kvittera betalningen i betalningsunderlaget" if sv else "Acknowledge the payment in the payment run" }} →</a>
+      {% elif p.status == "historical" %}
+      <form method="POST" action="{{ url_for('payroll_payslip_historical', payslip_id=p.id) }}" style="display:inline;">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="btn btn-ghost btn-sm">↺ {{ "Gör till utkast igen" if sv else "Back to draft" }}</button>
+      </form>
       {% elif p.status == "paid" and not p.voucher_ref %}
       <form method="POST" action="{{ url_for('payroll_payslip_book', payslip_id=p.id) }}" style="display:inline;">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button type="submit" class="btn btn-primary btn-sm">{{ "Bokför i Fortnox" if sv else "Book in Fortnox" }}</button>
       </form>
       {% endif %}
+      {% if p.status != "historical" %}
       <a href="{{ url_for('payroll_agi', period=p.agi_period) }}" class="btn btn-ghost btn-sm">AGI {{ p.agi_period }} →</a>
+      {% endif %}
     </div>
     <form method="POST" action="{{ url_for('payroll_payslip_email', payslip_id=p.id) }}" style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
