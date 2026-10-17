@@ -9,7 +9,7 @@ from reportlab.lib.units import mm
 from reportlab.platypus import BaseDocTemplate, Frame, PageTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.platypus.flowables import HRFlowable
 
-from pdf_generator import C_BLACK, C_RULE, FONT, FONTB, PW, sek, _styles, _p0
+from pdf_generator import C_BLACK, C_RULE, FONT, FONTB, PW, SZ, sek, _styles, _p0
 from payroll import kind_sign, payslip_summary
 
 MONTHS_SV = ["januari", "februari", "mars", "april", "maj", "juni", "juli",
@@ -31,6 +31,29 @@ def _num(val):
     return (str(int(v)) if v == int(v) else f"{v:.2f}").replace(".", ",")
 
 
+def _ytd_footer(ytd, year, through):
+    """Ackumulerat pinned to the bottom of the page, laid out like the invoice footer."""
+    def _footer(canvas, doc):
+        canvas.saveState()
+        lm, y, col = doc.leftMargin, 8 * mm, PW / 4
+        canvas.setStrokeColor(C_RULE)
+        canvas.setLineWidth(1.2)
+        canvas.line(lm, y + 19 * mm, lm + PW, y + 19 * mm)
+        blocks = [(f"Ackumulerat {year}", f"t.o.m. {through}"),
+                  ("Skattepliktig bruttolön", sek(ytd.get("gross", 0))),
+                  ("varav förmåner", sek(ytd.get("benefits", 0))),
+                  ("Avdragen skatt", sek(ytd.get("tax", 0)))]
+        for i, (title, value) in enumerate(blocks):
+            x = lm + i * col
+            canvas.setFillColor(C_BLACK)
+            canvas.setFont(FONTB, 7)
+            canvas.drawString(x, y + 14 * mm, title)
+            canvas.setFont(FONT, SZ - 1)
+            canvas.drawString(x, y + 14 * mm - 4.2 * mm, value)
+        canvas.restoreState()
+    return _footer
+
+
 def generate_payslip_pdf(payslip, config, ytd=None) -> bytes:
     """ytd: {"gross", "tax", "benefits"} for the calendar year up to and including this slip."""
     s = _styles()
@@ -38,12 +61,14 @@ def generate_payslip_pdf(payslip, config, ytd=None) -> bytes:
     summary = payslip_summary(payslip)
     buf = io.BytesIO()
     doc = BaseDocTemplate(buf, pagesize=A4, leftMargin=15 * mm, rightMargin=15 * mm,
-                          topMargin=14 * mm, bottomMargin=18 * mm,
+                          topMargin=14 * mm, bottomMargin=32 * mm,
                           title=f"Lönebesked {emp.name} {payslip.period}")
     # Zero-padding frame, as in the invoice PDF, so full-width (PW) tables line up.
+    footer = {"onPage": _ytd_footer(ytd, payslip.pay_date.year, payslip.pay_date.isoformat())} if ytd else {}
     doc.addPageTemplates([PageTemplate(id="slip", frames=[Frame(
         doc.leftMargin, doc.bottomMargin, doc.width, doc.height,
-        leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)])])
+        leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)],
+        **footer)])
     story = []
 
     company_lines = [config.get("COMPANY_NAME", "")]
@@ -111,17 +136,7 @@ def generate_payslip_pdf(payslip, config, ytd=None) -> bytes:
         ("LINEABOVE", (0, -1), (-1, -1), 1.2, C_BLACK),
         ("TOPPADDING", (0, -1), (-1, -1), 5),
     ]))
-    story += [tot_tbl, Spacer(1, 10 * mm)]
-
-    if ytd:
-        story.append(Paragraph(f"Ackumulerat {payslip.pay_date.year}", s["b"]))
-        ytd_rows = [[Paragraph(k, s["n"]), Paragraph(sek(ytd.get(key, 0)), s["nr"])]
-                    for k, key in (("Skattepliktig bruttolön", "gross"),
-                                   ("varav förmåner", "benefits"),
-                                   ("Avdragen skatt", "tax"))]
-        ytd_tbl = Table(ytd_rows, colWidths=[70 * mm, 40 * mm], hAlign="LEFT")
-        ytd_tbl.setStyle(TableStyle(_p0() + [("BOTTOMPADDING", (0, 0), (-1, -1), 2)]))
-        story.append(ytd_tbl)
+    story.append(tot_tbl)
 
     if payslip.note:
         story += [Spacer(1, 6 * mm), Paragraph(payslip.note, s["n"])]
