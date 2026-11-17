@@ -84,7 +84,22 @@
         <input type="text" name="note" class="form-control" value="{{ p.note or '' }}" {% if locked %}disabled{% endif %}></div>
     </div>
     {% if not locked %}
-    <div style="margin-bottom:24px;"><button type="submit" class="btn btn-primary">{{ g.t.save }}</button></div>
+    <div style="margin-bottom:24px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+      <button type="submit" class="btn btn-primary">{{ g.t.save }}</button>
+      <button type="submit" name="action" value="recalc_tax" class="btn btn-secondary">{{ "Spara och räkna om skatt" if sv else "Save and recalculate tax" }}</button>
+      <span style="font-size:11px;color:var(--muted);">
+        {% if tax_info.table_nr is none %}
+          {{ "Ange skattetabell på den anställde för att kunna räkna om skatten." if sv else "Set a tax table on the employee to recalculate the tax." }}
+        {% elif not tax_info.loaded %}
+          {{ "Skattetabell" if sv else "Tax table" }} {{ tax_info.table_nr }} / {{ tax_info.year }} {{ "är inte inläst —" if sv else "is not loaded —" }}
+          <a href="{{ url_for('tax_tables') }}">{{ "hämta den" if sv else "fetch it" }}</a>.
+        {% else %}
+          {{ "Tabell" if sv else "Table" }} {{ tax_info.table_nr }}, {{ "kolumn" if sv else "column" }} {{ tax_info.column }}, {{ tax_info.year }}:
+          {{ "underlag" if sv else "base" }} {{ tax_info.base|fmt_amount }} → {{ "skatt" if sv else "tax" }} {{ tax_info.tax|fmt_amount if tax_info.tax is not none else "—" }}{% if tax_info.current is not none and tax_info.tax is not none and tax_info.current|round|int != tax_info.tax %}
+          <strong style="color:var(--warning);">({{ "på lönebeskedet" if sv else "on the payslip" }}: {{ tax_info.current|fmt_amount }})</strong>{% endif %}
+        {% endif %}
+      </span>
+    </div>
     {% endif %}
   </form>
 

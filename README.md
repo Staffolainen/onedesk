@@ -425,6 +425,15 @@ Admin only. **Reskontra → Lönebesked**.
    rounding to 3740). If the second fails — e.g. the tax date is in a financial year not yet
    opened in Fortnox — **Bokför i Fortnox** on the AGI page retries just that one.
 
+**Preliminary tax.** Under **Inställningar → Lön → Skattetabeller**, *Hämta från Skatteverket*
+loads a monthly tax table (year + table number) from Skatteverket's open data; fetch next
+year's when it is published in December. Each employee has a table number and a column
+(1 = salary, under 66). On a draft payslip **Spara och räkna om skatt** saves the lines and
+sets the tax line (löneart 900) from the table for the pay date's year, read against taxable
+pay after gross deductions plus benefits. Plain **Spara** never touches the tax, so a manual
+amount (jämkning, engångsskatt on a bonus) stays as typed. Unpaid leave: add a line with
+löneart 110 Bruttolöneavdrag (e.g. 10 dagar × månadslön/21), then recalculate the tax.
+
 Amounts are whole kronor, truncated like the AGI (FK011, FK001 …), and the payslip's totals
 use the same rounding, so slip, payout and voucher agree. The arbetsgivaravgift on the salary
 voucher is rounded, while FK487 is truncated as Skatteverket computes it — the krona of

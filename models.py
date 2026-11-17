@@ -661,7 +661,8 @@ class Employee(db.Model):
     bank_account    = db.Column(db.String(30))
     salary_account  = db.Column(db.String(10), default="7210")    # 7220 for företagsledare
     ag_rate         = db.Column(db.Float, default=0.3142)          # arbetsgivaravgift
-    tax_table       = db.Column(db.String(20))                     # informational, e.g. "34"
+    tax_table       = db.Column(db.String(20))                     # Skatteverket's table number, e.g. "34"
+    tax_column      = db.Column(db.Integer, default=1)             # column 1–6 in the table
     active          = db.Column(db.Boolean, default=True)
     created_at      = db.Column(db.DateTime, default=datetime.utcnow)
 
@@ -681,6 +682,30 @@ class Employee(db.Model):
         if not self.bank_account:
             return "—"
         return f"{self.bank_clearing}-{self.bank_account}" if self.bank_clearing else self.bank_account
+
+
+class TaxTableRow(db.Model):
+    """One income bracket of Skatteverket's monthly tax table (skattetabell för månadslön).
+
+    kind "B": the columns hold the tax in kronor. kind "%": the columns hold a
+    percentage of the income (the top brackets). ``income_to`` is NULL on the last row.
+    """
+    __tablename__ = "tax_table_row"
+    id              = db.Column(db.Integer, primary_key=True)
+    year            = db.Column(db.Integer, nullable=False)
+    table_nr        = db.Column(db.Integer, nullable=False)
+    kind            = db.Column(db.String(1), nullable=False, default="B")
+    income_from     = db.Column(db.Integer, nullable=False)
+    income_to       = db.Column(db.Integer)
+    col1            = db.Column(db.Integer, default=0)
+    col2            = db.Column(db.Integer, default=0)
+    col3            = db.Column(db.Integer, default=0)
+    col4            = db.Column(db.Integer, default=0)
+    col5            = db.Column(db.Integer, default=0)
+    col6            = db.Column(db.Integer, default=0)
+    fetched_at      = db.Column(db.DateTime, default=datetime.utcnow)
+
+    __table_args__ = (db.Index("ix_tax_table_lookup", "year", "table_nr", "income_from"),)
 
 
 class Payslip(db.Model):

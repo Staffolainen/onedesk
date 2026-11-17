@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% from "payroll/_macros.html" import th %}
+{% set sv = g.lang == "sv" %}
+{% block title %}{{ "Skattetabeller" if sv else "Tax tables" }}{% endblock %}
+{% block page_title %}{{ "Skattetabeller" if sv else "Tax tables" }}{% endblock %}
+
+{% block topbar_actions %}
+  <a href="{{ url_for('payroll_employees') }}" class="btn btn-ghost btn-sm">{{ "Anställda" if sv else "Employees" }}</a>
+  <a href="{{ url_for('payroll_index') }}" class="btn btn-ghost btn-sm">← {{ "Lönebesked" if sv else "Payroll" }}</a>
+{% endblock %}
+
+{% block content %}
+<div style="max-width:900px;margin:0 auto;">
+  <div class="card" style="margin-bottom:16px;">
+    <div style="font-size:12px;color:var(--muted);margin-bottom:14px;line-height:1.6;">
+      {{ "Skatteverkets skattetabeller för månadslön. ”Spara och räkna om skatt” på ett lönebesked läser tabellen för utbetalningsårets tabellnummer och kolumn på den anställde. Hämta nästa års tabell när Skatteverket har publicerat den (normalt i december); att hämta igen ersätter den inlästa."
+         if sv else
+         "Skatteverket's monthly tax tables. “Save and recalculate tax” on a payslip reads the table for the pay date's year, using the employee's table number and column. Fetch next year's table once Skatteverket has published it (normally in December); fetching again replaces what is loaded." }}
+      {% if used %}<br>{{ "Tabeller som används av aktiva anställda:" if sv else "Tables used by active employees:" }} <span class="mono">{{ used|join(", ") }}</span>{% endif %}
+    </div>
+    <form method="POST" style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="fetch">
+      <div class="form-group" style="margin-bottom:0;"><label class="form-label">{{ "År" if sv else "Year" }}</label>
+        <input type="number" name="year" min="2000" max="2100" required class="form-control mono" style="width:100px;" value="{{ year or default_year }}"></div>
+      <div class="form-group" style="margin-bottom:0;"><label class="form-label">{{ "Tabell" if sv else "Table" }}</label>
+        <input type="number" name="table_nr" min="1" max="99" required class="form-control mono" style="width:90px;" value="{{ table_nr or (used[0] if used else '') }}"></div>
+      <button type="submit" class="btn btn-primary">{{ "Hämta från Skatteverket" if sv else "Fetch from Skatteverket" }}</button>
+    </form>
+  </div>
+
+  <div class="card" style="margin-bottom:16px;padding:0;overflow:hidden;">
+    <div class="table-wrap">
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead><tr>{{ th([("År","Year"), ("Tabell","Table"), ("Rader","Rows",1), ("Hämtad","Fetched"), ("","")]) }}</tr></thead>
+      <tbody>
+      {% for y, t, n, fetched in loaded %}
+      <tr style="border-bottom:1px solid var(--border);{% if y == year and t == table_nr %}background:var(--surface2);{% endif %}">
+        <td style="padding:6px 10px;font-family:var(--mono);">{{ y }}</td>
+        <td style="padding:6px 10px;font-family:var(--mono);">{{ t }}</td>
+        <td style="padding:6px 10px;text-align:right;font-family:var(--mono);">{{ n }}</td>
+        <td style="padding:6px 10px;color:var(--muted);">{{ fetched.strftime("%Y-%m-%d") if fetched else "" }}</td>
+        <td style="padding:6px 10px;text-align:right;white-space:nowrap;">
+          <a href="{{ url_for('tax_tables', year=y, table_nr=t) }}" class="btn btn-ghost btn-sm">{{ "Visa" if sv else "View" }}</a>
+          <form method="POST" style="display:inline;" onsubmit="return confirm('{{ 'Ta bort tabell' if sv else 'Delete table' }} {{ t }} / {{ y }}?')">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="action" value="delete">
+            <input type="hidden" name="year" value="{{ y }}">
+            <input type="hidden" name="table_nr" value="{{ t }}">
+            <button type="submit" class="btn btn-danger btn-sm">✕</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" style="padding:14px 10px;color:var(--muted);">{{ "Ingen tabell inläst ännu." if sv else "No table loaded yet." }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  {% if rows %}
+  <div class="card" style="margin-bottom:16px;">
+    <div class="card-title">{{ "Tabell" if sv else "Table" }} {{ table_nr }} · {{ year }}</div>
+    <form method="GET" style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:12px;">
+      <input type="hidden" name="year" value="{{ year }}">
+      <input type="hidden" name="table_nr" value="{{ table_nr }}">
+      <div class="form-group" style="margin-bottom:0;"><label class="form-label">{{ "Slå upp månadslön" if sv else "Look up a monthly income" }}</label>
+        <input type="text" inputmode="numeric" name="income" class="form-control mono" style="width:140px;" value="{{ lookup.income if lookup else '' }}"></div>
+      <button type="submit" class="btn btn-secondary">{{ "Slå upp" if sv else "Look up" }}</button>
+    </form>
+    {% if lookup %}
+    <table style="font-size:13px;margin-bottom:12px;">
+      {% for n, label in columns.items() %}
+      <tr><td style="padding:2px 16px 2px 0;color:var(--muted);">{{ label[0] if sv else label[1] }}</td>
+          <td style="padding:2px 0;text-align:right;font-family:var(--mono);">{{ lookup.taxes[loop.index0]|fmt_amount if lookup.taxes[loop.index0] is not none else "—" }}</td></tr>
+      {% endfor %}
+    </table>
+    {% endif %}
+    <div class="table-wrap" style="max-height:520px;overflow:auto;">
+    <table style="width:100%;border-collapse:collapse;font-size:12px;">
+      <thead><tr>{{ th([("Från","From",1), ("Till","To",1), ("Kol 1","Col 1",1), ("Kol 2","Col 2",1), ("Kol 3","Col 3",1), ("Kol 4","Col 4",1), ("Kol 5","Col 5",1), ("Kol 6","Col 6",1)]) }}</tr></thead>
+      <tbody>
+      {% for r in rows %}
+      {% set suffix = " %" if r.kind == "%" else "" %}
+      <tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:3px 10px;text-align:right;font-family:var(--mono);">{{ r.income_from }}</td>
+        <td style="padding:3px 10px;text-align:right;font-family:var(--mono);">{{ r.income_to if r.income_to is not none else "—" }}</td>
+        {% for v in [r.col1, r.col2, r.col3, r.col4, r.col5, r.col6] %}
+        <td style="padding:3px 10px;text-align:right;font-family:var(--mono);">{{ v }}{{ suffix }}</td>
+        {% endfor %}
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

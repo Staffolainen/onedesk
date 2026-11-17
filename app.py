@@ -50,7 +50,7 @@ from models import (db, User, Client, Project, PurchaseOrder, POHourType,
                     TimeEntry, Expense, Invoice, MileageEntry, Settings,
                     VoucherTemplate, SupplierInvoice, PaymentFile,
                     InternalCode, DEFAULT_KM_RATE,
-                    AgiFieldCode, SalaryType, Employee, Payslip, PayslipLine, AgiReport,
+                    AgiFieldCode, SalaryType, Employee, Payslip, PayslipLine, AgiReport, TaxTableRow,
                     fiscal_year, fy_start, fy_end)
 from bookkeeping import (REVERSE_CHARGE_VAT_RATE, VAT_DOMESTIC, VAT_TREATMENTS,
                          VAT_REVERSE_CHARGE_DOMESTIC, VAT_REVERSE_CHARGE_EU_SERVICES,
@@ -67,7 +67,8 @@ from payroll import (KINDS, AGI_FIELD_SEED, AGI_AG_BASE_CODES, SALARY_TYPE_SEED,
                      salary_voucher_rows, salary_voucher_description, voucher_balanced,
                      agi_totals, build_agi_xml, tax_payment_rows, tax_settlement_rows, mileage_over_limit,
                      SKV_MILEAGE_RATE_PER_KM, line_amount, add_month,
-                     next_period, normalize_personnummer, skv_due_date, digits as payroll_digits)
+                     next_period, normalize_personnummer, skv_due_date, digits as payroll_digits,
+                     TAX_COLUMNS, fetch_skv_tax_table, tax_base, tax_from_row)
 from payroll_pdf import generate_payslip_pdf
 
 app = Flask(__name__)
@@ -3080,6 +3081,7 @@ def _employee_from_form(emp):
     emp.salary_account = (f.get("salary_account") or "7210").strip()
     emp.ag_rate = _safe_float(f.get("ag_rate_pct"), 31.42) / 100
     emp.tax_table = (f.get("tax_table") or "").strip()
+    emp.tax_column = _safe_int(f.get("tax_column")) if _safe_int(f.get("tax_column")) in TAX_COLUMNS else 1
     emp.active = f.get("active", "1") == "1"
     if not emp.first_name or not emp.last_name:
         raise ValueError(_payroll_lang("Namn krävs", "Name is required"))
@@ -3102,7 +3104,7 @@ def payroll_employees():
         flash(_payroll_lang("Anställd skapad", "Employee created"), "success")
         return redirect(url_for("payroll_employees"))
     employees = Employee.query.order_by(Employee.active.desc(), Employee.last_name, Employee.first_name).all()
-    return render_template("payroll/employees.html", employees=employees, edit=None)
+    return render_template("payroll/employees.html", employees=employees, edit=None, tax_columns=TAX_COLUMNS)
 
 
 @app.route("/payroll/employees/<int:employee_id>", methods=["GET", "POST"])
@@ -3122,7 +3124,7 @@ def payroll_employee_edit(employee_id):
         flash(_payroll_lang("Anställd sparad", "Employee saved"), "success")
         return redirect(url_for("payroll_employees"))
     employees = Employee.query.order_by(Employee.active.desc(), Employee.last_name, Employee.first_name).all()
-    return render_template("payroll/employees.html", employees=employees, edit=emp)
+    return render_template("payroll/employees.html", employees=employees, edit=emp, tax_columns=TAX_COLUMNS)
 
 
 # ── Payslips ──
@@ -3186,6 +3188,85 @@ def payroll_copy_latest():
     return redirect(url_for("payroll_index"))
 
 
+def _tax_table_nr(employee):
+    """The employee's table number as an int, or None when it isn't a plain table (e.g. jämkning)."""
+    text = (employee.tax_table or "").strip()
+    return int(text) if text.isdigit() else None
+
+
+def _table_tax(year, table_nr, column, income):
+    """(tax, row) from the stored table, or (None, None) when no bracket covers the income."""
+    row = (TaxTableRow.query
+           .filter(TaxTableRow.year == year, TaxTableRow.table_nr == table_nr,
+                   TaxTableRow.income_from <= income)
+           .order_by(TaxTableRow.income_from.desc()).first())
+    if not row or (row.income_to is not None and income > row.income_to):
+        return None, None
+    return tax_from_row(row, income, column), row
+
+
+def _payslip_tax_info(p):
+    """What the table says for the saved payslip, for the hint beside the button."""
+    table_nr = _tax_table_nr(p.employee)
+    column = p.employee.tax_column if p.employee.tax_column in TAX_COLUMNS else 1
+    info = {"table_nr": table_nr, "column": column, "year": p.pay_date.year,
+            "loaded": False, "base": tax_base(p), "tax": None, "current": None}
+    if table_nr is None:
+        return info
+    info["loaded"] = TaxTableRow.query.filter_by(year=info["year"], table_nr=table_nr).first() is not None
+    if info["loaded"]:
+        info["tax"] = _table_tax(info["year"], table_nr, column, info["base"])[0] if info["base"] > 0 else 0
+    tax_lines = [l for l in p.lines if l.salary_type.kind == "tax"]
+    if tax_lines:
+        info["current"] = sum(l.amount or 0 for l in tax_lines)
+    return info
+
+
+def _recalc_payslip_tax(p):
+    """Set the payslip's preliminary tax line from the tax table. Returns (ok, message)."""
+    emp = p.employee
+    table_nr = _tax_table_nr(emp)
+    if table_nr is None:
+        return False, _payroll_lang(
+            "Sparat, men skatten räknades inte om: den anställde saknar skattetabell (ett tabellnummer, t.ex. 34).",
+            "Saved, but the tax was not recalculated: the employee has no tax table number (e.g. 34).")
+    year = p.pay_date.year
+    column = emp.tax_column if emp.tax_column in TAX_COLUMNS else 1
+    if not TaxTableRow.query.filter_by(year=year, table_nr=table_nr).first():
+        return False, _payroll_lang(
+            f"Sparat, men skatten räknades inte om: skattetabell {table_nr} för {year} är inte inläst. "
+            "Hämta den under Inställningar → Lön → Skattetabeller.",
+            f"Saved, but the tax was not recalculated: tax table {table_nr} for {year} is not loaded. "
+            "Fetch it under Settings → Payroll → Tax tables.")
+    base = tax_base(p)
+    tax, _row = _table_tax(year, table_nr, column, base) if base > 0 else (0, None)
+    if tax is None:
+        return False, _payroll_lang(
+            f"Sparat, men skatten räknades inte om: tabell {table_nr} saknar rad för {base} kr.",
+            f"Saved, but the tax was not recalculated: table {table_nr} has no row for {base} kr.")
+    tax_lines = [l for l in p.lines if l.salary_type.kind == "tax"]
+    if tax_lines:
+        line = tax_lines[0]
+    else:
+        st = (SalaryType.query.filter_by(kind="tax", active=True)
+              .order_by(SalaryType.sort_order, SalaryType.code).first())
+        if not st:
+            return False, _payroll_lang("Sparat, men det finns ingen aktiv löneart för preliminärskatt.",
+                                        "Saved, but there is no active salary type for preliminary tax.")
+        line = PayslipLine(salary_type_id=st.id, salary_type=st, description=st.name,
+                           sort_order=max([l.sort_order or 0 for l in p.lines] + [0]) + 1)
+        p.lines.append(line)
+    line.quantity, line.rate, line.amount = None, None, float(tax)
+    db.session.commit()
+    _audit("payslip_recalc_tax", f"payslip_id={p.id} table={table_nr} column={column} base={base} tax={tax}")
+    extra = ""
+    if len(tax_lines) > 1:
+        extra = _payroll_lang(" Övriga skatterader är orörda.", " Other tax lines were left as they are.")
+    return True, _payroll_lang(
+        f"Preliminär skatt omräknad: {tax} kr (tabell {table_nr}, kolumn {column}, {year}, underlag {base} kr).",
+        f"Preliminary tax recalculated: {tax} kr (table {table_nr}, column {column}, {year}, base {base} kr).") + extra
+
+
 @app.route("/payroll/payslips/<int:payslip_id>", methods=["GET", "POST"])
 @login_required
 @admin_required
@@ -3221,7 +3302,11 @@ def payroll_payslip(payslip_id):
                 quantity=quantity, rate=rate, amount=amount, sort_order=i))
         db.session.commit()
         _audit("payslip_update", f"payslip_id={p.id}")
-        flash(_payroll_lang("Sparat", "Saved"), "success")
+        if f.get("action") == "recalc_tax":
+            ok, message = _recalc_payslip_tax(p)
+            flash(message, "success" if ok else "error")
+        else:
+            flash(_payroll_lang("Sparat", "Saved"), "success")
         return redirect(url_for("payroll_payslip", payslip_id=p.id))
 
     summary = payslip_summary(p)
@@ -3246,6 +3331,7 @@ def payroll_payslip(payslip_id):
     return render_template("payroll/payslip.html", p=p, summary=summary, salary_types=salary_types,
                            salary_types_json=salary_types_json,
                            kinds=KINDS, agi=agi, warnings=warnings, voucher_rows=rows,
+                           tax_info=_payslip_tax_info(p),
                            voucher_description=salary_voucher_description(p),
                            balanced=voucher_balanced(rows))
 
@@ -3587,6 +3673,60 @@ def payroll_settings():
         return redirect(url_for("payroll_settings"))
     values = {k: _payroll_setting(k) for k in PAYROLL_SETTING_KEYS}
     return render_template("settings/payroll.html", keys=PAYROLL_SETTING_KEYS, values=values)
+
+
+@app.route("/settings/tax-tables", methods=["GET", "POST"])
+@login_required
+@admin_required
+def tax_tables():
+    if request.method == "POST":
+        f = request.form
+        year, table_nr = _safe_int(f.get("year")), _safe_int(f.get("table_nr"))
+        if not (2000 <= (year or 0) <= 2100) or not (1 <= (table_nr or 0) <= 99):
+            flash(_payroll_lang("Ange år och tabellnummer", "Enter a year and a table number"), "error")
+            return redirect(url_for("tax_tables"))
+        if f.get("action") == "fetch":
+            try:
+                rows = fetch_skv_tax_table(year, table_nr)
+            except Exception as exc:
+                app.logger.warning("Tax table fetch failed: %s", exc)
+                flash(_payroll_lang("Kunde inte hämta tabellen från Skatteverket. Försök igen senare.",
+                                    "Could not fetch the table from Skatteverket. Try again later."), "error")
+                return redirect(url_for("tax_tables"))
+            if not rows:
+                flash(_payroll_lang(f"Skatteverket har ingen tabell {table_nr} för {year}.",
+                                    f"Skatteverket has no table {table_nr} for {year}."), "error")
+                return redirect(url_for("tax_tables"))
+            TaxTableRow.query.filter_by(year=year, table_nr=table_nr).delete()
+            db.session.add_all([TaxTableRow(year=year, table_nr=table_nr, **row) for row in rows])
+            db.session.commit()
+            _audit("tax_table_fetch", f"{year}/{table_nr} rows={len(rows)}")
+            flash(_payroll_lang(f"Tabell {table_nr} för {year} inläst ({len(rows)} rader).",
+                                f"Table {table_nr} for {year} loaded ({len(rows)} rows)."), "success")
+            return redirect(url_for("tax_tables", year=year, table_nr=table_nr))
+        if f.get("action") == "delete":
+            TaxTableRow.query.filter_by(year=year, table_nr=table_nr).delete()
+            db.session.commit()
+            _audit("tax_table_delete", f"{year}/{table_nr}")
+        return redirect(url_for("tax_tables"))
+
+    loaded = (db.session.query(TaxTableRow.year, TaxTableRow.table_nr,
+                               db.func.count(TaxTableRow.id), db.func.max(TaxTableRow.fetched_at))
+              .group_by(TaxTableRow.year, TaxTableRow.table_nr)
+              .order_by(TaxTableRow.year.desc(), TaxTableRow.table_nr).all())
+    year, table_nr = _safe_int(request.args.get("year")), _safe_int(request.args.get("table_nr"))
+    rows, lookup = [], None
+    if year and table_nr:
+        rows = (TaxTableRow.query.filter_by(year=year, table_nr=table_nr)
+                .order_by(TaxTableRow.income_from).all())
+        income = _safe_int(_decimal_input(request.args.get("income")))
+        if rows and income:
+            lookup = {"income": income,
+                      "taxes": [_table_tax(year, table_nr, c, income)[0] for c in TAX_COLUMNS]}
+    used = sorted({n for n in (_tax_table_nr(e) for e in Employee.query.filter_by(active=True)) if n})
+    return render_template("settings/tax_tables.html", loaded=loaded, rows=rows, lookup=lookup,
+                           year=year, table_nr=table_nr, used=used, columns=TAX_COLUMNS,
+                           default_year=date.today().year)
 
 
 @app.route("/settings/salary-types", methods=["GET", "POST"])
@@ -3949,6 +4089,8 @@ def init_db():
             # payroll: tax paid to the skattekonto, settled on the tax date
             "ALTER TABLE agi_report ADD COLUMN skv_debit_date DATE",
             "ALTER TABLE agi_report ADD COLUMN settle_voucher_ref VARCHAR(50)",
+            # payroll: preliminary tax read from Skatteverket's table
+            "ALTER TABLE employee ADD COLUMN tax_column INTEGER DEFAULT 1",
             "CREATE INDEX IF NOT EXISTS ix_time_entry_internal_code ON time_entry(internal_code_id)",
             "CREATE INDEX IF NOT EXISTS ix_expense_internal_code ON expense(internal_code_id)",
             "CREATE INDEX IF NOT EXISTS ix_mileage_internal_code ON mileage_entry(internal_code_id)",

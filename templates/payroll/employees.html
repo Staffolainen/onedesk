@@ -70,8 +70,13 @@
         <div class="form-group"><label class="form-label">{{ "Arbetsgivaravgift %" if g.lang == "sv" else "Employer contribution %" }}</label>
           <input type="number" step="0.01" name="ag_rate_pct" class="form-control mono" value="{{ '%.2f'|format((e.ag_rate if e else 0.3142) * 100) }}"></div>
         <div class="form-group"><label class="form-label">{{ "Skattetabell" if g.lang == "sv" else "Tax table" }}</label>
-          <input type="text" name="tax_table" class="form-control mono" value="{{ e.tax_table if e and e.tax_table else '' }}"></div>
+          <input type="text" name="tax_table" class="form-control mono" placeholder="34" value="{{ e.tax_table if e and e.tax_table else '' }}"></div>
       </div>
+      <div class="form-group"><label class="form-label">{{ "Kolumn i skattetabellen" if g.lang == "sv" else "Tax table column" }}</label>
+        <select name="tax_column" class="form-control" style="max-width:360px;">
+          {% for n, label in tax_columns.items() %}<option value="{{ n }}" {% if (e.tax_column if e and e.tax_column else 1) == n %}selected{% endif %}>{{ label[0] if g.lang == "sv" else label[1] }}</option>{% endfor %}
+        </select>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px;">{{ "Används av ”Spara och räkna om skatt” på lönebeskedet." if g.lang == "sv" else "Used by “Save and recalculate tax” on the payslip." }} <a href="{{ url_for('tax_tables') }}">{{ "Skattetabeller" if g.lang == "sv" else "Tax tables" }}</a></div></div>
       {% if e %}
       <div class="form-group">
         <label class="form-label">Status</label>

@@ -263,6 +263,81 @@ def skv_due_date(agi_period: str) -> date:
     return d.replace(day=17 if d.month in (1, 8) else 12)
 
 
+# ── Preliminary tax from Skatteverket's table ─────────────────────────────────
+
+SKV_TAX_TABLE_URL = ("https://skatteverket.entryscape.net/rowstore/dataset/"
+                     "88320397-5c32-4c16-ae79-d36d95b17b95")
+
+# column → (Swedish, English). Column 1 is the normal one for an employee under 66.
+TAX_COLUMNS = OrderedDict([
+    (1, ("Kolumn 1 – lön, under 66 år", "Column 1 – salary, under 66")),
+    (2, ("Kolumn 2 – pension, 66 år eller äldre", "Column 2 – pension, 66 or older")),
+    (3, ("Kolumn 3 – lön, 66 år eller äldre", "Column 3 – salary, 66 or older")),
+    (4, ("Kolumn 4 – sjuk-/aktivitetsersättning", "Column 4 – sickness/activity compensation")),
+    (5, ("Kolumn 5 – annan ersättning, t.ex. a-kassa", "Column 5 – other, e.g. unemployment benefit")),
+    (6, ("Kolumn 6 – pension, under 66 år", "Column 6 – pension, under 66")),
+])
+
+
+def _int(value):
+    text = re.sub(r"\D", "", str(value if value is not None else ""))
+    return int(text) if text else None
+
+
+def parse_skv_tax_rows(results) -> list:
+    """Rows of Skatteverket's open-data tax table → dicts for TaxTableRow.
+
+    Keeps the monthly table only ("30B" kronor rows and "30%" percentage rows).
+    """
+    rows = []
+    for r in results:
+        days = str(r.get("antal dgr") or "").strip()
+        if not days.startswith("30") or days[2:] not in ("B", "%"):
+            continue
+        income_from = _int(r.get("inkomst fr.o.m."))
+        if income_from is None:
+            continue
+        row = {"kind": days[2:], "income_from": income_from, "income_to": _int(r.get("inkomst t.o.m."))}
+        for n in range(1, 7):
+            row[f"col{n}"] = _int(r.get(f"kolumn {n}")) or 0
+        rows.append(row)
+    rows.sort(key=lambda row: row["income_from"])
+    return rows
+
+
+def fetch_skv_tax_table(year, table_nr, get=None) -> list:
+    """Download one monthly table for one year from Skatteverket (paged, 500 a call)."""
+    if get is None:
+        import requests
+        get = requests.get
+    results, offset = [], 0
+    while True:
+        resp = get(SKV_TAX_TABLE_URL, params={"år": str(year), "tabellnr": str(table_nr),
+                                              "_limit": 500, "_offset": offset}, timeout=30)
+        resp.raise_for_status()
+        page = resp.json().get("results") or []
+        results.extend(page)
+        if len(page) < 500:
+            break
+        offset += 500
+    return parse_skv_tax_rows(results)
+
+
+def tax_base(payslip) -> int:
+    """What the table is read against: taxable cash pay after gross deductions, plus benefits."""
+    total = sum((signed(l) for l in payslip.lines if KINDS.get(l.salary_type.kind, KINDS["cash"])[1]),
+                Decimal(0))
+    return max(trunc_kr(total), 0)
+
+
+def tax_from_row(row, income, column) -> int:
+    """The tax for ``income`` from the bracket ``row`` it falls in."""
+    value = getattr(row, f"col{column}", None) or 0
+    if row.kind == "%":
+        return trunc_kr(_d(income) * value / 100)
+    return int(value)
+
+
 def line_amount(quantity, rate, amount):
     """Quantity × rate when both are given, otherwise the amount as entered."""
     if quantity not in (None, "") and rate not in (None, ""):

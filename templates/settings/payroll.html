@@ -5,6 +5,7 @@
 {% block topbar_actions %}
   <a href="{{ url_for('salary_types') }}" class="btn btn-ghost btn-sm">{{ "Lönearter" if g.lang == "sv" else "Salary types" }}</a>
   <a href="{{ url_for('agi_codes') }}" class="btn btn-ghost btn-sm">{{ "Redovisningstyper" if g.lang == "sv" else "AGI fields" }}</a>
+  <a href="{{ url_for('tax_tables') }}" class="btn btn-ghost btn-sm">{{ "Skattetabeller" if g.lang == "sv" else "Tax tables" }}</a>
   <a href="{{ url_for('payroll_index') }}" class="btn btn-ghost btn-sm">← {{ "Lönebesked" if g.lang == "sv" else "Payroll" }}</a>
 {% endblock %}
 

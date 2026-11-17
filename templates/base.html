@@ -264,7 +264,7 @@
   </div>
 
   <div class="topnav-links">
-    {% set in_reskontra = 'invoice' in request.endpoint or 'supplier' in request.endpoint or 'payment' in request.endpoint or 'payroll' in request.endpoint or request.endpoint in ('salary_types', 'agi_codes') %}
+    {% set in_reskontra = 'invoice' in request.endpoint or 'supplier' in request.endpoint or 'payment' in request.endpoint or 'payroll' in request.endpoint or request.endpoint in ('salary_types', 'agi_codes', 'tax_tables') %}
     {% set in_expenses  = 'expense' in request.endpoint or 'mileage' in request.endpoint %}
     {% set in_system    = 'client' in request.endpoint or 'project' in request.endpoint or request.endpoint == 'settings' or 'user' in request.endpoint or 'voucher' in request.endpoint or 'categor' in request.endpoint %}
 
@@ -289,7 +289,7 @@
         <a href="{{ url_for('invoices_list') }}" class="nav-link {% if 'invoice' in request.endpoint and 'supplier' not in request.endpoint %}active{% endif %}">{{ "Fakturering" if g.lang == "sv" else "Invoicing" }}</a>
         <a href="{{ url_for('supplier_invoices_index') }}" class="nav-link {% if 'supplier' in request.endpoint or 'payment' in request.endpoint %}active{% endif %}">{{ "Leverantörsfakturor" if g.lang == "sv" else "Supplier invoices" }}</a>
         {% if current_user.is_authenticated and current_user.is_admin %}
-        <a href="{{ url_for('payroll_index') }}" class="nav-link {% if 'payroll' in request.endpoint or request.endpoint in ('salary_types', 'agi_codes') %}active{% endif %}">{{ "Lönebesked" if g.lang == "sv" else "Payroll" }}</a>
+        <a href="{{ url_for('payroll_index') }}" class="nav-link {% if 'payroll' in request.endpoint or request.endpoint in ('salary_types', 'agi_codes', 'tax_tables') %}active{% endif %}">{{ "Lönebesked" if g.lang == "sv" else "Payroll" }}</a>
         {% endif %}
       </div>
     </div>

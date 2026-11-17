@@ -411,3 +411,140 @@ def test_historical_slip_counts_in_ytd_but_nowhere_else(auth_client, db, seeded,
     auth_client.post(f"/payroll/payslips/{old.id}/historical")
     db.session.refresh(old)
     assert old.status == "draft"
+
+
+# ── Preliminary tax from Skatteverket's table ─────────────────────────────────
+
+# Table 34, 2026, as Skatteverket's open-data API returns it (a few brackets).
+SKV_ROWS = [
+    {"antal dgr": "30B", "år": "2026", "tabellnr": "34", "inkomst fr.o.m.": "36601", "inkomst t.o.m.": "36800",
+     "kolumn 1": "7813", "kolumn 2": "7663", "kolumn 3": "4558", "kolumn 4": "7813", "kolumn 5": "11921",
+     "kolumn 6": "11921", "kolumn 7": ""},
+    {"antal dgr": "30B", "år": "2026", "tabellnr": "34", "inkomst fr.o.m.": "69801", "inkomst t.o.m.": "70000",
+     "kolumn 1": "21846", "kolumn 2": "21769", "kolumn 3": "18665", "kolumn 4": "19360", "kolumn 5": "26273",
+     "kolumn 6": "26273", "kolumn 7": ""},
+    {"antal dgr": "30%", "år": "2026", "tabellnr": "34", "inkomst fr.o.m.": "1275601", "inkomst t.o.m.": "",
+     "kolumn 1": "53", "kolumn 2": "53", "kolumn 3": "53", "kolumn 4": "45", "kolumn 5": "53",
+     "kolumn 6": "53", "kolumn 7": ""},
+    {"antal dgr": "14B", "år": "2026", "tabellnr": "34", "inkomst fr.o.m.": "1", "inkomst t.o.m.": "900",
+     "kolumn 1": "1", "kolumn 2": "1", "kolumn 3": "1", "kolumn 4": "1", "kolumn 5": "1", "kolumn 6": "1"},
+]
+
+
+@pytest.fixture
+def table34(db):
+    from models import TaxTableRow
+    from payroll import parse_skv_tax_rows
+    db.session.add_all([TaxTableRow(year=2026, table_nr=34, **r) for r in parse_skv_tax_rows(SKV_ROWS)])
+    db.session.commit()
+
+
+def test_parse_skv_tax_rows_keeps_the_monthly_table():
+    from payroll import parse_skv_tax_rows
+    rows = parse_skv_tax_rows(SKV_ROWS)
+    assert [(r["kind"], r["income_from"], r["income_to"], r["col1"]) for r in rows] == [
+        ("B", 36601, 36800, 7813), ("B", 69801, 70000, 21846), ("%", 1275601, None, 53)]
+
+
+def test_fetch_skv_tax_table_pages_until_a_short_page():
+    from payroll import fetch_skv_tax_table
+    calls = []
+
+    class Resp:
+        def __init__(self, results): self.results = results
+        def raise_for_status(self): pass
+        def json(self): return {"results": self.results}
+
+    def get(url, params, timeout):
+        calls.append(params["_offset"])
+        return Resp([SKV_ROWS[0]] * 500 if params["_offset"] == 0 else SKV_ROWS[1:3])
+
+    rows = fetch_skv_tax_table(2026, 34, get=get)
+    assert calls == [0, 500] and len(rows) == 502
+
+
+def _slip_with_absence(db, employee, types, tax=21846.0):
+    p = Payslip(employee_id=employee.id, period="2026-11", pay_date=date(2026, 11, 25), spec_nr=1)
+    p.lines = [PayslipLine(salary_type_id=types["100"].id, description="Månadslön", amount=70000.0, sort_order=0),
+               PayslipLine(salary_type_id=types["900"].id, description="Preliminär skatt", amount=tax, sort_order=1)]
+    db.session.add(p)
+    db.session.commit()
+    return p
+
+
+def _post_lines(client, p, lines, action=None):
+    data = {"period": p.period, "pay_date": p.pay_date.isoformat(), "note": "",
+            "salary_type_id": [l[0] for l in lines], "description": [l[1] for l in lines],
+            "quantity": [l[2] for l in lines], "rate": [l[3] for l in lines], "amount": [l[4] for l in lines]}
+    if action:
+        data["action"] = action
+    return client.post(f"/payroll/payslips/{p.id}", data=data)
+
+
+def test_recalc_tax_follows_the_gross_after_unpaid_leave(auth_client, db, seeded, staffan, table34):
+    p = _slip_with_absence(db, staffan, seeded)
+    r = _post_lines(auth_client, p, [
+        (seeded["100"].id, "Månadslön", "", "", "70000"),
+        (seeded["110"].id, "Tjänstledighet", "10", "3333,33", ""),
+        (seeded["310"].id, "Resa", "100", "2,5", ""),          # tax-free: not part of the base
+        (seeded["900"].id, "Preliminär skatt", "", "", "21846"),
+    ], action="recalc_tax")
+    assert r.status_code == 302
+    db.session.refresh(p)
+    by_code = {l.salary_type.code: l.amount for l in p.lines}
+    assert by_code["110"] == 33333.3
+    assert by_code["900"] == 7813.0                       # 70 000 − 33 333,30 = 36 666 → bracket 36 601–36 800
+    assert payslip_summary(p)["tax"] == 7813
+
+
+def test_recalc_tax_adds_the_tax_line_and_reads_percent_rows(auth_client, db, seeded, staffan, table34):
+    p = _slip_with_absence(db, staffan, seeded)
+    _post_lines(auth_client, p, [(seeded["100"].id, "Månadslön", "", "", "2000000")], action="recalc_tax")
+    db.session.refresh(p)
+    assert [(l.salary_type.code, l.amount) for l in p.lines] == [("100", 2000000.0), ("900", 1060000.0)]
+
+
+def test_plain_save_leaves_the_tax_alone(auth_client, db, seeded, staffan, table34):
+    p = _slip_with_absence(db, staffan, seeded)
+    _post_lines(auth_client, p, [(seeded["100"].id, "Månadslön", "", "", "36700"),
+                                 (seeded["900"].id, "Preliminär skatt", "", "", "21846")])
+    db.session.refresh(p)
+    assert p.lines[1].amount == 21846.0
+
+
+@pytest.mark.parametrize("table, pay_date", [("", date(2026, 11, 25)), ("34", date(2027, 1, 25)),
+                                               ("jämkning 25 %", date(2026, 11, 25))])
+def test_recalc_tax_without_a_usable_table_saves_but_keeps_the_tax(auth_client, db, seeded, staffan,
+                                                                   table34, table, pay_date):
+    staffan.tax_table = table
+    p = _slip_with_absence(db, staffan, seeded)
+    p.pay_date = pay_date
+    db.session.commit()
+    _post_lines(auth_client, p, [(seeded["100"].id, "Månadslön", "", "", "36700"),
+                                 (seeded["900"].id, "Preliminär skatt", "", "", "21846")], action="recalc_tax")
+    db.session.refresh(p)
+    assert [(l.salary_type.code, l.amount) for l in p.lines] == [("100", 36700.0), ("900", 21846.0)]
+
+
+def test_tax_table_admin_fetch_view_delete(auth_client, db, seeded, staffan, monkeypatch):
+    from models import TaxTableRow
+    from payroll import parse_skv_tax_rows
+    monkeypatch.setattr(app_module, "fetch_skv_tax_table", lambda year, nr: parse_skv_tax_rows(SKV_ROWS))
+    r = auth_client.post("/settings/tax-tables", data={"action": "fetch", "year": "2026", "table_nr": "34"})
+    assert r.status_code == 302
+    auth_client.post("/settings/tax-tables", data={"action": "fetch", "year": "2026", "table_nr": "34"})
+    assert TaxTableRow.query.filter_by(year=2026, table_nr=34).count() == 3      # refetch replaces
+    page = auth_client.get("/settings/tax-tables?year=2026&table_nr=34&income=70000")
+    assert page.status_code == 200 and "21 846" in page.get_data(as_text=True)
+    assert auth_client.get("/settings/tax-tables").status_code == 200
+    auth_client.post("/settings/tax-tables", data={"action": "delete", "year": "2026", "table_nr": "34"})
+    assert TaxTableRow.query.count() == 0
+
+
+def test_tax_table_fetch_failure_is_reported(auth_client, db, monkeypatch):
+    def boom(year, nr):
+        raise RuntimeError("offline")
+    monkeypatch.setattr(app_module, "fetch_skv_tax_table", boom)
+    r = auth_client.post("/settings/tax-tables", data={"action": "fetch", "year": "2026", "table_nr": "34"},
+                         follow_redirects=True)
+    assert r.status_code == 200 and "Skatteverket" in r.get_data(as_text=True)
